@@ -6,18 +6,34 @@
 
 <PageTitle>Rules &amp; Presets · BroadcastRouter</PageTitle>
 <div class="page-head"><div><h1>Rules and presets</h1><p class="lead">Rules are evaluated by order using bounded wildcards or <span class="mono">regex:</span> patterns with a timeout.</p></div><div class="actions"><button class="btn" @onclick="AddRule">Add rule</button><button class="btn" @onclick="AddPreset">Add preset</button><button class="btn primary" @onclick="Save">Save changes</button></div></div>
-@if (!string.IsNullOrWhiteSpace(message)) { <div class="notice @messageClass">@message</div> }
+@if (!string.IsNullOrWhiteSpace(message)) { <div class="notice @messageClass" role="status">@message</div> }
 
-<div class="panel"><div class="panel-head"><h2>Routing rules</h2></div><div class="table-wrap"><table><thead><tr><th>On</th><th>Order / Name</th><th>Server</th><th>Application</th><th>Instance</th><th>Stream</th><th>Media</th><th>Action</th><th></th></tr></thead><tbody>
+<div class="panel"><div class="panel-head"><div><h2>Routing rules</h2><span class="secondary-text">Each rule uses a responsive editor; lower order numbers run first.</span></div></div><div class="panel-body rule-list">
 @foreach (var rule in settings.Rules.OrderBy(x => x.Order))
 {
-    <tr><td><InputCheckbox aria-label="@($"Enable rule {rule.Name}")" @bind-Value="rule.Enabled" /></td><td><InputNumber aria-label="@($"Order for rule {rule.Name}")" @bind-Value="rule.Order" style="width:72px" /><InputText aria-label="Rule name" @bind-Value="rule.Name" /></td><td><InputText aria-label="@($"Server pattern for {rule.Name}")" @bind-Value="rule.ServerPattern" /></td><td><InputText aria-label="@($"Application pattern for {rule.Name}")" @bind-Value="rule.ApplicationPattern" /></td><td><InputText aria-label="@($"Instance pattern for {rule.Name}")" @bind-Value="rule.InstancePattern" /></td><td><InputText aria-label="@($"Stream pattern for {rule.Name}")" @bind-Value="rule.StreamPattern" /></td>
-        <td><InputText aria-label="@($"Codec for {rule.Name}")" @bind-Value="rule.Codec" placeholder="codec" /><InputText aria-label="@($"Tag for {rule.Name}")" @bind-Value="rule.Tag" placeholder="tag" /></td><td><select aria-label="Preset for @rule.Name" @bind="rule.PresetId">@foreach(var preset in settings.Presets){<option value="@preset.Id">@preset.Name</option>}</select><InputText aria-label="@($"Fixed port ID for {rule.Name}")" @bind-Value="rule.FixedPortId" placeholder="optional port ID" /><label class="check"><InputCheckbox aria-label="@($"Lock assignments for {rule.Name}")" @bind-Value="rule.LockAssignment" /> Lock</label></td><td><button class="btn small danger" @onclick="() => RemoveRule(rule)">Remove</button></td></tr>
+    <article class="rule-editor" @key="rule.Id">
+        <header class="rule-editor-head"><label class="check compact"><InputCheckbox aria-label="@($"Enable rule {rule.Name}")" @bind-Value="rule.Enabled" /> Enabled</label><strong>@rule.Name</strong><button class="btn small danger" @onclick="() => RemoveRule(rule)">Remove rule</button></header>
+        <div class="rule-fields">
+            <div class="form-group"><label>Order</label><InputNumber aria-label="@($"Order for rule {rule.Name}")" @bind-Value="rule.Order" /></div>
+            <div class="form-group rule-name-field"><label>Rule name</label><InputText aria-label="Rule name" @bind-Value="rule.Name" /></div>
+            <div class="form-group"><label>Server pattern</label><InputText aria-label="@($"Server pattern for {rule.Name}")" @bind-Value="rule.ServerPattern" /></div>
+            <div class="form-group"><label>Application pattern</label><InputText aria-label="@($"Application pattern for {rule.Name}")" @bind-Value="rule.ApplicationPattern" /></div>
+            <div class="form-group"><label>Instance pattern</label><InputText aria-label="@($"Instance pattern for {rule.Name}")" @bind-Value="rule.InstancePattern" /></div>
+            <div class="form-group"><label>Stream pattern</label><InputText aria-label="@($"Stream pattern for {rule.Name}")" @bind-Value="rule.StreamPattern" /></div>
+            <div class="form-group"><label>Codec (optional)</label><InputText aria-label="@($"Codec for {rule.Name}")" @bind-Value="rule.Codec" placeholder="Any codec" /></div>
+            <div class="form-group"><label>Tag (optional)</label><InputText aria-label="@($"Tag for {rule.Name}")" @bind-Value="rule.Tag" placeholder="Any tag" /></div>
+            <div class="form-group"><label>Output preset</label><select aria-label="Preset for @rule.Name" @bind="rule.PresetId">@foreach (var preset in settings.Presets) { <option value="@preset.Id">@preset.Name</option> }</select></div>
+            <div class="form-group"><label>Fixed output ID (optional)</label><InputText aria-label="@($"Fixed port ID for {rule.Name}")" @bind-Value="rule.FixedPortId" placeholder="Automatic" /></div>
+            <div class="form-group"><label>Output group (optional)</label><InputText aria-label="@($"Port group for {rule.Name}")" @bind-Value="rule.PortGroup" placeholder="Any group" /></div>
+            <div class="form-group"><label>Priority adjustment</label><InputNumber aria-label="@($"Priority adjustment for {rule.Name}")" @bind-Value="rule.PriorityAdjustment" /></div>
+            <div class="form-group rule-lock-field"><label>Assignment ownership</label><label class="check compact"><InputCheckbox aria-label="@($"Lock assignments for {rule.Name}")" @bind-Value="rule.LockAssignment" /> Lock matched routes</label></div>
+        </div>
+    </article>
 }
-@if(settings.Rules.Count == 0){<tr><td colspan="9"><div class="empty-state">No rule matches means automatic assignment with the first preset.</div></td></tr>}
-</tbody></table></div></div>
+@if (settings.Rules.Count == 0) { <div class="empty-state">No rule matches means automatic assignment with the first preset.</div> }
+</div></div>
 
-<div class="panel"><div class="panel-head"><div><h2>Output presets</h2><span class="secondary-text">Each preset is laid out as a responsive editor so controls never overlap.</span></div></div><div class="panel-body preset-list">
+<div class="panel"><div class="panel-head"><div><h2>Output presets</h2><span class="secondary-text">Saved presets are available on manual routes and route reassignment.</span></div></div><div class="panel-body preset-list">
 @foreach (var preset in settings.Presets)
 {
     <article class="preset-editor" @key="preset.Id">
@@ -27,7 +43,7 @@
             <div class="form-group"><label>Display name</label><InputText aria-label="@($"Preset name for {preset.Id}")" @bind-Value="preset.Name" /></div>
             <div class="form-group"><label>Raster</label><div class="number-pair"><InputNumber aria-label="@($"Width for {preset.Name}")" @bind-Value="preset.Width" /><span>×</span><InputNumber aria-label="@($"Height for {preset.Name}")" @bind-Value="preset.Height" /></div></div>
             <div class="form-group"><label>Frame rate</label><div class="number-pair"><InputNumber aria-label="@($"Frame-rate numerator for {preset.Name}")" @bind-Value="preset.FrameRateNumerator" /><span>/</span><InputNumber aria-label="@($"Frame-rate denominator for {preset.Name}")" @bind-Value="preset.FrameRateDenominator" /></div></div>
-            <div class="form-group"><label>Scan</label><select aria-label="Scan type for @preset.Name" @bind="preset.Interlaced"><option value="False">Progressive</option><option value="True">Interlaced</option></select></div>
+            <div class="form-group"><label>Scan</label><select aria-label="Scan type for @preset.Name" value="@OutputScanSelection.Format(preset.Interlaced)" @onchange="eventArgs => SetScan(preset, eventArgs.Value?.ToString())"><option value="@OutputScanSelection.Progressive">Progressive</option><option value="@OutputScanSelection.Interlaced">Interlaced</option></select></div>
             <div class="form-group"><label>Pixel format</label><InputText aria-label="@($"Pixel format for {preset.Name}")" @bind-Value="preset.PixelFormat" /></div>
             <div class="form-group"><label>Input buffer (MB)</label><InputNumber aria-label="@($"Buffer size for {preset.Name}")" @bind-Value="preset.BufferSizeMegabytes" /></div>
             <div class="form-group preset-toggles"><label>Audio and latency</label><div class="toggle-row"><label class="check compact"><InputCheckbox aria-label="@($"Include audio for {preset.Name}")" @bind-Value="preset.IncludeAudio" /> Audio</label><label class="check compact"><InputCheckbox aria-label="@($"Use low latency for {preset.Name}")" @bind-Value="preset.LowLatency" /> Low latency</label></div></div>
@@ -38,16 +54,21 @@
 </div></div>
 
 @code {
-    private OperatorSettings settings = null!; private string message = ""; private string messageClass = "";
+    private OperatorSettings settings = null!;
+    private string message = "";
+    private string messageClass = "";
     protected override void OnInitialized() => settings = Coordinator.GetSettings();
     private void AddRule() => settings.Rules.Add(new RoutingRuleProfile { Order = settings.Rules.Select(x => x.Order).DefaultIfEmpty(0).Max() + 10, PresetId = settings.Presets.First().Id });
     private void AddPreset() => settings.Presets.Add(new OutputPresetProfile { Id = UniqueIdGenerator.Next("preset", settings.Presets.Select(x => x.Id)), Name = "New preset" });
+    private static void SetScan(OutputPresetProfile preset, string? value) { if (OutputScanSelection.TryParse(value, out var interlaced)) preset.Interlaced = interlaced; }
     private async Task RemoveRule(RoutingRuleProfile rule) { if (await JS.InvokeAsync<bool>("confirm", $"Remove routing rule '{rule.Name}'? Automatic assignments may change after save.")) settings.Rules.Remove(rule); }
     private async Task RemovePreset(OutputPresetProfile preset)
     {
         var references = settings.Rules.Count(rule => rule.PresetId.Equals(preset.Id, StringComparison.OrdinalIgnoreCase));
         if (references > 0) { message = $"Preset '{preset.Name}' is referenced by {references} routing rule(s). Reassign or remove those rules first."; messageClass = "danger"; return; }
+        var routeReferences = Coordinator.Snapshot.Routes.Count(route => route.State is not RouteState.Released and not RouteState.Disabled && route.PresetId.Equals(preset.Id, StringComparison.OrdinalIgnoreCase));
+        if (routeReferences > 0) { message = $"Preset '{preset.Name}' is used by {routeReferences} active or waiting route(s). Reassign or stop those routes first."; messageClass = "danger"; return; }
         if (await JS.InvokeAsync<bool>("confirm", $"Remove output preset '{preset.Name}'?")) settings.Presets.Remove(preset);
     }
-    private async Task Save() { try { await Coordinator.SaveSettingsAsync(settings); message = "Rules and presets saved."; messageClass = "success"; } catch(Exception ex) { message = ex.Message; messageClass = "danger"; } }
+    private async Task Save() { try { await Coordinator.SaveSettingsAsync(settings); message = "Rules and presets saved."; messageClass = "success"; } catch (Exception ex) { message = ex.Message; messageClass = "danger"; } }
 }

@@ -58,6 +58,8 @@ var tests = new (string Name, Action Body)[]
     ("DeckLink sink enumeration parsing", DeckLinkSinksAreParsed),
     ("Wowza instance discovery endpoint", WowzaInstanceEndpointIsCorrect),
     ("Common broadcast presets", CommonPresetsAreAvailable),
+    ("Output scan selection round trip", OutputScanSelectionRoundTrips),
+    ("Manual route preset selection", ManualRoutePresetSelectionIsValidated),
     ("Routing rule wildcard evaluation", RoutingRuleWildcardMatches),
     ("Routing regex validation", InvalidRoutingRegexIsRejected),
     ("Fallback command is uncompressed", FallbackCommandIsSafeAndUncompressed),
@@ -506,6 +508,28 @@ static void CommonPresetsAreAvailable()
     True(presets.Any(x => x.Id == "1080p50"));
     True(presets.Any(x => x.Id == "1080i50" && x.Interlaced));
     True(presets.Any(x => x.Id == "720p50" && x.Width == 1280));
+}
+
+static void OutputScanSelectionRoundTrips()
+{
+    Equal(OutputScanSelection.Progressive, OutputScanSelection.Format(false));
+    Equal(OutputScanSelection.Interlaced, OutputScanSelection.Format(true));
+    True(OutputScanSelection.TryParse(OutputScanSelection.Progressive, out var progressive) && !progressive);
+    True(OutputScanSelection.TryParse(OutputScanSelection.Interlaced, out var interlaced) && interlaced);
+    True(!OutputScanSelection.TryParse("", out _));
+    True(!OutputScanSelection.TryParse("True", out _));
+}
+
+static void ManualRoutePresetSelectionIsValidated()
+{
+    var presets = OutputPresetProfile.CommonDefaults();
+    Equal("1080i50", OutputPresetSelection.Resolve(presets, "1080p25", " 1080I50 ").Id);
+    Equal("1080p50", OutputPresetSelection.Resolve(presets, "1080p50", null).Id);
+    Equal("1080p25", OutputPresetSelection.Resolve(presets, "missing-rule-preset", null).Id);
+    Throws<InvalidOperationException>(() => OutputPresetSelection.Resolve(presets, "1080p25", "deleted-preset"));
+    Throws<InvalidOperationException>(() => OutputPresetSelection.Resolve([], "1080p25", null));
+    OutputPresetSelection.EnsureReferencesAvailable(presets, ["1080p25", "1080I50"]);
+    Throws<InvalidOperationException>(() => OutputPresetSelection.EnsureReferencesAvailable(presets, ["deleted-preset"]));
 }
 
 static void RoutingRuleWildcardMatches()

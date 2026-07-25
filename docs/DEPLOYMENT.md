@@ -7,7 +7,7 @@
 3. Extract `BroadcastRouter-production-win-x64-<version>.zip` to a versioned directory writable only by administrators and the dedicated broadcast account.
 4. Sign in as that account and run `BroadcastRouter.Server.exe` once. Open `http://127.0.0.1:5080`.
 5. In **Settings > Media Tools**, select `ffmpeg.exe` and `ffprobe.exe`, save, and require every routing validation gate to pass. Embedded preview additionally requires the H.264/AAC, fragmented MP4, and preview-filter capabilities listed above.
-6. Configure and test Wowza, name the physical outputs, assign groups/reserved ports, create presets/rules, and test one output at a time.
+6. Configure and test Wowza, name the physical outputs, assign groups/reserved ports, create presets/rules, and test one output at a time. Manual route creation and confirmed reassignment can choose any saved output preset.
 7. Run `scripts\Install-InteractiveLogon.ps1` as the broadcast account. It creates a normal per-user Task Scheduler entry that starts the server when that user logs in; elevation is not required.
 8. Perform the soak plan in `PRODUCTION-VALIDATION.md` before enabling automatic routing.
 

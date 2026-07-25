@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.2.3 — 2026-07-26
+
+- Added saved output-preset selection to manual route creation and existing route reassignment.
+- Validate an explicitly selected preset before stopping the current route, rejecting stale browser selections safely.
+- Prevent removal of presets still referenced by active or waiting routes.
+- Replaced the routing matrix and routing-rule table with responsive labeled editor cards.
+- Replaced fragile Boolean scan binding with explicit progressive/interlaced values so 1080i50 never falls to a blank selection.
+- Added regression coverage for scan round trips and validated manual preset selection.
+
 ## 1.2.2 — 2026-07-26
 
 - Replaced the external FFplay desktop window with an embedded H.264/AAC browser preview.
