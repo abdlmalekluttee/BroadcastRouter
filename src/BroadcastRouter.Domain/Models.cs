@@ -42,7 +42,8 @@ public sealed record MediaProperties(
     long? Bitrate,
     int? AudioSampleRate,
     int? AudioChannels,
-    bool HasUsableVideo);
+    bool HasUsableVideo,
+    bool? Interlaced = null);
 
 public sealed record DiscoveredSource(
     SourceIdentity Identity,

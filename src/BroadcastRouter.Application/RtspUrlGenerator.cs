@@ -34,6 +34,15 @@ public static class RtspUrlGenerator
             throw new FormatException("RTSP template is empty or too long.");
         if (!template.Contains("{stream-name}", StringComparison.OrdinalIgnoreCase))
             throw new FormatException("RTSP template must contain {stream-name}.");
+        var schemeEnd = template.IndexOf("://", StringComparison.Ordinal);
+        if (schemeEnd >= 0)
+        {
+            var authorityStart = schemeEnd + 3;
+            var authorityEnd = template.IndexOf('/', authorityStart);
+            var authority = authorityEnd < 0 ? template[authorityStart..] : template[authorityStart..authorityEnd];
+            if (authority.Contains('@'))
+                throw new FormatException("RTSP templates must not embed credentials because settings are persisted.");
+        }
 
         var opens = template.Count(c => c == '{');
         var closes = template.Count(c => c == '}');

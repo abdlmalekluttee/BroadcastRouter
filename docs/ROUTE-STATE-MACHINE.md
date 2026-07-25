@@ -22,6 +22,11 @@ stateDiagram-v2
     Reconnecting --> Fallback: grace policy
     Fallback --> Probing: primary returns
     Fallback --> Released: grace expires and unlocked
+    Starting --> Failed: permanent or retry-exhausted startup failure
+    Running --> Failed: permanent output failure
+    Reconnecting --> Failed: retry cap exhausted
+    Failed --> Reconnecting: explicit recovery
+    Failed --> Released: operator stop or unlocked retry exhaustion
     Unavailable --> Probing: publisher/API observation recovers
     Released --> Ready: source still eligible
     Known --> Disabled

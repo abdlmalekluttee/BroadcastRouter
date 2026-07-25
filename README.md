@@ -15,7 +15,7 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that discov
 - RTSP frame validation and media-property detection before routing;
 - atomic DeckLink port reservations, priorities, locks, queues, retries, standby, and recovery;
 - production-safe defaults: loopback binding, simulation disabled, and hardware starts blocked until validation passes;
-- SQLite persistence, DPAPI-protected Wowza credentials, structured redacted logs, health checks, and sanitized diagnostics;
+- SQLite persistence, DPAPI-protected Wowza credentials, structured redacted logs, minimal health checks, and sanitized diagnostics that never embed the production database;
 - a responsive dark operator UI for servers, sources, outputs, routes, rules, presets, logs, and settings;
 - self-contained Windows releases and Task Scheduler/service installation helpers.
 
@@ -35,7 +35,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.1.1`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.2.0`.
 3. Run `BroadcastRouter.Server.exe` as the dedicated Windows broadcast account.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
@@ -61,14 +61,14 @@ dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --conf
 Create a clean self-contained release:
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Version 1.1.1
+.\scripts\Publish-Release.ps1 -Version 1.2.0
 ```
 
 ## Configuration and security
 
-The database is `data\broadcast-router.db` beside the deployed executable. SQLite uses WAL mode, transactions, integrity checks, route history, and consistent backups. Wowza passwords are encrypted with Windows DPAPI and are never placed in release archives.
+The database is `data\broadcast-router.db` beside the deployed executable. SQLite uses WAL mode, transactions, integrity checks, and route history. Wowza passwords are encrypted with Windows DPAPI and are never placed in release or diagnostics archives. Take database backups only while the application is stopped, and protect them as production secrets.
 
-The default bind is loopback only. Before LAN access, enable authentication, configure an exact bind address and CIDR allowlist, provide `BROADCASTROUTER_ADMIN_PASSWORD` (and optionally `BROADCASTROUTER_OPERATOR_PASSWORD`), deploy trusted HTTPS, and restrict the Windows firewall to management networks. Startup is refused when authentication is enabled without an administrator password.
+The default bind is loopback only. Before LAN access, enable authentication, configure an exact bind address and CIDR allowlist, provide `BROADCASTROUTER_ADMIN_PASSWORD` (and optionally `BROADCASTROUTER_OPERATOR_PASSWORD`), deploy trusted HTTPS, and restrict the Windows firewall to management networks. Startup is refused when a non-loopback bind has authentication disabled or when authentication lacks an administrator password. Forwarded headers are ignored unless exact trusted proxy IP addresses are configured.
 
 ## Repository layout
 

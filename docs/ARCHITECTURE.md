@@ -15,9 +15,9 @@ The executable supports Windows Service hosting, but service/Session 0 DeckLink 
 5. Select a preset and compatible port group, excluding reserved ports from automatic assignment.
 6. Acquire the only atomic port lease. A second source cannot own the same stable port ID.
 7. Refuse real start unless Media Tools validation passes; launch FFmpeg using `ProcessStartInfo.ArgumentList`.
-8. Parse `-progress pipe:1`, drain stderr, detect stalls, classify exits, and retry with capped backoff plus jitter.
+8. Parse `-progress pipe:1`, drain stderr, enforce a first-progress deadline, detect later stalls, classify exits, and retry with capped backoff plus jitter and an optional attempt limit.
 9. Retain the reservation through recovery. Preset standby can output black, SMPTE bars, an image, a looping media file, or a standby RTSP source.
-10. Persist every route and transition. At restart, rebuild leases before starting any process and reconcile persisted routes.
+10. Validate and persist every route transition. At restart, rebuild leases before starting any process and reconcile persisted routes. Failed process starts release their lease, while missing unlocked sources retain leases only for the configured grace period. Waiting routes retry in priority/FIFO sequence.
 
 ## Main models
 
@@ -31,7 +31,7 @@ The executable supports Windows Service hosting, but service/Session 0 DeckLink 
 
 ## Reservation and restart design
 
-`PortReservationManager` is the sole mutable owner map and serializes reserve/release operations. Fixed and manual routes use the same API as automatic rules. Locked leases require explicit unlock or forced emergency release. On startup, persisted active routes are sorted locked-first and priority-first, leases are rebuilt, duplicates are moved to the waiting queue, and only then are FFmpeg processes restored.
+`PortReservationManager` is the sole mutable owner map and serializes reserve/release operations. Fixed and manual routes use the same API as automatic rules. Locked leases require explicit unlock or forced emergency release. A process-start exception atomically releases its lease and records a failed route instead of leaving a ghost reservation. On startup, persisted active routes are sorted locked-first and priority-first, leases are rebuilt, duplicates are moved to the waiting queue, and only then are FFmpeg processes restored.
 
 ## Supervision
 

@@ -17,19 +17,23 @@ public sealed class RouterCoordinator(
     private readonly object _gate = new();
     private readonly PortReservationManager _reservations = new();
     private readonly PriorityWaitingQueue _waiting = new();
+    private readonly RouteStateMachine _stateMachine = new();
     private readonly Dictionary<string, DiscoveredSource> _sources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DeckLinkPort> _ports = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RuntimeRoute> _routes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ServerHealth> _servers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _sourceMissingSince = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _sourceReadySince = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _simulationFaults = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _routeGates = new(StringComparer.Ordinal);
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private FfmpegProcessSupervisor? _supervisor;
     private string? _supervisorPath;
     private OperatorSettings _settings = new();
     private MediaToolValidation _validation = MediaToolValidation.NotConfigured;
-    private bool _emergencyStopped;
-    private bool _forceDiscovery = true;
-    private bool _forceToolValidation = true;
+    private volatile bool _emergencyStopped;
+    private volatile bool _forceDiscovery = true;
+    private volatile bool _forceToolValidation = true;
     private DateTimeOffset _lastDiscovery = DateTimeOffset.MinValue;
     private DateTimeOffset _lastToolValidation = DateTimeOffset.MinValue;
     private TimeSpan _lastCpu;
@@ -43,17 +47,6 @@ public sealed class RouterCoordinator(
     public OperatorSettings GetSettings()
     {
         lock (_gate) return Clone(_settings);
-    }
-
-    public object GetSanitizedSettings()
-    {
-        var settings = GetSettings();
-        foreach (var server in settings.WowzaServers)
-        {
-            server.Username = string.IsNullOrWhiteSpace(server.Username) ? "" : "***";
-            server.ProtectedPassword = string.IsNullOrWhiteSpace(server.ProtectedPassword) ? "" : "<DPAPI protected; omitted>";
-        }
-        return settings;
     }
 
     public async Task SaveSettingsAsync(OperatorSettings settings, CancellationToken cancellationToken = default)
@@ -98,15 +91,24 @@ public sealed class RouterCoordinator(
     public async Task<IReadOnlyList<StructuredLogEntry>> ReadLogsAsync(string? search, int limit = 500, CancellationToken cancellationToken = default) =>
         await store.ReadLogsAsync(search, limit, cancellationToken);
 
-    public async Task CommandAsync(string action, string? sourceId = null, string? portId = null, CancellationToken cancellationToken = default)
+    internal async Task CommandAsync(string action, string? sourceId = null, string? portId = null, CancellationToken cancellationToken = default)
     {
         action = action.Trim().ToLowerInvariant();
         if (action == "emergency-stop")
         {
             _emergencyStopped = true;
-            foreach (var activeRoute in RoutesCopy()) await StopRouteAsync(activeRoute.SourceId, forceRelease: true, cancellationToken);
-            await LogAsync("Critical", "Operator", "Emergency stop activated. All owned FFmpeg processes were stopped.", correlationId: NewCorrelation(), cancellationToken: cancellationToken);
+            var failures = new List<string>();
+            foreach (var activeRoute in RoutesCopy())
+            {
+                try { await StopRouteAsync(activeRoute.SourceId, forceRelease: true, CancellationToken.None); }
+                catch (Exception ex) { failures.Add($"{activeRoute.SourceId}: {LogRedactor.Redact(ex.Message)}"); }
+            }
+            var message = failures.Count == 0
+                ? "Emergency stop activated. All owned FFmpeg processes were stopped."
+                : $"Emergency stop activated, but {failures.Count} owned route(s) reported a stop failure. Review diagnostics immediately.";
+            await LogAsync(failures.Count == 0 ? "Critical" : "Error", "Operator", message, correlationId: NewCorrelation(), cancellationToken: CancellationToken.None);
             Publish("Emergency stop active");
+            if (failures.Count > 0) throw new InvalidOperationException(message);
             return;
         }
         if (action == "clear-emergency")
@@ -131,18 +133,24 @@ public sealed class RouterCoordinator(
         switch (action)
         {
             case "start":
-            case "restore":
-                _emergencyStopped = false;
+                RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
                 await EnsureRouteAsync(sourceId, portId, manual: true, cancellationToken);
+                break;
+            case "restore":
+                RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
+                if (route?.PortId is not null) await RestartReservedRouteAsync(route, cancellationToken);
+                else await EnsureRouteAsync(sourceId, portId, manual: true, cancellationToken);
                 break;
             case "stop":
                 await StopRouteAsync(sourceId, forceRelease: false, cancellationToken);
                 break;
             case "restart":
+                RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
                 await StopRouteAsync(sourceId, forceRelease: true, cancellationToken);
                 await EnsureRouteAsync(sourceId, portId, manual: true, cancellationToken);
                 break;
             case "reassign":
+                RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
                 await StopRouteAsync(sourceId, forceRelease: true, cancellationToken);
                 await EnsureRouteAsync(sourceId, portId, manual: true, cancellationToken);
                 break;
@@ -158,6 +166,7 @@ public sealed class RouterCoordinator(
                 {
                     var identity = SourceIdentityFromValue(route.SourceId);
                     _reservations.TryReserve(route.PortId, identity, true, DateTimeOffset.UtcNow, out _);
+                    lock (_gate) _sourceMissingSince.Remove(route.SourceId);
                     await ReplaceRouteAsync(route with { Locked = true, UpdatedAt = DateTimeOffset.UtcNow }, route.State, cancellationToken);
                 }
                 break;
@@ -167,10 +176,15 @@ public sealed class RouterCoordinator(
                     var identity = SourceIdentityFromValue(route.SourceId);
                     _reservations.Release(route.PortId, identity, force: true);
                     _reservations.TryReserve(route.PortId, identity, false, DateTimeOffset.UtcNow, out _);
+                    lock (_gate)
+                    {
+                        if (!_sources.ContainsKey(route.SourceId)) _sourceMissingSince.TryAdd(route.SourceId, DateTimeOffset.UtcNow);
+                    }
                     await ReplaceRouteAsync(route with { Locked = false, UpdatedAt = DateTimeOffset.UtcNow }, route.State, cancellationToken);
                 }
                 break;
             case "standby":
+                RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
                 if (route is not null)
                 {
                     if (_supervisor is not null) await _supervisor.StopAsync(SourceIdentityFromValue(sourceId), cancellationToken);
@@ -285,7 +299,7 @@ public sealed class RouterCoordinator(
                 {
                     var password = string.IsNullOrWhiteSpace(profile.ProtectedPassword) ? "" : WindowsDpapi.Unprotect(profile.ProtectedPassword);
                     var server = ToConfiguration(profile);
-                    using var client = httpClientFactory.CreateClient();
+                    using var client = httpClientFactory.CreateClient(profile.ValidateTlsCertificate ? "WowzaValidated" : "WowzaInsecure");
                     var provider = new WowzaDiscoveryProvider(client, server, new StaticCredentialResolver(new CredentialValue(profile.Username, password)));
                     var discovered = await provider.DiscoverAsync(cancellationToken);
                     observations.AddRange(discovered);
@@ -319,6 +333,9 @@ public sealed class RouterCoordinator(
                 {
                     _sources.Remove(stale.Identity.Value);
                     _waiting.Remove(stale.Identity);
+                    _sourceReadySince.Remove(stale.Identity.Value);
+                    if (_routes.TryGetValue(stale.Identity.Value, out var route) && !route.Locked)
+                        _sourceMissingSince.TryAdd(stale.Identity.Value, DateTimeOffset.UtcNow);
                 }
             }
             foreach (var stale in staleSources) await store.DeleteSourceAsync(stale.Identity.Value, cancellationToken);
@@ -335,6 +352,7 @@ public sealed class RouterCoordinator(
 
         foreach (var source in observations)
         {
+            lock (_gate) _sourceMissingSince.Remove(source.Identity.Value);
             var probed = source;
             if (source.Media is null)
             {
@@ -349,9 +367,16 @@ public sealed class RouterCoordinator(
                 if (!probe.FramesReceived)
                     await LogAsync("Warning", "Probe", $"Probe failed: {probe.FailureCategory}: {probe.Detail}", source.Identity.Value, cancellationToken: cancellationToken);
             }
-            lock (_gate) _sources[probed.Identity.Value] = probed;
+            lock (_gate)
+            {
+                _sources[probed.Identity.Value] = probed;
+                if (probed.State == SourceState.Ready) _sourceReadySince.TryAdd(probed.Identity.Value, DateTimeOffset.UtcNow);
+                else _sourceReadySince.Remove(probed.Identity.Value);
+            }
             await store.UpsertSourceAsync(probed, cancellationToken);
         }
+
+        await ReleaseExpiredMissingRoutesAsync(settings, cancellationToken);
 
         if (settings.SimulationMode)
             lock (_gate) _servers["SIM-WOWZA"] = new("SIM-WOWZA", "Simulated Wowza", true, true, observations.Count, "Simulation API healthy.", DateTimeOffset.UtcNow);
@@ -363,31 +388,49 @@ public sealed class RouterCoordinator(
         var settings = GetSettings();
         await RestoreReservationsAndProcessesAsync(settings, cancellationToken);
         if (!settings.Routing.AutomaticRoutingEnabled) return;
-        var sources = SourcesCopy().Where(x => x.State == SourceState.Ready && x.AutomaticRoutingEnabled).OrderByDescending(x => x.Priority).ToArray();
+        var readySources = SourcesCopy().Where(x => x.State == SourceState.Ready && x.AutomaticRoutingEnabled).ToArray();
+        var readyById = readySources.ToDictionary(x => x.Identity.Value, StringComparer.Ordinal);
+        var queued = _waiting.Snapshot();
+        var queuedIds = queued.Select(x => x.Source.Value).ToHashSet(StringComparer.Ordinal);
+        var sources = queued.Where(item => readyById.ContainsKey(item.Source.Value)).Select(item => readyById[item.Source.Value])
+            .Concat(readySources.Where(source => !queuedIds.Contains(source.Identity.Value)).OrderByDescending(source => source.Priority))
+            .ToArray();
         foreach (var source in sources)
         {
             RuntimeRoute? route;
             lock (_gate) _routes.TryGetValue(source.Identity.Value, out route);
             if (route is null || route.State is RouteState.Released or RouteState.Known or RouteState.Ready or RouteState.WaitingForPort)
                 await EnsureRouteAsync(source.Identity.Value, null, manual: false, cancellationToken);
-            else if (route.State is RouteState.Reconnecting or RouteState.Fallback && route.RetryAt <= DateTimeOffset.UtcNow)
+            else if (route.State is RouteState.Reconnecting or RouteState.Fallback
+                     && route.RetryAt <= DateTimeOffset.UtcNow
+                     && SourceHasBeenReadyLongEnough(route.SourceId, settings.Routing.StableRestoreSeconds))
                 await RestartReservedRouteAsync(route, cancellationToken);
         }
     }
 
     private async Task EnsureRouteAsync(string sourceId, string? requestedPortId, bool manual, CancellationToken cancellationToken)
     {
+        var routeGate = _routeGates.GetOrAdd(sourceId, static _ => new SemaphoreSlim(1, 1));
+        await routeGate.WaitAsync(cancellationToken);
+        try
+        {
+        RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
         DiscoveredSource source;
         DeckLinkPort[] ports;
         OperatorSettings settings;
+        RuntimeRoute? previousRoute;
         lock (_gate)
         {
             if (!_sources.TryGetValue(sourceId, out source!)) throw new InvalidOperationException("Source is not currently known.");
             ports = _ports.Values.ToArray();
             settings = Clone(_settings);
+            _routes.TryGetValue(sourceId, out previousRoute);
         }
+        if (previousRoute?.State is RouteState.Reserved or RouteState.Starting or RouteState.Running or RouteState.Fallback) return;
         if (!settings.SimulationMode && !_validation.CanStartHardwareRoutes)
             throw new InvalidOperationException("DeckLink route start refused because Media Tools validation has not passed.");
+        if (settings.Presets.Count == 0)
+            throw new InvalidOperationException("At least one output preset is required before a route can start.");
 
         var defaultPreset = settings.Presets.First().Id;
         var decision = RoutingRuleEvaluator.Evaluate(source, settings.Rules, defaultPreset);
@@ -406,7 +449,7 @@ public sealed class RouterCoordinator(
             var waiting = new RuntimeRoute(sourceId, source.FriendlyName, null, null, decision.PresetId, RouteState.WaitingForPort,
                 assignment.Mode, decision.Locked, decision.Priority, 0, null, null, null, 0, 0, null, DateTimeOffset.UtcNow,
                 "NoOutput", assignment.Reason);
-            await ReplaceRouteAsync(waiting, null, cancellationToken);
+            await ReplaceRouteAsync(waiting, previousRoute?.State, cancellationToken);
             return;
         }
 
@@ -416,8 +459,21 @@ public sealed class RouterCoordinator(
         var route = new RuntimeRoute(sourceId, source.FriendlyName, port.StableId, port.FriendlyName ?? port.FfmpegName, presetProfile.Id,
             RouteState.Reserved, manual ? AssignmentMode.Manual : assignment.Mode, decision.Locked, decision.Priority, 0,
             null, null, null, 0, 0, null, now, null, null);
-        await ReplaceRouteAsync(route, null, cancellationToken);
-        await StartRouteAsync(route, source, port, presetProfile, cancellationToken);
+        await ReplaceRouteAsync(route, previousRoute?.State, cancellationToken);
+        try
+        {
+            await StartRouteAsync(route, source, port, presetProfile, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            var detail = LogRedactor.Redact(ex.Message);
+            var failed = RouteStartFailureRecovery.ReleaseAndFail(_reservations, route with { State = RouteState.Starting }, source.Identity,
+                string.IsNullOrWhiteSpace(detail) ? "FFmpeg could not be started." : detail, DateTimeOffset.UtcNow);
+            await ReplaceRouteAsync(failed, RouteState.Starting, cancellationToken);
+            throw new InvalidOperationException("FFmpeg failed to start; the output reservation was released.", ex);
+        }
+        }
+        finally { routeGate.Release(); }
     }
 
     private async Task StartRouteAsync(RuntimeRoute route, DiscoveredSource source, DeckLinkPort port, OutputPresetProfile preset, CancellationToken cancellationToken)
@@ -433,6 +489,11 @@ public sealed class RouterCoordinator(
         EnsureSupervisor(_settings.MediaTools.FfmpegPath);
         var domainRoute = new RouteRecord(source.Identity, port.StableId, preset.Id, RouteState.Starting, starting.AssignmentMode, starting.Locked, starting.RestartCount);
         await _supervisor!.StartAsync(domainRoute, source, port, preset.ToDomain(), cancellationToken);
+        if (_emergencyStopped)
+        {
+            await _supervisor.StopAsync(source.Identity, CancellationToken.None);
+            throw new InvalidOperationException("Emergency stop became active while FFmpeg was starting.");
+        }
     }
 
     private async Task MonitorProcessesAsync(CancellationToken cancellationToken)
@@ -470,7 +531,14 @@ public sealed class RouterCoordinator(
             lock (_gate) _routes.TryGetValue(process.Source.Value, out route);
             if (route is null) continue;
             var progress = process.Progress;
-            if (process.Running && FfmpegStallDetector.IsStalled(true, progress, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(_settings.Routing.StallTimeoutSeconds)))
+            var now = DateTimeOffset.UtcNow;
+            if (FfmpegStallDetector.IsFirstProgressTimedOut(process.Running, progress, process.StartedAt, now,
+                    TimeSpan.FromSeconds(_settings.Routing.FirstProgressTimeoutSeconds)))
+            {
+                await _supervisor.StopAsync(process.Source, cancellationToken);
+                await ScheduleRetryAsync(route, "NoFirstProgress", "FFmpeg started but produced no progress before the startup deadline.", cancellationToken);
+            }
+            else if (process.Running && FfmpegStallDetector.IsStalled(true, progress, now, TimeSpan.FromSeconds(_settings.Routing.StallTimeoutSeconds)))
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await ScheduleRetryAsync(route, "VideoStalled", "FFmpeg remained alive but stopped producing progress.", cancellationToken);
@@ -486,11 +554,12 @@ public sealed class RouterCoordinator(
                     Speed = progress?.Speed,
                     DroppedFrames = progress?.DroppedFrames ?? 0,
                     DuplicatedFrames = progress?.DuplicatedFrames ?? 0,
+                    RestartCount = state == RouteState.Running ? 0 : route.RestartCount,
                     StartedAt = process.StartedAt,
                     UpdatedAt = DateTimeOffset.UtcNow
                 }, route.State, cancellationToken, persistHistory: state != route.State);
             }
-            else if (route.State is RouteState.Starting or RouteState.Running)
+            else if (route.State is RouteState.Starting or RouteState.Running or RouteState.Fallback)
             {
                 var detail = string.Join(" | ", process.RecentErrors.TakeLast(5));
                 var category = FfmpegErrorClassifier.Classify(process.ExitCode, detail);
@@ -504,6 +573,25 @@ public sealed class RouterCoordinator(
     private async Task ScheduleRetryAsync(RuntimeRoute route, string category, string detail, CancellationToken cancellationToken)
     {
         var count = route.RestartCount + 1;
+        if (RetryLimitPolicy.IsExhausted(count, _settings.Routing.MaxRetryAttempts))
+        {
+            var terminal = route with
+            {
+                State = RouteState.Failed,
+                RestartCount = count,
+                FailureCategory = "RetryLimitExceeded",
+                FailureMessage = $"Retry limit reached after {_settings.Routing.MaxRetryAttempts} attempt(s). Last failure: {detail}",
+                RetryAt = null,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            if (!terminal.Locked && terminal.PortId is not null)
+            {
+                _reservations.Release(terminal.PortId, SourceIdentityFromValue(terminal.SourceId), force: false);
+                terminal = terminal with { PortId = null, PortName = null };
+            }
+            await ReplaceRouteAsync(terminal, route.State, cancellationToken);
+            return;
+        }
         var retry = route with { State = RouteState.Reconnecting, RestartCount = count, FailureCategory = category,
             FailureMessage = string.IsNullOrWhiteSpace(detail) ? "FFmpeg stopped unexpectedly." : detail,
             RetryAt = DateTimeOffset.UtcNow + RetryDelay(count), UpdatedAt = DateTimeOffset.UtcNow };
@@ -557,19 +645,59 @@ public sealed class RouterCoordinator(
 
     private async Task StopRouteAsync(string sourceId, bool forceRelease, CancellationToken cancellationToken)
     {
+        var routeGate = _routeGates.GetOrAdd(sourceId, static _ => new SemaphoreSlim(1, 1));
+        await routeGate.WaitAsync(cancellationToken);
+        try
+        {
         RuntimeRoute? route;
         lock (_gate) _routes.TryGetValue(sourceId, out route);
         if (route is null) return;
+        RouteControlSafety.EnsureStopAllowed(route.Locked, forceRelease);
         var identity = SourceIdentityFromValue(sourceId);
         _waiting.Remove(identity);
+        lock (_gate)
+        {
+            _sourceMissingSince.Remove(sourceId);
+            _sourceReadySince.Remove(sourceId);
+        }
         if (_supervisor is not null) await _supervisor.StopAsync(identity, cancellationToken);
         if (route.PortId is not null)
         {
             var released = _reservations.Release(route.PortId, identity, forceRelease);
-            if (!released && route.Locked && !forceRelease)
-                throw new InvalidOperationException("This assignment is locked. Unlock it or use emergency stop before releasing it.");
+            if (!released) throw new InvalidOperationException("The output reservation could not be released because its ownership changed.");
         }
         await ReplaceRouteAsync(route with { State = RouteState.Released, PortId = null, PortName = null, UpdatedAt = DateTimeOffset.UtcNow }, route.State, cancellationToken);
+        }
+        finally { routeGate.Release(); }
+    }
+
+    private async Task ReleaseExpiredMissingRoutesAsync(OperatorSettings settings, CancellationToken cancellationToken)
+    {
+        KeyValuePair<string, DateTimeOffset>[] missing;
+        lock (_gate) missing = _sourceMissingSince.ToArray();
+        var now = DateTimeOffset.UtcNow;
+        var grace = TimeSpan.FromSeconds(Math.Max(0, settings.Routing.ReservationGraceSeconds));
+        foreach (var item in missing)
+        {
+            RuntimeRoute? route;
+            lock (_gate) _routes.TryGetValue(item.Key, out route);
+            if (route is null || route.State is RouteState.Released or RouteState.Disabled)
+            {
+                lock (_gate) _sourceMissingSince.Remove(item.Key);
+                continue;
+            }
+            if (!RouteLeaseRetentionPolicy.ShouldRelease(route.Locked, item.Value, now, grace)) continue;
+            await StopRouteAsync(item.Key, forceRelease: false, cancellationToken);
+            await LogAsync("Warning", "Discovery", "Source remained absent beyond its reservation grace period; its unlocked output was released.",
+                item.Key, cancellationToken: cancellationToken);
+        }
+    }
+
+    private bool SourceHasBeenReadyLongEnough(string sourceId, int stableSeconds)
+    {
+        lock (_gate)
+            return _sourceReadySince.TryGetValue(sourceId, out var readySince)
+                   && RouteLeaseRetentionPolicy.IsStable(readySince, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(Math.Max(0, stableSeconds)));
     }
 
     private async Task RestoreReservationsAndProcessesAsync(OperatorSettings settings, CancellationToken cancellationToken)
@@ -609,8 +737,20 @@ public sealed class RouterCoordinator(
 
     private async Task ReplaceRouteAsync(RuntimeRoute route, RouteState? previousState, CancellationToken cancellationToken, bool persistHistory = true)
     {
-        lock (_gate) _routes[route.SourceId] = route;
-        await store.SaveRouteAsync(route, persistHistory ? previousState : route.State, cancellationToken);
+        RouteState? persistedPrevious;
+        lock (_gate)
+        {
+            if (_routes.TryGetValue(route.SourceId, out var current))
+            {
+                if (previousState is not null && current.State != previousState) return;
+                persistedPrevious = current.State;
+            }
+            else persistedPrevious = previousState;
+            if (persistedPrevious is not null && !_stateMachine.CanTransition(persistedPrevious.Value, route.State))
+                throw new InvalidOperationException($"Invalid route transition {persistedPrevious} -> {route.State} for {route.SourceId}.");
+            _routes[route.SourceId] = route;
+        }
+        await store.SaveRouteAsync(route, persistHistory ? persistedPrevious : route.State, cancellationToken);
     }
 
     private void EnsureSupervisor(string ffmpegPath)
@@ -625,7 +765,8 @@ public sealed class RouterCoordinator(
     private TimeSpan RetryDelay(int count)
     {
         var delays = _settings.Routing.RetryDelaysSeconds.Length == 0 ? new[] { 1, 2, 5, 10, 20, 30 } : _settings.Routing.RetryDelaysSeconds;
-        var seconds = Math.Max(0, delays[Math.Min(count - 1, delays.Length - 1)]);
+        var policy = new RetryPolicy(delays.Select(seconds => TimeSpan.FromSeconds(Math.Max(0, seconds))).ToArray());
+        var seconds = policy.GetDelay(count).TotalSeconds;
         var jitter = Random.Shared.NextDouble() * Math.Min(1, seconds * .2);
         return TimeSpan.FromSeconds(seconds + jitter);
     }
@@ -636,7 +777,7 @@ public sealed class RouterCoordinator(
         lock (_gate)
         {
             var now = DateTimeOffset.UtcNow;
-            var process = Process.GetCurrentProcess();
+            using var process = Process.GetCurrentProcess();
             var cpuTime = process.TotalProcessorTime;
             var interval = Math.Max(.001, (now - _lastCpuAt).TotalSeconds);
             var cpu = Math.Clamp((cpuTime - _lastCpu).TotalSeconds / (interval * Environment.ProcessorCount) * 100, 0, 100);

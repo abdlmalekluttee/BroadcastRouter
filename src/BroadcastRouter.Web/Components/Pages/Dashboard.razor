@@ -1,17 +1,20 @@
 @page "/"
 @rendermode InteractiveServer
 @inject RouterCoordinator Coordinator
+@inject AuthorizedRouterCommands Commands
+@inject IJSRuntime JS
 @implements IDisposable
 
 <PageTitle>Dashboard · BroadcastRouter</PageTitle>
 <div class="page-head">
     <div><h1>Broadcast dashboard</h1><p class="lead">Live source, route, output, and process health from the server.</p></div>
     <AuthorizeView Roles="Administrator"><Authorized><div class="actions">
-        @if (snapshot.EmergencyStopped) { <button class="btn warning" @onclick='() => Run("clear-emergency")'>Clear emergency stop</button> }
-        else { <button class="btn danger" @onclick='() => Run("emergency-stop")'>Emergency stop</button> }
+        @if (snapshot.EmergencyStopped) { <button class="btn warning" disabled="@busy" @onclick='() => Run("clear-emergency")'>Clear emergency stop</button> }
+        else { <button class="btn danger" disabled="@busy" @onclick='() => Run("emergency-stop")'>Emergency stop</button> }
     </div></Authorized></AuthorizeView>
 </div>
-@if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger">@error</div> }
+@if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger" role="alert">@error</div> }
+<div class="secondary-text" role="status">Status updated @snapshot.UpdatedAt.ToLocalTime().ToString("HH:mm:ss")@((DateTimeOffset.UtcNow - snapshot.UpdatedAt) > TimeSpan.FromSeconds(5) ? " · data may be stale" : "") · @snapshot.StatusMessage</div>
 
 @if (snapshot.SimulationMode)
 {
@@ -63,12 +66,16 @@
 @code {
     private RouterSnapshot snapshot = null!;
     private string error = "";
+    private bool busy;
     private int FreePorts => snapshot.Ports.Count(p => !snapshot.Routes.Any(r => r.PortId == p.StableId && r.State is not RouteState.Released));
     private string FormatUptime => FormatDuration(DateTimeOffset.UtcNow - snapshot.StartedAt);
     protected override void OnInitialized() { snapshot = Coordinator.Snapshot; Coordinator.Changed += OnChanged; }
     private void OnChanged() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
-    private async Task Run(string action, string? source = null) { try { error = ""; await Coordinator.CommandAsync(action, source); } catch(Exception ex) { error = ex.Message; } }
+    private async Task Run(string action, string? source = null) { if (busy) return; if (action == "emergency-stop" && !await JS.InvokeAsync<bool>("confirm", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes. Continue?")) return; try { busy = true; error = ""; await Commands.ExecuteAsync(action, source); } catch(Exception ex) { error = ex.Message; } finally { busy = false; } }
     public void Dispose() => Coordinator.Changed -= OnChanged;
-    private static string FormatMedia(MediaProperties? media) => media is null ? "Unknown" : $"{media.Width}×{media.Height} {media.FramesPerSecond:0.##}p · {media.VideoCodec}";
+    private static string FormatMedia(MediaProperties? media) => media is null ? "Unknown" : $"{media.Width}×{media.Height} {FormatRate(media)} · {media.VideoCodec}";
+    private static string FormatRate(MediaProperties media) => media.Interlaced is null
+        ? $"{media.FramesPerSecond:0.##} fps"
+        : $"{media.FramesPerSecond:0.##}{(media.Interlaced.Value ? "i" : "p")}";
     private static string FormatDuration(TimeSpan? value) => value is null ? "—" : value.Value.TotalHours >= 1 ? $"{(int)value.Value.TotalHours}:{value.Value:mm\\:ss}" : value.Value.ToString("mm\\:ss");
 }

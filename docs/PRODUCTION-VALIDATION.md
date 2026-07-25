@@ -14,4 +14,4 @@ Before broadcast use, verify:
 - Run an 8–24 hour multi-port soak while watching frames, FPS, speed, drops, CPU, memory and orphan processes.
 - Test emergency stop and confirm every owned FFmpeg process exits; confirm unrelated FFmpeg processes are untouched.
 - If trialing Windows Service mode, repeat the complete matrix in Session 0. Do not use service mode if results differ from interactive logon.
-- Verify LAN firewall/CIDR restrictions, HTTPS certificate trust, administrator controls, read-only operator behavior, session timeout, backup and rollback.
+- Verify LAN firewall/CIDR restrictions, exact reverse-proxy trust, spoofed forwarded-header rejection, HTTPS certificate trust, administrator controls, read-only operator behavior, login throttling, session timeout, backup and rollback.

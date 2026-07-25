@@ -11,7 +11,7 @@
 7. Run `scripts\Install-InteractiveLogon.ps1` as the broadcast account. It creates a normal per-user Task Scheduler entry that starts the server when that user logs in; elevation is not required.
 8. Perform the soak plan in `PRODUCTION-VALIDATION.md` before enabling automatic routing.
 
-Data and DPAPI credentials belong to the Windows account that runs the executable. Back up the `data` directory while the app is stopped or use the diagnostics/SQLite backup function. Copying DPAPI ciphertext to a different account does not make it decryptable.
+Data and DPAPI credentials belong to the Windows account that runs the executable. Back up the `data` directory only while the app is stopped and protect the backup as a production secret. Sanitized diagnostics deliberately exclude the database. Copying DPAPI ciphertext to a different account does not make it decryptable.
 
 ## Windows Service trial
 
@@ -25,10 +25,11 @@ Keep loopback binding unless remote control is required. Before enabling LAN acc
 - optionally set `BROADCASTROUTER_OPERATOR_PASSWORD` for read-only access;
 - enable authentication, configure an exact bind address and CIDR allowlist, then restart;
 - configure a trusted Kestrel certificate with standard ASP.NET Core `Kestrel:Certificates:Default` settings, or use a trusted reverse proxy restricted to the host;
+- when using a reverse proxy, configure its exact IP address under **Trusted reverse proxies**; forwarded headers from every other peer are ignored;
 - firewall the port only to the management networks.
 
-The app refuses startup when authentication is enabled without an administrator password.
+The app refuses startup when authentication is enabled without an administrator password or when a non-loopback bind has authentication disabled.
 
 ## Upgrade and rollback
 
-Stop the scheduled task/service, copy the complete new release to a new versioned folder, copy the `data` directory, and start the new version. Keep the prior folder and database backup. SQLite settings retain a last-valid configuration row, and the diagnostics package contains a consistent database backup. Roll back by stopping the new executable and starting the prior folder with the matching database backup.
+Stop the scheduled task/service, copy the complete new release to a new versioned folder, copy the `data` directory, and start the new version. Keep the prior folder and a separately protected database backup made while the app is stopped. SQLite settings retain a last-valid configuration row; sanitized diagnostics intentionally contain no database backup. Roll back by stopping the new executable and starting the prior folder with the matching protected database backup.

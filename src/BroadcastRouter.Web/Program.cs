@@ -4,13 +4,16 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using BroadcastRouter.Infrastructure;
 using BroadcastRouter.Web.Components;
 using BroadcastRouter.Web.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseWindowsService(options => options.ServiceName = "BroadcastRouter");
@@ -27,6 +30,8 @@ var bindPort = Math.Clamp(persistedSettings.Security.Port, 1, 65535);
 var scheme = persistedSettings.Security.HttpsEnabled ? "https" : "http";
 builder.WebHost.UseUrls($"{scheme}://{bindAddress}:{bindPort}");
 var requireAuthentication = persistedSettings.Security.RequireAuthentication || builder.Configuration.GetValue("Security:RequireAuthentication", false);
+NetworkAccessPolicy.ValidateExposure(bindAddress, requireAuthentication);
+var trustedProxies = NetworkAccessPolicy.ParseTrustedProxies(persistedSettings.Security.TrustedProxies);
 var sessionMinutes = Math.Clamp(persistedSettings.Security.SessionTimeoutMinutes, 5, 1440);
 if (requireAuthentication && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("BROADCASTROUTER_ADMIN_PASSWORD")))
     throw new InvalidOperationException("Authentication is enabled, but BROADCASTROUTER_ADMIN_PASSWORD is not configured. Startup is refused.");
@@ -34,9 +39,16 @@ if (requireAuthentication && string.IsNullOrWhiteSpace(Environment.GetEnvironmen
 builder.Services.AddSingleton(bootstrapStore);
 builder.Services.AddSingleton<RouterCoordinator>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<RouterCoordinator>());
+builder.Services.AddScoped<AuthorizedRouterCommands>();
 builder.Services.AddRazorComponents().AddInteractiveServerComponents(options => options.DetailedErrors = false);
 builder.Services.AddSignalR();
-builder.Services.AddHttpClient();
+builder.Services.AddHttpClient("WowzaValidated");
+builder.Services.AddHttpClient("WowzaInsecure")
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+    });
+builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
 {
     options.LoginPath = "/login";
@@ -54,14 +66,46 @@ builder.Services.AddAuthorization(options =>
         options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
 });
 builder.Services.AddCascadingAuthenticationState();
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("login", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 5,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+});
 
 var app = builder.Build();
 if (!app.Environment.IsDevelopment()) app.UseExceptionHandler("/error", createScopeForErrors: true);
-app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto });
+if (!app.Environment.IsDevelopment() && persistedSettings.Security.HttpsEnabled) app.UseHsts();
+const string RawPeerAddressKey = "BroadcastRouter.RawPeerAddress";
 app.Use(async (context, next) =>
 {
-    var remote = context.Connection.RemoteIpAddress;
-    if (remote is not null && !IPAddress.IsLoopback(remote) && !IsAllowed(remote, persistedSettings.Security.AllowedNetworks))
+    context.Items[RawPeerAddressKey] = context.Connection.RemoteIpAddress;
+    await next();
+});
+if (trustedProxies.Count > 0)
+{
+    var forwardedOptions = new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+        ForwardLimit = 1
+    };
+    forwardedOptions.KnownNetworks.Clear();
+    forwardedOptions.KnownProxies.Clear();
+    foreach (var proxy in trustedProxies) forwardedOptions.KnownProxies.Add(proxy);
+    app.UseForwardedHeaders(forwardedOptions);
+}
+app.Use(async (context, next) =>
+{
+    var rawPeer = context.Items[RawPeerAddressKey] as IPAddress;
+    var effectiveClient = context.Connection.RemoteIpAddress;
+    if (rawPeer is null || effectiveClient is null || !NetworkAccessPolicy.IsClientAllowed(rawPeer, effectiveClient, persistedSettings.Security.AllowedNetworks))
     {
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
         await context.Response.WriteAsync("Client network is not allowed.");
@@ -70,6 +114,8 @@ app.Use(async (context, next) =>
     await next();
 });
 app.UseStaticFiles();
+app.UseRouting();
+app.UseRateLimiter();
 app.UseAntiforgery();
 app.UseAuthentication();
 app.Use(async (context, next) =>
@@ -83,15 +129,15 @@ app.Use(async (context, next) =>
 });
 app.UseAuthorization();
 
-app.MapGet("/health", async (SqliteDataStore store, RouterCoordinator coordinator, CancellationToken cancellationToken) =>
+app.MapGet("/health", async (SqliteDataStore store, CancellationToken cancellationToken) =>
 {
     var integrity = await store.IntegrityCheckAsync(cancellationToken);
-    var snapshot = coordinator.Snapshot;
-    return Results.Ok(new { status = integrity == "ok" ? "healthy" : "degraded", database = integrity, snapshot.UpdatedAt, snapshot.SimulationMode, snapshot.EmergencyStopped });
+    return Results.Ok(new { status = integrity == "ok" ? "healthy" : "degraded" });
 }).AllowAnonymous();
 
-app.MapPost("/auth/login", async (HttpContext context) =>
+app.MapPost("/auth/login", async (HttpContext context, IAntiforgery antiforgery) =>
 {
+    if (!await IsAntiforgeryValidAsync(context, antiforgery)) return Results.BadRequest();
     if (!requireAuthentication) return Results.Redirect("/");
     var form = await context.Request.ReadFormAsync();
     var username = form["username"].ToString();
@@ -104,42 +150,43 @@ app.MapPost("/auth/login", async (HttpContext context) =>
     var claims = new[] { new Claim(ClaimTypes.Name, username), new Claim(ClaimTypes.Role, isAdmin ? "Administrator" : "Operator") };
     await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme)));
     return Results.Redirect("/");
-}).AllowAnonymous().DisableAntiforgery();
+}).AllowAnonymous().RequireRateLimiting("login");
 
-app.MapPost("/auth/logout", async (HttpContext context) =>
+app.MapPost("/auth/logout", async (HttpContext context, IAntiforgery antiforgery) =>
 {
+    if (!await IsAntiforgeryValidAsync(context, antiforgery)) return Results.BadRequest();
     await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
     return Results.Redirect("/login");
-}).DisableAntiforgery();
+});
 
 var diagnosticsEndpoint = app.MapGet("/diagnostics/package", async (SqliteDataStore store, RouterCoordinator coordinator, CancellationToken cancellationToken) =>
 {
     var temp = Path.Combine(Path.GetTempPath(), $"BroadcastRouter-diagnostics-{Guid.NewGuid():N}.zip");
-    var backup = Path.Combine(Path.GetTempPath(), $"BroadcastRouter-db-{Guid.NewGuid():N}.db");
-    await store.BackupAsync(backup, cancellationToken);
+    FileStream? file = null;
     try
     {
-        await using (var file = new FileStream(temp, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+        file = new FileStream(temp, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 64 * 1024,
+            FileOptions.Asynchronous | FileOptions.DeleteOnClose);
+        using (var archive = new ZipArchive(file, ZipArchiveMode.Create, leaveOpen: true))
         {
-            using var archive = new ZipArchive(file, ZipArchiveMode.Create, leaveOpen: true);
-            WriteJson(archive, "runtime-snapshot.json", coordinator.Snapshot);
-            WriteJson(archive, "sanitized-settings.json", coordinator.GetSanitizedSettings());
-            WriteJson(archive, "recent-logs.json", await store.ReadLogsAsync(limit: 1000, cancellationToken: cancellationToken));
+            WriteJson(archive, "runtime-snapshot.json", DiagnosticSanitizer.SanitizeSnapshot(coordinator.Snapshot));
+            WriteJson(archive, "sanitized-settings.json", DiagnosticSanitizer.SanitizeSettings(coordinator.GetSettings()));
+            WriteJson(archive, "recent-logs.json", DiagnosticSanitizer.SanitizeLogs(await store.ReadLogsAsync(limit: 1000, cancellationToken: cancellationToken)));
             WriteText(archive, "database-integrity.txt", await store.IntegrityCheckAsync(cancellationToken));
-            archive.CreateEntryFromFile(backup, "broadcast-router.db");
         }
-        var bytes = await File.ReadAllBytesAsync(temp, cancellationToken);
-        return Results.File(bytes, "application/zip", $"BroadcastRouter-diagnostics-{DateTime.UtcNow:yyyyMMdd-HHmmss}.zip");
+        file.Position = 0;
+        return Results.File(file, "application/zip", $"BroadcastRouter-diagnostics-{DateTime.UtcNow:yyyyMMdd-HHmmss}.zip");
     }
-    finally
+    catch
     {
+        if (file is not null) await file.DisposeAsync();
         TryDelete(temp);
-        TryDelete(backup);
+        throw;
     }
 });
-if (requireAuthentication) diagnosticsEndpoint.RequireAuthorization(new AuthorizeAttribute { Roles = "Administrator" });
+diagnosticsEndpoint.RequireAuthorization(new AuthorizeAttribute { Roles = "Administrator" });
 
-app.MapHub<StatusHub>("/hubs/status");
+app.MapHub<StatusHub>("/hubs/status").RequireAuthorization();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 app.Run();
 
@@ -162,22 +209,8 @@ static void WriteText(ZipArchive archive, string name, string value)
 
 static void TryDelete(string path) { try { File.Delete(path); } catch { } }
 
-static bool IsAllowed(IPAddress address, string configured)
+static async Task<bool> IsAntiforgeryValidAsync(HttpContext context, IAntiforgery antiforgery)
 {
-    foreach (var token in configured.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-    {
-        var parts = token.Split('/', 2);
-        if (!IPAddress.TryParse(parts[0], out var network)) continue;
-        var prefix = parts.Length == 2 && int.TryParse(parts[1], out var value) ? value : network.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128;
-        var candidate = address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
-        var normalizedNetwork = network.IsIPv4MappedToIPv6 ? network.MapToIPv4() : network;
-        var left = candidate.GetAddressBytes();
-        var right = normalizedNetwork.GetAddressBytes();
-        if (left.Length != right.Length || prefix < 0 || prefix > left.Length * 8) continue;
-        var fullBytes = prefix / 8;
-        var remainingBits = prefix % 8;
-        if (!left.AsSpan(0, fullBytes).SequenceEqual(right.AsSpan(0, fullBytes))) continue;
-        if (remainingBits == 0 || (left[fullBytes] & (byte)(0xff << (8 - remainingBits))) == (right[fullBytes] & (byte)(0xff << (8 - remainingBits)))) return true;
-    }
-    return false;
+    try { await antiforgery.ValidateRequestAsync(context); return true; }
+    catch (AntiforgeryValidationException) { return false; }
 }
