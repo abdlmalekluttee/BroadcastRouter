@@ -2,7 +2,7 @@
 @rendermode InteractiveServer
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
-@inject FfplayPreviewSupervisor PreviewSupervisor
+@inject BrowserPreviewSupervisor PreviewSupervisor
 @inject AuthorizedPreviewCommands PreviewCommands
 @implements IDisposable
 
@@ -10,17 +10,33 @@
 <div class="page-head"><div><h1>Sources</h1><p class="lead">Wowza-discovered publishers and explicitly configured RTSP inputs.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" @onclick='() => Commands.ExecuteAsync("rescan")'>Refresh discovery</button><a class="btn" href="/settings#manual">Add manual RTSP</a></div></Authorized></AuthorizeView></div>
 @if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger">@error</div> }
 <div class="panel preview-panel">
-    <div class="panel-head"><div><h2>Large desktop preview</h2><span class="secondary-text">FFplay opens a 1440×900 low-latency monitor on this Windows desktop. The real audio VU overlay is rendered into the preview video.</span></div><div class="actions"><BroadcastRouter.Web.Components.Shared.StateBadge Value="preview.State" />@if(preview.State is PreviewState.Running or PreviewState.Starting){<button class="btn danger" disabled="@previewBusy" @onclick="StopPreview">Stop preview</button>}</div></div>
+    <div class="panel-head"><div><h2>Embedded browser preview</h2><span class="secondary-text">A compact 720×450 low-latency player stays inside this page. The audio VU meter is rendered into the video, with confidence audio controlled from the player.</span></div><div class="actions"><BroadcastRouter.Web.Components.Shared.StateBadge Value="preview.State" />@if(preview.State is PreviewState.Running or PreviewState.Starting){<button class="btn danger" disabled="@previewBusy" @onclick="StopPreview">Stop preview</button>}</div></div>
     <div class="preview-monitor">
-        <div class="preview-screen @(preview.State == PreviewState.Running ? "active" : "")">
-            <div class="preview-screen-content"><span class="preview-kicker">FFPLAY DESKTOP MONITOR</span><h2>@(preview.SourceName ?? "No source selected")</h2><p>@preview.PlaybackStatistics</p>@if(preview.AudioMeterEnabled){<div class="preview-vu-label"><span>VU</span><span>Peak + dB values rendered in the FFplay window</span></div>}</div>
+        <div class="preview-player-column">
+            @if (preview.State == PreviewState.Running && !string.IsNullOrWhiteSpace(preview.StreamToken))
+            {
+                <div class="preview-player-shell">
+                    <video @key="preview.StreamToken" class="preview-video" controls autoplay playsinline preload="none" aria-label="Live source preview">
+                        <source src="@PreviewStreamUrl()" type="video/mp4" />
+                        This browser cannot play the embedded H.264 preview.
+                    </video>
+                </div>
+                <div class="preview-audio-hint">Use the player controls to mute, unmute, or adjust confidence audio.</div>
+            }
+            else
+            {
+                <div class="preview-screen">
+                    <div class="preview-screen-content"><span class="preview-kicker">BROWSER MONITOR</span><h2>@(preview.SourceName ?? "No source selected")</h2><p>@preview.PlaybackStatistics</p></div>
+                </div>
+            }
         </div>
         <div class="preview-stat-grid">
             <div class="preview-stat"><span>State</span><strong>@preview.State</strong></div>
             <div class="preview-stat"><span>Video</span><strong>@preview.VideoSummary</strong></div>
             <div class="preview-stat"><span>Audio</span><strong>@preview.AudioSummary</strong></div>
             <div class="preview-stat"><span>Uptime</span><strong>@PreviewUptime()</strong></div>
-            <div class="preview-stat"><span>Owned processes</span><strong>@ProcessSummary()</strong></div>
+            <div class="preview-stat"><span>Owned process</span><strong>@ProcessSummary()</strong></div>
+            <div class="preview-stat"><span>VU meter</span><strong>@(preview.AudioMeterEnabled ? "Peak + dB overlay" : "No audio track")</strong></div>
         </div>
         @if (!string.IsNullOrWhiteSpace(preview.ErrorMessage)) { <div class="notice danger preview-error">@preview.ErrorMessage</div> }
     </div>
@@ -35,7 +51,7 @@
         <td>@(source.Media is null ? "—" : $"{source.Media.VideoCodec} · {source.Media.Width}×{source.Media.Height} · {FormatRate(source.Media)}")</td>
         <td>@(source.Media?.AudioCodec is null ? "None" : $"{source.Media.AudioCodec} · {source.Media.AudioSampleRate} Hz · {source.Media.AudioChannels} ch")</td>
         <td><BroadcastRouter.Web.Components.Shared.StateBadge Value="source.State" /></td><td>@source.Priority</td><td>@source.LastObservedAt?.ToLocalTime().ToString("HH:mm:ss")</td>
-        <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn small primary" disabled="@(route?.State is RouteState.Running or RouteState.Starting)" @onclick='() => Run("start", source.Identity.Value)'>Route</button><button class="btn small" disabled="@(previewBusy || source.Media is null)" title="Open a large FFplay preview with audio VU meter" @onclick='() => StartPreview(source.Identity.Value)'>Preview</button><button class="btn small" @onclick='() => Run("reprobe", source.Identity.Value)'>Reprobe</button></div></Authorized></AuthorizeView></td></tr>
+        <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn small primary" disabled="@(route?.State is RouteState.Running or RouteState.Starting)" @onclick='() => Run("start", source.Identity.Value)'>Route</button><button class="btn small" disabled="@(previewBusy || source.Media is null)" title="Play an embedded browser preview with audio VU meter" @onclick='() => StartPreview(source.Identity.Value)'>Preview</button><button class="btn small" @onclick='() => Run("reprobe", source.Identity.Value)'>Reprobe</button></div></Authorized></AuthorizeView></td></tr>
 }
 @if (snapshot.Sources.Count == 0) { <tr><td colspan="9"><div class="empty-state">No active sources discovered. Check Wowza settings or add a manual RTSP source.</div></td></tr> }
 </tbody></table></div></div>
@@ -66,7 +82,8 @@
         finally { previewBusy = false; }
     }
     private string PreviewUptime() => preview.StartedAt is null ? "—" : FormatDuration(DateTimeOffset.UtcNow - preview.StartedAt.Value);
-    private string ProcessSummary() => preview.ProducerProcessId is null || preview.PlayerProcessId is null ? "—" : $"FFmpeg {preview.ProducerProcessId} · FFplay {preview.PlayerProcessId}";
+    private string ProcessSummary() => preview.ProducerProcessId is null ? "—" : $"FFmpeg {preview.ProducerProcessId}";
+    private string PreviewStreamUrl() => $"/preview/stream/{preview.StreamToken}";
     private static string FormatDuration(TimeSpan value) => value.TotalHours >= 1 ? $"{(int)value.TotalHours:00}:{value.Minutes:00}:{value.Seconds:00}" : $"{value.Minutes:00}:{value.Seconds:00}";
     public void Dispose() { Coordinator.Changed -= Changed; PreviewSupervisor.Changed -= PreviewChanged; }
     private static string Sanitize(Uri value) => LogRedactor.RedactForDiagnostics(value.AbsoluteUri);

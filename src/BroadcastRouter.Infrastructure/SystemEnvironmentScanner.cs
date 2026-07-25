@@ -14,8 +14,7 @@ public static class SystemEnvironmentScanner
         return new MediaToolPaths
         {
             FfmpegPath = FindExecutable("ffmpeg.exe", directories, cancellationToken) ?? "",
-            FfprobePath = FindExecutable("ffprobe.exe", directories, cancellationToken) ?? "",
-            FfplayPath = FindExecutable("ffplay.exe", directories, cancellationToken) ?? ""
+            FfprobePath = FindExecutable("ffprobe.exe", directories, cancellationToken) ?? ""
         };
     }, cancellationToken);
 
@@ -26,12 +25,11 @@ public static class SystemEnvironmentScanner
         {
             FfmpegPath = ExistingOrDetected(configured.FfmpegPath, detected.FfmpegPath),
             FfprobePath = ExistingOrDetected(configured.FfprobePath, detected.FfprobePath),
-            FfplayPath = ExistingOrDetected(configured.FfplayPath, detected.FfplayPath)
+            FfplayPath = configured.FfplayPath
         };
         var findings = new List<string>();
         await ReportToolAsync("FFmpeg", tools.FfmpegPath, findings, cancellationToken).ConfigureAwait(false);
         await ReportToolAsync("FFprobe", tools.FfprobePath, findings, cancellationToken).ConfigureAwait(false);
-        await ReportToolAsync("FFplay", tools.FfplayPath, findings, cancellationToken).ConfigureAwait(false);
 
         if (File.Exists(tools.FfmpegPath))
         {

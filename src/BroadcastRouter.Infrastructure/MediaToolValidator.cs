@@ -16,6 +16,8 @@ public static class MediaToolValidator
         var filters = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-filters"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         var pixelFormats = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-pix_fmts"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         var codecs = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-codecs"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        var encoders = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-encoders"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        var muxers = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-muxers"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         var environment = await SystemEnvironmentScanner.ScanAsync(paths, cancellationToken).ConfigureAwait(false);
 
         var ffprobeVersion = ffprobe.CombinedOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
@@ -23,6 +25,11 @@ public static class MediaToolValidator
         var missingFilters = requiredFilters.Where(filter => !ContainsTool(filters.CombinedOutput, filter)).ToArray();
         var hasPixelFormat = ContainsTool(pixelFormats.CombinedOutput, "uyvy422");
         var hasRawVideo = ContainsTool(codecs.CombinedOutput, "rawvideo");
+        var previewFilters = new[] { "scale", "pad", "overlay", "showvolume" };
+        var missingPreviewFilters = previewFilters.Where(filter => !ContainsTool(filters.CombinedOutput, filter)).ToArray();
+        var hasH264Encoder = ContainsTool(encoders.CombinedOutput, "libx264");
+        var hasAacEncoder = ContainsTool(encoders.CombinedOutput, "aac");
+        var hasMp4Muxer = ContainsTool(muxers.CombinedOutput, "mp4");
         var driver = environment.Findings.Any(x => x.StartsWith("PASS  Blackmagic Desktop Video", StringComparison.Ordinal));
 
         findings.Add(ffmpeg.ExecutableFound ? $"PASS: {ffmpeg.VersionLine}" : "FAIL: FFmpeg did not start.");
@@ -32,6 +39,12 @@ public static class MediaToolValidator
         findings.Add(missingFilters.Length == 0 ? "PASS: Required filters scale, fps, and yadif are available." : $"FAIL: Missing filters: {string.Join(", ", missingFilters)}.");
         findings.Add(hasPixelFormat ? "PASS: uyvy422 pixel format is available." : "FAIL: uyvy422 pixel format is unavailable.");
         findings.Add(hasRawVideo ? "PASS: rawvideo codec support is available." : "FAIL: rawvideo codec support is unavailable.");
+        findings.Add(missingPreviewFilters.Length == 0 && hasH264Encoder && hasAacEncoder && hasMp4Muxer
+            ? "PASS: Embedded preview filters, H.264/AAC encoders, and MP4 output are available."
+            : $"WARN: Embedded preview is unavailable or incomplete. Missing: {string.Join(", ", missingPreviewFilters
+                .Concat(hasH264Encoder ? [] : ["libx264 encoder"])
+                .Concat(hasAacEncoder ? [] : ["AAC encoder"])
+                .Concat(hasMp4Muxer ? [] : ["MP4 muxer"]))}.");
         findings.Add(driver ? "PASS: Blackmagic Desktop Video is installed." : "FAIL: Blackmagic Desktop Video was not detected.");
 
         var valid = ffmpeg.ExecutableFound && ffprobe.Started && ffprobe.ExitCode == 0 && ffmpeg.HasDeckLinkOutput

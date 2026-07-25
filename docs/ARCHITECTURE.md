@@ -37,11 +37,11 @@ The executable supports Windows Service hosting, but service/Session 0 DeckLink 
 
 FFmpeg receives individually tokenized arguments and never a shell command. The command deliberately omits `-b:v` for uncompressed DeckLink output. The supervisor captures stdout/stderr asynchronously, tracks PID, frame, FPS, speed, output time, drop/duplicate counters, last progress, uptime, exit code, and recent redacted errors. Graceful `q` shutdown is followed by process-tree termination after the configured deadline. Permanent authentication/codec/format/configuration failures require operator action; network/process failures retry.
 
-## Desktop preview
+## Embedded browser preview
 
-Preview is an administrator-only, application-owned operation and is independent of DeckLink route ownership. One preview may run at a time. A tokenized FFmpeg producer opens the selected RTSP source, scales it into a 1440×900 monitor canvas, renders a real `showvolume` peak/dB audio meter when audio is present, encodes a local MPEG-TS pipe, and feeds a tokenized FFplay process. The server owns both exact process objects, drains their streams, stops the pair when either side exits, and never searches for or terminates unrelated FFmpeg/FFplay processes. The browser displays status and statistics but does not own the preview lifetime.
+Preview is an administrator-only, application-owned operation and is independent of DeckLink route ownership. One preview may run at a time. A tokenized FFmpeg producer opens the selected RTSP source, scales it into a compact 720×450 canvas, renders a real `showvolume` peak/dB audio meter when audio is present, and emits fragmented H.264/AAC MP4 directly to an authenticated browser endpoint. A random per-session token prevents stale players from attaching to a replacement preview, and the endpoint is explicitly non-cacheable.
 
-Desktop preview requires an interactive Windows logon. It fails closed in Windows Service/Session 0 mode and is not a substitute for physical DeckLink confidence monitoring.
+The server owns the exact FFmpeg process object, drains progress/errors, and stops that process when the operator stops preview, the player disconnects, the process exits, or the application shuts down. It never searches for or terminates unrelated FFmpeg processes. Browser preview does not require FFplay or an interactive desktop, but it is not a substitute for physical DeckLink confidence monitoring.
 
 ## Known production risks
 
@@ -50,4 +50,4 @@ Desktop preview requires an interactive Windows logon. It fails closed in Window
 - Wowza REST response shapes and permissions vary by version; validate each server with the connection test.
 - Windows Service Session 0 behavior depends on Blackmagic driver/device profile and must be tested before service deployment.
 - Freeze-frame standby requires a configured image. Automatic capture of the last decoded frame is not in this release.
-- Desktop preview adds a separate decode/encode/playback workload. Validate CPU/GPU headroom during the multi-port soak and stop preview when it is not required.
+- Browser preview adds a separate decode/encode workload. Validate CPU/GPU headroom during the multi-port soak and stop preview when it is not required.

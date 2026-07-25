@@ -3,10 +3,10 @@
 ## Recommended: dedicated broadcast user at logon
 
 1. Install the matching Blackmagic Desktop Video release and verify each output in Desktop Video Setup/Media Express.
-2. Obtain a trusted prebuilt 64-bit FFmpeg package that includes DeckLink, FFprobe, FFplay, and the `showvolume`, `overlay`, `scale`, and `pad` filters. Do not place it inside the BroadcastRouter release folder; upgrades should be explicit.
+2. Obtain a trusted prebuilt 64-bit FFmpeg package that includes DeckLink, FFprobe, H.264/AAC encoding, fragmented MP4 output, and the `showvolume`, `overlay`, `scale`, and `pad` filters. Do not place it inside the BroadcastRouter release folder; upgrades should be explicit.
 3. Extract `BroadcastRouter-production-win-x64-<version>.zip` to a versioned directory writable only by administrators and the dedicated broadcast account.
 4. Sign in as that account and run `BroadcastRouter.Server.exe` once. Open `http://127.0.0.1:5080`.
-5. In **Settings > Media Tools**, select `ffmpeg.exe`, `ffprobe.exe`, and `ffplay.exe`, save, and require every routing validation gate to pass. Preview additionally requires FFplay and the preview filters.
+5. In **Settings > Media Tools**, select `ffmpeg.exe` and `ffprobe.exe`, save, and require every routing validation gate to pass. Embedded preview additionally requires the H.264/AAC, fragmented MP4, and preview-filter capabilities listed above.
 6. Configure and test Wowza, name the physical outputs, assign groups/reserved ports, create presets/rules, and test one output at a time.
 7. Run `scripts\Install-InteractiveLogon.ps1` as the broadcast account. It creates a normal per-user Task Scheduler entry that starts the server when that user logs in; elevation is not required.
 8. Perform the soak plan in `PRODUCTION-VALIDATION.md` before enabling automatic routing.
@@ -17,7 +17,7 @@ Data and DPAPI credentials belong to the Windows account that runs the executabl
 
 The executable includes normal Windows Service lifetime integration. `scripts\Install-WindowsService.ps1` creates an opt-in Automatic (Delayed Start) service. This proves hosting only; it does not prove DeckLink works in Session 0. Use it only in a lab, run the hardware validation plan, and revert to interactive-logon hosting if output enumeration or playout differs.
 
-The FFplay preview window is intentionally unavailable in Windows Service/Session 0 mode. Use the recommended interactive-logon deployment when local desktop preview is required.
+The embedded browser preview has no desktop-window dependency and can be served by the same host in service mode. This does not change the requirement to physically validate DeckLink behavior in Session 0.
 
 ## LAN and HTTPS
 
