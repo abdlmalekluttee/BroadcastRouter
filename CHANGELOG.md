@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 1.2.1 — 2026-07-25
+
+- Replaced the cramped fixed-width output-preset table with responsive labeled editor cards.
+- Added cache-busted application styles so upgraded layouts appear without a manual browser cache clear.
+- Added an administrator-controlled 1440×900 FFplay desktop preview with a real FFmpeg `showvolume` audio VU overlay.
+- Added a large preview status surface with source media, uptime, owned-process IDs, and FFplay playback statistics.
+- Added application-owned preview process supervision that stops only the FFmpeg/FFplay pair started by BroadcastRouter.
+- Corrected Boolean scan option values so interlaced presets display accurately.
+- Added tokenization and audio/no-audio preview command regression coverage.
+- Extended the production verifier with an optional bounded live-preview start/stop check.
+
 ## 1.2.0 — 2026-07-25
 
 - Released DeckLink reservations when FFmpeg cannot start and added grace-based release for missing unlocked sources.

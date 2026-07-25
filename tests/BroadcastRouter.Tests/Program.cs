@@ -39,6 +39,7 @@ var tests = new (string Name, Action Body)[]
     ("Retry attempt cap is opt-in", RetryAttemptCapIsOptIn),
     ("FFmpeg command uses argument list", FfmpegCommandUsesArgumentList),
     ("FFmpeg display redacts credentials", FfmpegDisplayRedactsCredentials),
+    ("FFplay preview is tokenized with VU overlay", FfplayPreviewIsTokenizedWithVuOverlay),
     ("FFmpeg progress parsing", FfmpegProgressIsParsed),
     ("FFmpeg stall detection", FfmpegStallIsDetected),
     ("FFmpeg first-progress timeout", FfmpegFirstProgressTimeoutIsDetected),
@@ -274,6 +275,39 @@ static void FfmpegDisplayRedactsCredentials()
     var display = FfmpegCommandBuilder.ToRedactedDisplay(plain);
     True(!display.Contains("secret", StringComparison.Ordinal));
     True(display.Contains("***", StringComparison.Ordinal));
+}
+
+static void FfplayPreviewIsTokenizedWithVuOverlay()
+{
+    var source = new DiscoveredSource(
+        new SourceIdentity("MAIN", "live", "_definst_", "studio one"),
+        "Studio Preview",
+        new Uri("rtsp://127.0.0.1:8698/live/studio%20one"),
+        SourceState.Ready,
+        100,
+        new MediaProperties("h264", "aac", 1920, 1080, 25, 5_000_000, 48_000, 2, true, false));
+    var plan = FfplayPreviewCommandBuilder.Build(new MediaToolPaths
+    {
+        FfmpegPath = @"C:\Media\ffmpeg.exe",
+        FfplayPath = @"C:\Media\ffplay.exe"
+    }, source);
+
+    True(!plan.Producer.UseShellExecute && !plan.Player.UseShellExecute);
+    True(plan.Producer.ArgumentList.Contains(source.RtspUri.AbsoluteUri));
+    True(plan.Producer.ArgumentList.Any(argument => argument.Contains("showvolume", StringComparison.Ordinal)));
+    True(plan.Producer.ArgumentList.Any(argument => argument.Contains("overlay=20:820", StringComparison.Ordinal)));
+    True(plan.Player.ArgumentList.Contains("1440") && plan.Player.ArgumentList.Contains("900"));
+    True(plan.Player.ArgumentList.Contains("pipe:0"));
+    True(plan.Player.ArgumentList.Any(argument => argument.Contains("Studio Preview", StringComparison.Ordinal)));
+
+    var videoOnly = source with { Media = source.Media! with { AudioCodec = null, AudioSampleRate = null, AudioChannels = null } };
+    var videoOnlyPlan = FfplayPreviewCommandBuilder.Build(new MediaToolPaths
+    {
+        FfmpegPath = @"C:\Media\ffmpeg.exe",
+        FfplayPath = @"C:\Media\ffplay.exe"
+    }, videoOnly);
+    True(!videoOnlyPlan.Producer.ArgumentList.Any(argument => argument.Contains("showvolume", StringComparison.Ordinal)));
+    True(videoOnlyPlan.Producer.ArgumentList.Contains("-an"));
 }
 
 static void FfmpegProgressIsParsed()

@@ -14,6 +14,10 @@ var options = args.Chunk(2)
 
 var databasePath = Required(options, "--database");
 options.TryGetValue("--ffprobe", out var ffprobePath);
+var previewSeconds = options.TryGetValue("--preview-seconds", out var previewSecondsText)
+    && int.TryParse(previewSecondsText, out var parsedPreviewSeconds)
+        ? Math.Clamp(parsedPreviewSeconds, 1, 30)
+        : 0;
 
 var store = new SqliteDataStore(databasePath);
 await store.InitializeAsync();
@@ -103,12 +107,15 @@ try
     }
 
     var probes = new List<object>();
+    DiscoveredSource? previewSource = null;
     if (sources.Count > 0 && !string.IsNullOrWhiteSpace(ffprobePath) && File.Exists(ffprobePath))
     {
         var probe = new FfprobeStreamProbe(ffprobePath, TimeSpan.FromSeconds(12));
         foreach (var source in sources)
         {
             var media = await probe.ProbeAsync(source.RtspUri, CancellationToken.None);
+            if (previewSource is null && media.Opened && media.Media is not null)
+                previewSource = source with { Media = media.Media };
             probes.Add(new
             {
                 stream = source.Identity.StreamName,
@@ -130,6 +137,26 @@ try
         : probes.Count == 0
             ? "FFprobe was unavailable."
             : $"Probed {probes.Count} active stream(s).";
+
+    if (previewSeconds > 0)
+    {
+        if (previewSource is null)
+            throw new InvalidOperationException("A successfully probed source is required for the live preview check.");
+
+        await using var preview = new FfplayPreviewSupervisor();
+        await preview.StartAsync(previewSource, settings.MediaTools);
+        var running = preview.Snapshot;
+        await Task.Delay(TimeSpan.FromSeconds(previewSeconds));
+        await preview.StopAsync();
+        result["previewCheck"] = new
+        {
+            started = running.State == PreviewState.Running,
+            audioMeterEnabled = running.AudioMeterEnabled,
+            producerProcessStarted = running.ProducerProcessId.HasValue,
+            playerProcessStarted = running.PlayerProcessId.HasValue,
+            stoppedCleanly = preview.Snapshot.State == PreviewState.Stopped
+        };
+    }
 
     Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
 }

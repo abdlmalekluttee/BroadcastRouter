@@ -3,7 +3,7 @@
 Review date: 2026-07-25  
 Review branch: `codex/functional-gui-hardening`  
 Reviewed baseline: `0a03b25` (`v1.1.1`, `origin/main`)
-Resulting release version: `1.2.0`
+Resulting release version: `1.2.1`
 
 ## Executive summary
 
@@ -58,6 +58,8 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-014 | High | Host exposure / proxy trust | `src/BroadcastRouter.Web/Program.cs`; `src/BroadcastRouter.Infrastructure/NetworkAccessPolicy.cs` | A non-loopback bind with authentication disabled granted anonymous Administrator, while unrestricted forwarded headers could alter the address used by the allowlist. | **Fixed.** Anonymous non-loopback startup is refused; forwarded headers are processed only from exact configured proxies; forwarded loopback can never use the direct-loopback shortcut. Regression: `Network exposure and proxy trust are fail-closed`. |
 | BR-015 | High | Locked route safety | `src/BroadcastRouter.Web/Services/RouterCoordinator.cs`; `src/BroadcastRouter.Application/RouteControlSafety.cs` | Normal stop could terminate FFmpeg before discovering that a locked lease could not be released. | **Fixed.** Lock authorization is checked before queue, process, lease, or route state mutation. Regression: `Locked route stop is refused before release`. |
 | BR-016 | Medium | Concurrency / supervision | `src/BroadcastRouter.Web/Services/RouterCoordinator.cs`; `src/BroadcastRouter.Infrastructure/FfmpegProgressParser.cs` | Duplicate starts could interleave and a live child that never emitted its first progress record could remain `Starting` indefinitely. | **Fixed.** Per-source async gates deduplicate active starts, emergency stop is rechecked during launch, and a configurable first-progress deadline triggers owned-process cleanup/retry. |
+| BR-017 | Medium | Responsive GUI | `src/BroadcastRouter.Web/Components/Pages/RulesPresets.razor`; `wwwroot/app.css`; `Components/App.razor` | The fixed-width preset table exceeded the available viewport and compressed inline controls into overlapping text/fields. Unversioned CSS could retain the broken layout after upgrade. | **Fixed.** Presets use responsive labeled editor cards and versioned stylesheets. Browser checks at 1920×1080 and 768×1024 found zero document/card overflow and zero controls outside their cards. |
+| BR-018 | Medium | Operator monitoring | `src/BroadcastRouter.Infrastructure/FfplayPreviewSupervisor.cs`; `Components/Pages/Sources.razor` | Operators had no safe local confidence preview, VU meter, or dedicated preview status surface. | **Fixed.** Added one-at-a-time administrator FFplay preview, FFmpeg `showvolume` overlay, 1440×900 window, tokenized arguments, exact process ownership, large UI status/statistics, audio/no-audio handling, and Session 0 refusal. Regression: `FFplay preview is tokenized with VU overlay`. |
 
 ## GUI review
 
@@ -66,10 +68,10 @@ The failed documented web start is an environmental port conflict, not an applic
 | Login | Token rendered; tokenless POST returns 400; invalid credential with valid token returns to `?failed=1`; controls labeled. |
 | Dashboard | Production/simulation and hardware-block status are explicit text; emergency stop confirmed and busy-guarded. |
 | Wowza Servers | Controls have accessible names; password remains blank-to-preserve; no network scanning action exists; removal now requires confirmation and explains grace-period impact. |
-| Sources | Credential/internal-address-safe RTSP display; route/reprobe actions visible only to Administrator. |
+| Sources | Credential/internal-address-safe RTSP display; route/reprobe actions visible only to Administrator. Added large FFplay preview control, video/audio/uptime/process/playback statistics, real audio VU overlay, busy guard, and explicit stop. |
 | DeckLink Outputs | Identity-confidence warning is prominent; rescan remains non-destructive. |
 | Routes / Matrix | Accessible selects; emergency and reassign confirmation; locked stop refusal; busy guard. A richer modal could explain affected routes/ports before reassign. |
-| Rules & Presets | All generated controls named; bounded regex validation retained; rule removal is confirmed and referenced presets cannot be removed until dependencies are changed. |
+| Rules & Presets | All generated controls named; bounded regex validation retained; rule removal is confirmed and referenced presets cannot be removed until dependencies are changed. Output presets are responsive cards instead of an overlapping wide table; interlaced Boolean values render correctly. |
 | Logs & Diagnostics | Package contents now accurately state there is no database copy; logged IPs/credentials are redacted. |
 | Settings | All current and generated port/manual controls named; strict validation preserves prior active settings; bind/authentication/HTTPS/allowlist/proxy changes require a disruption warning confirmation. |
 | Error | Sanitized generic error content; no detailed exception exposed. |
@@ -78,7 +80,7 @@ Responsive checks passed without document-level horizontal overflow at 1366×768
 
 ## Test coverage
 
-Baseline: 37/37 tests. Final: 52/52 tests.
+Baseline: 37/37 tests. Version 1.2.0: 52/52. Final: 53/53 tests.
 
 Added coverage:
 
@@ -97,6 +99,7 @@ Added coverage:
 13. No-first-progress timeout classification.
 14. Progressive/interlaced FFprobe field-order parsing.
 15. Anonymous exposure, trusted-proxy, and forwarded-loopback fail-closed behavior.
+16. Tokenized FFmpeg/FFplay preview commands, real VU filter inclusion, 1440×900 sizing, and video-only fallback.
 
 Expanded existing credential/log redaction assertions. HTTP integration checks separately verified antiforgery and diagnostics authorization.
 
@@ -113,10 +116,11 @@ Still requiring integration or hardware coverage:
 
 | Validation | Status |
 |---|---|
-| Restore, Release build, tests | **Verified automatically**: clean; 52/52 at the second-pass checkpoint. |
+| Restore, Release build, tests | **Verified automatically**: clean; 53/53 after the preview/responsive update. |
 | Package vulnerability audit | **Verified automatically**: no vulnerable packages reported. |
 | Atomic single-port ownership | **Verified automatically** with 500 concurrent contenders. |
-| Local browser pages/viewports | **Verified locally** in isolated simulation on port 5180; no console errors or document overflow; zero unlabeled controls. |
+| Local browser pages/viewports | **Verified locally** in isolated simulation on port 5180; stable-session console clean; zero document/preset-card overflow at 1920×1080 and 768×1024; zero controls outside cards. |
+| Preview filter graph | **Verified locally** with generated video+stereo audio through the exact `showvolume`/overlay graph. Real RTSP preview still requires an active publisher. |
 | Authentication/antiforgery/diagnostics gate | **Verified locally** in isolated authenticated modes on ports 5181/5183, including operator denial and login throttling. |
 | Real Wowza REST and RTSP | **Requires a real Wowza server**; not certified in this pass. |
 | DeckLink enumeration and output | **Requires DeckLink hardware**, matching Desktop Video drivers, and DeckLink-enabled FFmpeg. |
@@ -130,9 +134,9 @@ Still requiring integration or hardware coverage:
 ## Files changed
 
 - Safety policies: `RouteControlSafety.cs`, `RouteLeaseRetentionPolicy.cs`, `RouteStartFailureRecovery.cs`.
-- Infrastructure: `DiagnosticSanitizer.cs`, `NetworkAccessPolicy.cs`, FFprobe cleanup, redaction, SQLite validation/dependencies.
-- Web: coordinator recovery/emergency handling, authentication/diagnostics/health endpoints, and targeted Razor accessibility/operator safeguards.
-- Tests: nine new regression cases and expanded redaction coverage.
+- Infrastructure: `DiagnosticSanitizer.cs`, `NetworkAccessPolicy.cs`, FFprobe cleanup, redaction, SQLite validation/dependencies, and `FfplayPreviewSupervisor.cs`.
+- Web: coordinator recovery/emergency handling, authentication/diagnostics/health endpoints, responsive preset editors, cache-busted styles, large preview status UI, and targeted Razor accessibility/operator safeguards.
+- Tests: ten new regression cases and expanded redaction coverage.
 - Documentation: README, security, architecture, deployment, changelog, and this report.
 
 ## Commands and results
@@ -146,7 +150,7 @@ dotnet run --no-build --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.cs
 git diff --check
 ```
 
-Final results: restore passed; Release build passed with 0 warnings/errors; 52/52 tests passed; vulnerability audit and .NET 8 servicing audit were clean; isolated simulation/authenticated hosts passed page, authorization, antiforgery, diagnostic-streaming, and login-throttling checks; `git diff --check` reported no whitespace errors. The self-contained `win-x64` 1.2.0 package built successfully with file version `1.2.0.0`, a generated SHA-256 checksum, and no database/diagnostics archive.
+Final results: restore passed; Release build passed with 0 warnings/errors; 53/53 tests passed; vulnerability audit and .NET 8 servicing audit were clean; isolated simulation/authenticated hosts passed page, authorization, antiforgery, diagnostic-streaming, login-throttling, responsive-layout, and preview-filter checks; `git diff --check` reported no whitespace errors. The self-contained `win-x64` 1.2.1 package built successfully with file version `1.2.1.0`, a generated SHA-256 checksum, and no database/diagnostics archive.
 
 ## Recommended follow-up
 
