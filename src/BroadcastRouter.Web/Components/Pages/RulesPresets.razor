@@ -17,12 +17,25 @@
 @if(settings.Rules.Count == 0){<tr><td colspan="9"><div class="empty-state">No rule matches means automatic assignment with the first preset.</div></td></tr>}
 </tbody></table></div></div>
 
-<div class="panel"><div class="panel-head"><h2>Output presets</h2></div><div class="table-wrap"><table><thead><tr><th>ID / Name</th><th>Raster</th><th>Rate</th><th>Scan</th><th>Pixel format</th><th>Audio / latency</th><th>Buffers</th><th>Standby</th><th></th></tr></thead><tbody>
+<div class="panel"><div class="panel-head"><div><h2>Output presets</h2><span class="secondary-text">Each preset is laid out as a responsive editor so controls never overlap.</span></div></div><div class="panel-body preset-list">
 @foreach (var preset in settings.Presets)
 {
-    <tr><td><InputText aria-label="Preset ID" @bind-Value="preset.Id" /><InputText aria-label="@($"Preset name for {preset.Id}")" @bind-Value="preset.Name" /></td><td><InputNumber aria-label="@($"Width for {preset.Name}")" @bind-Value="preset.Width" style="width:90px" /> × <InputNumber aria-label="@($"Height for {preset.Name}")" @bind-Value="preset.Height" style="width:90px" /></td><td><InputNumber aria-label="@($"Frame-rate numerator for {preset.Name}")" @bind-Value="preset.FrameRateNumerator" style="width:75px" /> / <InputNumber aria-label="@($"Frame-rate denominator for {preset.Name}")" @bind-Value="preset.FrameRateDenominator" style="width:60px" /></td><td><select aria-label="Scan type for @preset.Name" @bind="preset.Interlaced"><option value="false">Progressive</option><option value="true">Interlaced</option></select></td><td><InputText aria-label="@($"Pixel format for {preset.Name}")" @bind-Value="preset.PixelFormat" /></td><td><label class="check"><InputCheckbox aria-label="@($"Include audio for {preset.Name}")" @bind-Value="preset.IncludeAudio" /> Audio</label><label class="check"><InputCheckbox aria-label="@($"Use low latency for {preset.Name}")" @bind-Value="preset.LowLatency" /> Low latency</label></td><td><InputNumber aria-label="@($"Buffer size for {preset.Name}")" @bind-Value="preset.BufferSizeMegabytes" style="width:80px" /> MB</td><td><InputSelect aria-label="@($"Standby mode for {preset.Name}")" @bind-Value="preset.StandbyMode"><option value="Black">Black</option><option value="TestPattern">Color bars</option><option value="FreezeLastFrame">Freeze</option><option value="File">File</option><option value="StandbySource">Source</option></InputSelect><InputText aria-label="@($"Standby value for {preset.Name}")" @bind-Value="preset.StandbyValue" placeholder="optional file/source" /></td><td><button class="btn small danger" disabled="@(settings.Presets.Count == 1)" @onclick="() => RemovePreset(preset)">Remove</button></td></tr>
+    <article class="preset-editor" @key="preset.Id">
+        <header class="preset-editor-head"><div><strong>@preset.Name</strong><span class="secondary-text mono">@preset.Id</span></div><button class="btn small danger" disabled="@(settings.Presets.Count == 1)" @onclick="() => RemovePreset(preset)">Remove preset</button></header>
+        <div class="preset-fields">
+            <div class="form-group"><label>Preset ID</label><InputText aria-label="Preset ID" @bind-Value="preset.Id" /></div>
+            <div class="form-group"><label>Display name</label><InputText aria-label="@($"Preset name for {preset.Id}")" @bind-Value="preset.Name" /></div>
+            <div class="form-group"><label>Raster</label><div class="number-pair"><InputNumber aria-label="@($"Width for {preset.Name}")" @bind-Value="preset.Width" /><span>×</span><InputNumber aria-label="@($"Height for {preset.Name}")" @bind-Value="preset.Height" /></div></div>
+            <div class="form-group"><label>Frame rate</label><div class="number-pair"><InputNumber aria-label="@($"Frame-rate numerator for {preset.Name}")" @bind-Value="preset.FrameRateNumerator" /><span>/</span><InputNumber aria-label="@($"Frame-rate denominator for {preset.Name}")" @bind-Value="preset.FrameRateDenominator" /></div></div>
+            <div class="form-group"><label>Scan</label><select aria-label="Scan type for @preset.Name" @bind="preset.Interlaced"><option value="False">Progressive</option><option value="True">Interlaced</option></select></div>
+            <div class="form-group"><label>Pixel format</label><InputText aria-label="@($"Pixel format for {preset.Name}")" @bind-Value="preset.PixelFormat" /></div>
+            <div class="form-group"><label>Input buffer (MB)</label><InputNumber aria-label="@($"Buffer size for {preset.Name}")" @bind-Value="preset.BufferSizeMegabytes" /></div>
+            <div class="form-group preset-toggles"><label>Audio and latency</label><div class="toggle-row"><label class="check compact"><InputCheckbox aria-label="@($"Include audio for {preset.Name}")" @bind-Value="preset.IncludeAudio" /> Audio</label><label class="check compact"><InputCheckbox aria-label="@($"Use low latency for {preset.Name}")" @bind-Value="preset.LowLatency" /> Low latency</label></div></div>
+            <div class="form-group standby-fields"><label>Standby</label><div class="standby-row"><InputSelect aria-label="@($"Standby mode for {preset.Name}")" @bind-Value="preset.StandbyMode"><option value="Black">Black</option><option value="TestPattern">Color bars</option><option value="FreezeLastFrame">Freeze</option><option value="File">File</option><option value="StandbySource">Source</option></InputSelect><InputText aria-label="@($"Standby value for {preset.Name}")" @bind-Value="preset.StandbyValue" placeholder="Optional file or source" /></div></div>
+        </div>
+    </article>
 }
-</tbody></table></div></div>
+</div></div>
 
 @code {
     private OperatorSettings settings = null!; private string message = ""; private string messageClass = "";

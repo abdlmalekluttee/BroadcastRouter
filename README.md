@@ -17,6 +17,7 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that discov
 - production-safe defaults: loopback binding, simulation disabled, and hardware starts blocked until validation passes;
 - SQLite persistence, DPAPI-protected Wowza credentials, structured redacted logs, minimal health checks, and sanitized diagnostics that never embed the production database;
 - a responsive dark operator UI for servers, sources, outputs, routes, rules, presets, logs, and settings;
+- an administrator-controlled large FFplay desktop preview with a real audio VU overlay and live process/playback statistics;
 - self-contained Windows releases and Task Scheduler/service installation helpers.
 
 ## Validated production baseline
@@ -35,10 +36,10 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.2.0`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.2.1`.
 3. Run `BroadcastRouter.Server.exe` as the dedicated Windows broadcast account.
 4. Open `http://127.0.0.1:5080`.
-5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
+5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe`, matching `ffprobe.exe`, and `ffplay.exe`, then run **Validate / rescan**.
 6. Under **Wowza Servers**, configure the REST URL, credentials, RTSP host/port, applications, and instances. Test the connection and save.
 7. Verify sources and output mappings, then create routes manually before enabling automatic routing.
 8. Install startup with:
@@ -61,7 +62,7 @@ dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --conf
 Create a clean self-contained release:
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Version 1.2.0
+.\scripts\Publish-Release.ps1 -Version 1.2.1
 ```
 
 ## Configuration and security

@@ -38,8 +38,10 @@ if (requireAuthentication && string.IsNullOrWhiteSpace(Environment.GetEnvironmen
 
 builder.Services.AddSingleton(bootstrapStore);
 builder.Services.AddSingleton<RouterCoordinator>();
+builder.Services.AddSingleton<FfplayPreviewSupervisor>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<RouterCoordinator>());
 builder.Services.AddScoped<AuthorizedRouterCommands>();
+builder.Services.AddScoped<AuthorizedPreviewCommands>();
 builder.Services.AddRazorComponents().AddInteractiveServerComponents(options => options.DetailedErrors = false);
 builder.Services.AddSignalR();
 builder.Services.AddHttpClient("WowzaValidated");
