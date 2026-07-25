@@ -58,6 +58,9 @@ public sealed class RouterCoordinator(
             RoutingRuleEvaluator.ValidatePattern(rule.InstancePattern);
             RoutingRuleEvaluator.ValidatePattern(rule.StreamPattern);
         }
+        RuntimeRoute[] dependentRoutes;
+        lock (_gate) dependentRoutes = _routes.Values.Where(route => route.State is not RouteState.Released and not RouteState.Disabled).ToArray();
+        OutputPresetSelection.EnsureReferencesAvailable(settings.Presets, dependentRoutes.Select(route => route.PresetId));
         await store.SaveSettingsAsync(settings, cancellationToken);
         lock (_gate)
         {
@@ -91,7 +94,8 @@ public sealed class RouterCoordinator(
     public async Task<IReadOnlyList<StructuredLogEntry>> ReadLogsAsync(string? search, int limit = 500, CancellationToken cancellationToken = default) =>
         await store.ReadLogsAsync(search, limit, cancellationToken);
 
-    internal async Task CommandAsync(string action, string? sourceId = null, string? portId = null, CancellationToken cancellationToken = default)
+    internal async Task CommandAsync(string action, string? sourceId = null, string? portId = null, string? presetId = null,
+        CancellationToken cancellationToken = default)
     {
         action = action.Trim().ToLowerInvariant();
         if (action == "emergency-stop")
@@ -134,12 +138,12 @@ public sealed class RouterCoordinator(
         {
             case "start":
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
-                await EnsureRouteAsync(sourceId, portId, manual: true, cancellationToken);
+                await EnsureRouteAsync(sourceId, portId, presetId, manual: true, cancellationToken);
                 break;
             case "restore":
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
                 if (route?.PortId is not null) await RestartReservedRouteAsync(route, cancellationToken);
-                else await EnsureRouteAsync(sourceId, portId, manual: true, cancellationToken);
+                else await EnsureRouteAsync(sourceId, portId, presetId, manual: true, cancellationToken);
                 break;
             case "stop":
                 await StopRouteAsync(sourceId, forceRelease: false, cancellationToken);
@@ -147,12 +151,13 @@ public sealed class RouterCoordinator(
             case "restart":
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
                 await StopRouteAsync(sourceId, forceRelease: true, cancellationToken);
-                await EnsureRouteAsync(sourceId, portId, manual: true, cancellationToken);
+                await EnsureRouteAsync(sourceId, portId, presetId, manual: true, cancellationToken);
                 break;
             case "reassign":
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
+                ValidateRequestedPreset(presetId);
                 await StopRouteAsync(sourceId, forceRelease: true, cancellationToken);
-                await EnsureRouteAsync(sourceId, portId, manual: true, cancellationToken);
+                await EnsureRouteAsync(sourceId, portId, presetId, manual: true, cancellationToken);
                 break;
             case "reprobe":
                 lock (_gate)
@@ -207,6 +212,12 @@ public sealed class RouterCoordinator(
         }
         await LogAsync("Information", "Operator", $"Action '{action}' requested.", sourceId, NewCorrelation(), cancellationToken);
         Publish($"{action} requested");
+    }
+
+    private void ValidateRequestedPreset(string? presetId)
+    {
+        if (string.IsNullOrWhiteSpace(presetId)) return;
+        lock (_gate) _ = OutputPresetSelection.Resolve(_settings.Presets, _settings.Presets.FirstOrDefault()?.Id ?? "", presetId);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -400,7 +411,7 @@ public sealed class RouterCoordinator(
             RuntimeRoute? route;
             lock (_gate) _routes.TryGetValue(source.Identity.Value, out route);
             if (route is null || route.State is RouteState.Released or RouteState.Known or RouteState.Ready or RouteState.WaitingForPort)
-                await EnsureRouteAsync(source.Identity.Value, null, manual: false, cancellationToken);
+                await EnsureRouteAsync(source.Identity.Value, null, null, manual: false, cancellationToken);
             else if (route.State is RouteState.Reconnecting or RouteState.Fallback
                      && route.RetryAt <= DateTimeOffset.UtcNow
                      && SourceHasBeenReadyLongEnough(route.SourceId, settings.Routing.StableRestoreSeconds))
@@ -408,7 +419,8 @@ public sealed class RouterCoordinator(
         }
     }
 
-    private async Task EnsureRouteAsync(string sourceId, string? requestedPortId, bool manual, CancellationToken cancellationToken)
+    private async Task EnsureRouteAsync(string sourceId, string? requestedPortId, string? requestedPresetId, bool manual,
+        CancellationToken cancellationToken)
     {
         var routeGate = _routeGates.GetOrAdd(sourceId, static _ => new SemaphoreSlim(1, 1));
         await routeGate.WaitAsync(cancellationToken);
@@ -429,10 +441,7 @@ public sealed class RouterCoordinator(
         if (previousRoute?.State is RouteState.Reserved or RouteState.Starting or RouteState.Running or RouteState.Fallback) return;
         if (!settings.SimulationMode && !_validation.CanStartHardwareRoutes)
             throw new InvalidOperationException("DeckLink route start refused because Media Tools validation has not passed.");
-        if (settings.Presets.Count == 0)
-            throw new InvalidOperationException("At least one output preset is required before a route can start.");
-
-        var defaultPreset = settings.Presets.First().Id;
+        var defaultPreset = settings.Presets.FirstOrDefault()?.Id ?? "";
         var decision = RoutingRuleEvaluator.Evaluate(source, settings.Rules, defaultPreset);
         var effective = source with
         {
@@ -441,12 +450,13 @@ public sealed class RouterCoordinator(
             Priority = decision.Priority,
             AutomaticRoutingEnabled = true
         };
-        var presetProfile = settings.Presets.FirstOrDefault(x => x.Id.Equals(decision.PresetId, StringComparison.OrdinalIgnoreCase)) ?? settings.Presets.First();
+        var presetProfile = OutputPresetSelection.Resolve(settings.Presets, decision.PresetId,
+            manual ? requestedPresetId : null);
         var assignment = new AutomaticAssignmentEngine(_reservations, _waiting).Assign(effective, ports,
             port => Compatible(port, presetProfile, decision.PortGroup));
         if (!assignment.Assigned)
         {
-            var waiting = new RuntimeRoute(sourceId, source.FriendlyName, null, null, decision.PresetId, RouteState.WaitingForPort,
+            var waiting = new RuntimeRoute(sourceId, source.FriendlyName, null, null, presetProfile.Id, RouteState.WaitingForPort,
                 assignment.Mode, decision.Locked, decision.Priority, 0, null, null, null, 0, 0, null, DateTimeOffset.UtcNow,
                 "NoOutput", assignment.Reason);
             await ReplaceRouteAsync(waiting, previousRoute?.State, cancellationToken);

@@ -11,7 +11,7 @@ The executable supports Windows Service hosting, but service/Session 0 DeckLink 
 1. Poll each enabled Wowza v2 management endpoint; manual RTSP sources are explicit and no network scanning occurs.
 2. Canonicalize the source as `server/application/instance/stream` and retain healthy routes during management-API outages.
 3. Render a validated RTSP template and run bounded FFprobe frame validation.
-4. Evaluate ordered wildcard or `regex:` rules; regex execution has a 100 ms timeout.
+4. Evaluate ordered wildcard or `regex:` rules; regex execution has a 100 ms timeout. An administrator may explicitly choose any saved preset for manual creation or confirmed reassignment; stale preset IDs are rejected before the current route is stopped.
 5. Select a preset and compatible port group, excluding reserved ports from automatic assignment.
 6. Acquire the only atomic port lease. A second source cannot own the same stable port ID.
 7. Refuse real start unless Media Tools validation passes; launch FFmpeg using `ProcessStartInfo.ArgumentList`.

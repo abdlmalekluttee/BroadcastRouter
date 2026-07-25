@@ -1,9 +1,9 @@
 # BroadcastRouter production-safety review
 
 Review date: 2026-07-26
-Review branch: `codex/embedded-browser-preview-1.2.2`
-Reviewed baseline: `31032d3` (`v1.2.1`, `origin/main`)
-Resulting release version: `1.2.2`
+Review branch: `codex/routing-preset-ui-1.2.3`
+Reviewed baseline: `1aa62ac` (`v1.2.2`, `origin/main`)
+Resulting release version: `1.2.3`
 
 ## Executive summary
 
@@ -14,6 +14,8 @@ This review confirmed and fixed high-severity issues in failed-start lease rollb
 The repository is materially safer after these changes, but this review does **not** certify production broadcast readiness. DeckLink hardware, matching Blackmagic driver output, power-cycle identity stability, Session 0, and an 8–24 hour soak were not available for this pass. The principal remaining software risk is the coordinator's breadth and the limited end-to-end process-supervision integration coverage.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. The real configured Wowza publisher, RTSP frame receipt, H.264/AAC fragmented-MP4 stream, VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified on the production host; physical DeckLink output remains unverified.
+
+The 1.2.3 follow-up fixes the operator-reported routing and preset workflows. Manual creation and confirmed reassignment now accept a saved output preset, with server-side rejection of stale preset IDs before an existing route is stopped. The route matrix and rule editor use responsive cards, and scan selection uses stable progressive/interlaced values instead of fragile Boolean HTML conversion.
 
 ## Architecture assessment
 
@@ -63,6 +65,8 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-017 | Medium | Responsive GUI | `src/BroadcastRouter.Web/Components/Pages/RulesPresets.razor`; `wwwroot/app.css`; `Components/App.razor` | The fixed-width preset table exceeded the available viewport and compressed inline controls into overlapping text/fields. Unversioned CSS could retain the broken layout after upgrade. | **Fixed.** Presets use responsive labeled editor cards and versioned stylesheets. Browser checks at 1920×1080 and 768×1024 found zero document/card overflow and zero controls outside their cards. |
 | BR-018 | Medium | Operator monitoring | `src/BroadcastRouter.Infrastructure/FfplayPreviewSupervisor.cs`; `Components/Pages/Sources.razor` | Operators had no safe local confidence preview, VU meter, or dedicated preview status surface. | **Fixed.** Added one-at-a-time administrator FFplay preview, FFmpeg `showvolume` overlay, 1440×900 window, tokenized arguments, exact process ownership, large UI status/statistics, audio/no-audio handling, and Session 0 refusal. Regression: `FFplay preview is tokenized with VU overlay`. |
 | BR-019 | Medium | Preview UX / process ownership | `src/BroadcastRouter.Infrastructure/BrowserPreviewSupervisor.cs`; `src/BroadcastRouter.Web/Program.cs`; `Components/Pages/Sources.razor` | Operator feedback confirmed that opening a separate 1440×900 FFplay window was disruptive and oversized. A forced Scheduled Task stop could also outlive the host briefly before the legacy child pair exited. | **Fixed.** Replaced FFplay with one exact FFmpeg producer serving authenticated, non-cacheable H.264/AAC fragmented MP4 to a 720×450 in-page player. A random session token prevents stale attachment; player disconnect, explicit stop, process exit, and host disposal all converge on owned-process cleanup. Regression: `Browser preview is tokenized with VU overlay`; real browser playback and zero remaining child processes verified. |
+| BR-020 | Medium | Route configuration / operator UX | `src/BroadcastRouter.Web/Components/Pages/RoutesPage.razor`; `Services/RouterCoordinator.cs`; `Application/OutputPresetSelection.cs` | Manual route creation exposed only source/output and reassignment changed output immediately, so an operator could not choose a saved preset. | **Fixed.** Route cards expose Output and Output preset drafts with one confirmed apply action. Explicit preset IDs are normalized and validated server-side before destructive reassignment begins; presets referenced by active/waiting routes cannot be removed. Regression: `Manual route preset selection`. |
+| BR-021 | Low | Preset editor / responsive GUI | `src/BroadcastRouter.Web/Components/Pages/RulesPresets.razor`; `Domain/OutputScanSelection.cs`; `wwwroot/app.css` | Binding `False`/`True` option strings directly to `bool` could leave the 1080i50 scan selector blank after interaction; routing rules remained compressed in a wide table. | **Fixed.** Scan uses exact `progressive`/`interlaced` tokens with guarded parsing; rules use responsive labeled cards. Regression: `Output scan selection round trip`. |
 
 ## GUI review
 
@@ -73,17 +77,19 @@ The failed documented web start is an environmental port conflict, not an applic
 | Wowza Servers | Controls have accessible names; password remains blank-to-preserve; no network scanning action exists; removal now requires confirmation and explains grace-period impact. |
 | Sources | Credential/internal-address-safe RTSP display; route/reprobe actions visible only to Administrator. The preview is now a compact 720×450 in-page player with video/audio/uptime/process statistics, confidence-audio controls, a real VU overlay, busy guard, and explicit stop. |
 | DeckLink Outputs | Identity-confidence warning is prominent; rescan remains non-destructive. |
-| Routes / Matrix | Accessible selects; emergency and reassign confirmation; locked stop refusal; busy guard. A richer modal could explain affected routes/ports before reassign. |
-| Rules & Presets | All generated controls named; bounded regex validation retained; rule removal is confirmed and referenced presets cannot be removed until dependencies are changed. Output presets are responsive cards instead of an overlapping wide table; interlaced Boolean values render correctly. |
+| Routes / Matrix | Responsive cards expose Output and saved Output preset drafts, applied together after a disruption warning. Emergency confirmation, locked stop refusal, busy guards, and server-side Administrator authorization remain intact. |
+| Rules & Presets | Rules and presets use responsive labeled cards. Bounded regex validation, confirmed removal, reference-aware preset deletion, and accessible names remain intact. Progressive/interlaced scan selection no longer becomes blank. |
 | Logs & Diagnostics | Package contents now accurately state there is no database copy; logged IPs/credentials are redacted. |
 | Settings | All current and generated port/manual controls named; strict validation preserves prior active settings; bind/authentication/HTTPS/allowlist/proxy changes require a disruption warning confirmation. |
 | Error | Sanitized generic error content; no detailed exception exposed. |
 
 Responsive checks passed without document-level horizontal overflow at 1366×768, 1920×1080, 2560×1440, and 768×1024. The 1.2.2 preview measured exactly 720×450 at a 1920×1080 viewport and scaled to 581×362 inside the panel at 768×1024, with no document overflow. Wide tables intentionally scroll inside `.table-wrap`. The only recorded browser errors were expected SignalR disconnects during controlled production restarts; the stable final playback had no media error. A final embedded-preview screenshot was captured under `release/ui-screenshots`.
 
+The 1.2.3 route/rule card layouts were rechecked against the deployed production build at 1280×720: document overflow was false, all five rendered rule/preset cards had zero internal overflow, and no input/select/button extended outside its card. The manual preset selector exposed all four saved presets. The 1080i50 selector retained Progressive and Interlaced after each live change; navigation away discarded the unsaved test rule and scan changes. Screenshots were captured under `release/ui-screenshots`.
+
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.0: 52/52. Final: 53/53 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Final: 55/55 tests.
 
 Added coverage:
 
@@ -103,6 +109,8 @@ Added coverage:
 14. Progressive/interlaced FFprobe field-order parsing.
 15. Anonymous exposure, trusted-proxy, and forwarded-loopback fail-closed behavior.
 16. Tokenized embedded-browser FFmpeg preview commands, real VU filter inclusion, H.264/AAC fragmented MP4, 720×450 sizing, and video-only fallback.
+17. Stable progressive/interlaced scan selection round trips, including rejection of invalid/legacy option strings.
+18. Explicit manual preset selection, case-insensitive normalization, rule fallback behavior, missing-preset rejection, and empty-preset rejection.
 
 Expanded existing credential/log redaction assertions. HTTP integration checks separately verified antiforgery and diagnostics authorization.
 
@@ -119,10 +127,11 @@ Still requiring integration or hardware coverage:
 
 | Validation | Status |
 |---|---|
-| Restore, Release build, tests | **Verified automatically**: clean; 53/53 after the preview/responsive update. |
+| Restore, Release build, tests | **Verified automatically**: clean; 55/55 after route-preset and responsive-editor changes. |
 | Package vulnerability audit | **Verified automatically**: no vulnerable packages reported. |
 | Atomic single-port ownership | **Verified automatically** with 500 concurrent contenders. |
 | Local browser pages/viewports | **Verified locally** in isolated simulation on port 5180; stable-session console clean; zero document/preset-card overflow at 1920×1080 and 768×1024; zero controls outside cards. |
+| 1.2.3 route/rule workflow | **Verified locally against deployed production at 1280×720**: saved manual presets visible; 1080i50 Progressive/Interlaced round trip; rule card/preset card/document overflow all zero; no route started and no settings saved. |
 | Embedded preview | **Verified locally and against the configured Wowza publisher**: RTSP frames, 720×450 H.264/AAC fragmented MP4 bytes, browser `readyState=4`, advancing playback time, 720×450 decoded video, real `showvolume` overlay, explicit stop, and zero remaining FFmpeg/FFplay children. |
 | Authentication/antiforgery/diagnostics gate | **Verified locally** in isolated authenticated modes on ports 5181/5183, including operator denial and login throttling. |
 | Real Wowza REST and RTSP | **Verified on the configured server**: management authentication, application discovery, active publisher discovery, RTSP open, frame receipt, H.264 video, and AAC audio. |
@@ -141,6 +150,7 @@ Still requiring integration or hardware coverage:
 - Web: coordinator recovery/emergency handling, authentication/diagnostics/health endpoints, responsive preset editors, cache-busted styles, embedded preview stream/player UI, and targeted Razor accessibility/operator safeguards.
 - Tests: ten new regression cases and expanded redaction coverage.
 - Documentation: README, security, architecture, deployment, changelog, and this report.
+- 1.2.3 follow-up: `OutputPresetSelection`, `OutputScanSelection`, responsive route/rule editors, preset-aware authorized commands, and focused regressions/documentation.
 
 ## Commands and results
 
@@ -153,7 +163,7 @@ dotnet run --no-build --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.cs
 git diff --check
 ```
 
-Final results: restore passed; Release build passed with 0 warnings/errors; 53/53 tests passed; vulnerability audit and .NET 8 servicing audit were clean; local browser playback and responsive checks passed against the configured production host; `git diff --check` reported no whitespace errors. The self-contained `win-x64` 1.2.2 package built successfully with file version `1.2.2.0`, a generated SHA-256 checksum, and no database/diagnostics archive.
+Final results: restore passed; Release build passed with 0 warnings/errors; 55/55 tests passed; vulnerability audit and .NET 8 servicing audit were clean; local browser responsive checks passed against the configured production host; `git diff --check` reported no whitespace errors. The supplied diagnostics archive was inspected by entry name and contained no database/WAL/SQLite file. The self-contained `win-x64` 1.2.3 package built successfully with file version `1.2.3.0`, a generated SHA-256 checksum, and no database/diagnostics archive.
 
 ## Recommended follow-up
 

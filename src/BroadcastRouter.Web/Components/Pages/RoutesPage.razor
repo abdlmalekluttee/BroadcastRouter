@@ -6,28 +6,121 @@
 @implements IDisposable
 
 <PageTitle>Routes · BroadcastRouter</PageTitle>
-<div class="page-head"><div><h1>Routes / Routing Matrix</h1><p class="lead">Every route acquires one atomic port lease before FFmpeg is allowed to start.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@busy" @onclick='() => Run("rescan", "")'>Reconcile now</button><button class="btn danger" disabled="@busy" @onclick='() => Run("emergency-stop", "")'>Emergency stop</button></div></Authorized></AuthorizeView></div>
+<div class="page-head">
+    <div><h1>Routes / Routing Matrix</h1><p class="lead">Every route acquires one atomic port lease before FFmpeg is allowed to start.</p></div>
+    <AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@busy" @onclick='() => Run("rescan", "")'>Reconcile now</button><button class="btn danger" disabled="@busy" @onclick='() => Run("emergency-stop", "")'>Emergency stop</button></div></Authorized></AuthorizeView>
+</div>
 @if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger" role="alert">@error</div> }
-<div class="panel"><div class="table-wrap"><table><thead><tr><th>Priority</th><th>Source</th><th></th><th>DeckLink output</th><th>Assignment</th><th>State</th><th>Health</th><th>Controls</th></tr></thead><tbody>
+
+<div class="route-list">
 @foreach (var route in snapshot.Routes)
 {
-    <tr><td>@route.Priority</td><td><span class="primary-text">@route.SourceName</span><span class="secondary-text">@route.SourceId</span></td><td style="font-size:22px;color:var(--accent)">→</td>
-        <td><AuthorizeView Roles="Administrator"><Authorized><select aria-label="Output for @route.SourceName" disabled="@busy" value="@(route.PortId ?? "")" @onchange="e => Reassign(route.SourceId, e.Value?.ToString())"><option value="">Automatic / unassigned</option>@foreach(var port in snapshot.Ports){<option value="@port.StableId">@(port.FriendlyName ?? port.FfmpegName)</option>}</select></Authorized><NotAuthorized><span class="primary-text">@(route.PortName ?? "Unassigned")</span></NotAuthorized></AuthorizeView><span class="secondary-text">Preset @route.PresetId</span></td>
-        <td>@route.AssignmentMode @if(route.Locked){<span class="badge warning">locked</span>}</td><td><BroadcastRouter.Web.Components.Shared.StateBadge Value="route.State" /></td>
-        <td>@(route.Fps?.ToString("0.00") ?? "—") fps<span class="secondary-text">drop @route.DroppedFrames · dup @route.DuplicatedFrames · retry @route.RestartCount</span></td>
-        <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn small primary" @onclick='() => Run("restore", route.SourceId)'>Restore</button><button class="btn small" @onclick='() => Run("restart", route.SourceId)'>Restart</button><button class="btn small" @onclick='() => Run(route.Locked ? "unlock" : "lock", route.SourceId)'>@(route.Locked ? "Unlock" : "Lock")</button><button class="btn small warning" @onclick='() => Run("standby", route.SourceId)'>Standby</button><button class="btn small danger" @onclick='() => Run("stop", route.SourceId)'>Stop</button></div></Authorized></AuthorizeView></td></tr>
-    @if (snapshot.SimulationMode) { <AuthorizeView Roles="Administrator"><Authorized><tr><td></td><td colspan="7"><div class="actions"><span class="secondary-text">Simulation:</span><button class="btn small" @onclick='() => Run("simulate-failure", route.SourceId)'>Crash</button><button class="btn small" @onclick='() => Run("simulate-stall", route.SourceId)'>Stall</button><button class="btn small" @onclick='() => Run("clear-failure", route.SourceId)'>Recover</button></div></td></tr></Authorized></AuthorizeView> }
+    <article class="route-editor" @key="route.SourceId">
+        <header class="route-editor-head">
+            <div><strong>@route.SourceName</strong><span class="secondary-text mono">@route.SourceId</span></div>
+            <div class="route-state"><BroadcastRouter.Web.Components.Shared.StateBadge Value="route.State" />@if (route.Locked) { <span class="badge warning">locked</span> }</div>
+        </header>
+        <div class="route-summary-grid">
+            <div><span class="field-label">Priority</span><strong>@route.Priority</strong></div>
+            <div><span class="field-label">Assignment</span><strong>@route.AssignmentMode</strong></div>
+            <div><span class="field-label">Health</span><strong>@(route.Fps?.ToString("0.00") ?? "—") fps</strong><span class="secondary-text">drop @route.DroppedFrames · dup @route.DuplicatedFrames · retry @route.RestartCount</span></div>
+            <AuthorizeView Roles="Administrator">
+                <Authorized>
+                    <div class="route-assignment-fields">
+                        <div class="form-group"><label>DeckLink output</label><select aria-label="Output for @route.SourceName" disabled="@busy" value="@SelectedPort(route)" @onchange="eventArgs => SelectPort(route.SourceId, eventArgs.Value?.ToString())"><option value="">Automatic / unassigned</option>@foreach (var port in snapshot.Ports) { <option value="@port.StableId">@(port.FriendlyName ?? port.FfmpegName)</option> }</select></div>
+                        <div class="form-group"><label>Output preset</label><select aria-label="Preset for @route.SourceName" disabled="@busy" value="@SelectedPreset(route)" @onchange="eventArgs => SelectPreset(route.SourceId, eventArgs.Value?.ToString())">@foreach (var preset in presets) { <option value="@preset.Id">@preset.Name</option> }</select></div>
+                        <div class="form-group route-apply"><label>Assignment change</label><button class="btn primary" disabled="@(busy || presets.Count == 0)" @onclick="() => ApplyAssignment(route)">Apply assignment</button></div>
+                    </div>
+                </Authorized>
+                <NotAuthorized>
+                    <div><span class="field-label">DeckLink output</span><strong>@(route.PortName ?? "Unassigned")</strong><span class="secondary-text">Preset @route.PresetId</span></div>
+                </NotAuthorized>
+            </AuthorizeView>
+        </div>
+        <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls"><button class="btn small primary" disabled="@busy" @onclick='() => Run("restore", route.SourceId)'>Restore</button><button class="btn small" disabled="@busy" @onclick='() => Run("restart", route.SourceId)'>Restart</button><button class="btn small" disabled="@busy" @onclick='() => Run(route.Locked ? "unlock" : "lock", route.SourceId)'>@(route.Locked ? "Unlock" : "Lock")</button><button class="btn small warning" disabled="@busy" @onclick='() => Run("standby", route.SourceId)'>Standby</button><button class="btn small danger" disabled="@busy" @onclick='() => Run("stop", route.SourceId)'>Stop</button></footer></Authorized></AuthorizeView>
+        @if (snapshot.SimulationMode) { <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls simulation-controls"><span class="secondary-text">Simulation:</span><button class="btn small" disabled="@busy" @onclick='() => Run("simulate-failure", route.SourceId)'>Crash</button><button class="btn small" disabled="@busy" @onclick='() => Run("simulate-stall", route.SourceId)'>Stall</button><button class="btn small" disabled="@busy" @onclick='() => Run("clear-failure", route.SourceId)'>Recover</button></footer></Authorized></AuthorizeView> }
+    </article>
 }
-</tbody></table></div></div>
+@if (snapshot.Routes.Count == 0) { <div class="panel"><div class="empty-state">No desired routes are currently configured.</div></div> }
+</div>
 
-<AuthorizeView Roles="Administrator"><Authorized><div class="panel"><div class="panel-head"><h2>Create manual route</h2></div><div class="panel-body"><div class="form-grid"><div class="form-group"><label>Source</label><select aria-label="Manual route source" @bind="selectedSource"><option value="">Select source…</option>@foreach(var source in snapshot.Sources){<option value="@source.Identity.Value">@source.FriendlyName</option>}</select></div><div class="form-group"><label>Output</label><select aria-label="Manual route output" @bind="selectedPort"><option value="">Automatic</option>@foreach(var port in snapshot.Ports){<option value="@port.StableId">@(port.FriendlyName ?? port.FfmpegName)</option>}</select></div><div class="form-group"><label>&nbsp;</label><button class="btn primary" disabled="@(busy || string.IsNullOrWhiteSpace(selectedSource))" @onclick="CreateRoute">Start route</button></div></div></div></div></Authorized></AuthorizeView>
+<AuthorizeView Roles="Administrator"><Authorized>
+    <div class="panel"><div class="panel-head"><h2>Create manual route</h2></div><div class="panel-body"><div class="manual-route-grid">
+        <div class="form-group"><label>Source</label><select aria-label="Manual route source" @bind="selectedSource"><option value="">Select source…</option>@foreach (var source in snapshot.Sources) { <option value="@source.Identity.Value">@source.FriendlyName</option> }</select></div>
+        <div class="form-group"><label>Output</label><select aria-label="Manual route output" @bind="selectedPort"><option value="">Automatic</option>@foreach (var port in snapshot.Ports) { <option value="@port.StableId">@(port.FriendlyName ?? port.FfmpegName)</option> }</select></div>
+        <div class="form-group"><label>Output preset</label><select aria-label="Manual route preset" @bind="selectedPreset">@foreach (var preset in presets) { <option value="@preset.Id">@preset.Name</option> }</select></div>
+        <div class="form-group route-apply"><label>Route control</label><button class="btn primary" disabled="@(busy || string.IsNullOrWhiteSpace(selectedSource) || string.IsNullOrWhiteSpace(selectedPreset))" @onclick="CreateRoute">Start route</button></div>
+    </div></div></div>
+</Authorized></AuthorizeView>
 
 @code {
-    private RouterSnapshot snapshot = null!; private string selectedSource = ""; private string selectedPort = ""; private string error = ""; private bool busy;
-    protected override void OnInitialized() { snapshot = Coordinator.Snapshot; Coordinator.Changed += Changed; }
-    private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
-    private async Task Run(string action, string source) { if (busy) return; if (action == "emergency-stop" && !await JS.InvokeAsync<bool>("confirm", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes. Continue?")) return; var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source); if (action == "stop" && route?.Locked == true) { error = "This route is locked. Unlock it first, or use the confirmed emergency stop for a forced release."; return; } try { busy = true; error = ""; await Commands.ExecuteAsync(action, string.IsNullOrWhiteSpace(source) ? null : source); } catch(Exception ex) { error = ex.Message; } finally { busy = false; } }
-    private async Task Reassign(string source, string? port) { if (busy || !await JS.InvokeAsync<bool>("confirm", "Reassigning this route stops its current output before reserving the selected output. Continue?")) return; try { busy = true; error = ""; await Commands.ExecuteAsync("reassign", source, string.IsNullOrWhiteSpace(port) ? null : port); } catch(Exception ex) { error = ex.Message; } finally { busy = false; } }
-    private async Task CreateRoute() { if (busy) return; try { busy = true; error = ""; await Commands.ExecuteAsync("start", selectedSource, string.IsNullOrWhiteSpace(selectedPort) ? null : selectedPort); } catch(Exception ex) { error = ex.Message; } finally { busy = false; } }
+    private RouterSnapshot snapshot = null!;
+    private IReadOnlyList<OutputPresetProfile> presets = [];
+    private readonly Dictionary<string, string> selectedPorts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> selectedPresets = new(StringComparer.Ordinal);
+    private string selectedSource = "";
+    private string selectedPort = "";
+    private string selectedPreset = "";
+    private string error = "";
+    private bool busy;
+
+    protected override void OnInitialized()
+    {
+        snapshot = Coordinator.Snapshot;
+        RefreshPresets();
+        Coordinator.Changed += Changed;
+    }
+
+    private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; RefreshPresets(); StateHasChanged(); });
+
+    private void RefreshPresets()
+    {
+        presets = Coordinator.GetSettings().Presets;
+        if (presets.Count > 0 && !presets.Any(preset => preset.Id.Equals(selectedPreset, StringComparison.OrdinalIgnoreCase))) selectedPreset = presets[0].Id;
+    }
+
+    private string SelectedPort(RuntimeRoute route) => selectedPorts.TryGetValue(route.SourceId, out var value) ? value : route.PortId ?? "";
+    private string SelectedPreset(RuntimeRoute route) => selectedPresets.TryGetValue(route.SourceId, out var value) ? value : route.PresetId;
+    private void SelectPort(string sourceId, string? value) => selectedPorts[sourceId] = value?.Trim() ?? "";
+    private void SelectPreset(string sourceId, string? value) => selectedPresets[sourceId] = value?.Trim() ?? "";
+
+    private async Task Run(string action, string source)
+    {
+        if (busy) return;
+        if (action == "emergency-stop" && !await JS.InvokeAsync<bool>("confirm", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes. Continue?")) return;
+        var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source);
+        if (action == "stop" && route?.Locked == true) { error = "This route is locked. Unlock it first, or use the confirmed emergency stop for a forced release."; return; }
+        try { busy = true; error = ""; await Commands.ExecuteAsync(action, string.IsNullOrWhiteSpace(source) ? null : source); }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; }
+    }
+
+    private async Task ApplyAssignment(RuntimeRoute route)
+    {
+        if (busy) return;
+        var port = SelectedPort(route);
+        var preset = SelectedPreset(route);
+        var presetName = presets.FirstOrDefault(item => item.Id.Equals(preset, StringComparison.OrdinalIgnoreCase))?.Name ?? preset;
+        if (!await JS.InvokeAsync<bool>("confirm", $"Apply output '{(string.IsNullOrWhiteSpace(port) ? "Automatic" : port)}' and preset '{presetName}'? The current output will stop before the new assignment is reserved.")) return;
+        try
+        {
+            busy = true;
+            error = "";
+            await Commands.ExecuteAsync("reassign", route.SourceId, string.IsNullOrWhiteSpace(port) ? null : port, preset);
+            selectedPorts.Remove(route.SourceId);
+            selectedPresets.Remove(route.SourceId);
+        }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; }
+    }
+
+    private async Task CreateRoute()
+    {
+        if (busy) return;
+        try { busy = true; error = ""; await Commands.ExecuteAsync("start", selectedSource, string.IsNullOrWhiteSpace(selectedPort) ? null : selectedPort, selectedPreset); }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; }
+    }
+
     public void Dispose() => Coordinator.Changed -= Changed;
 }
