@@ -1,0 +1,32 @@
+@page "/rules"
+@attribute [Authorize(Roles = "Administrator")]
+@rendermode InteractiveServer
+@inject RouterCoordinator Coordinator
+
+<PageTitle>Rules &amp; Presets · BroadcastRouter</PageTitle>
+<div class="page-head"><div><h1>Rules and presets</h1><p class="lead">Rules are evaluated by order using bounded wildcards or <span class="mono">regex:</span> patterns with a timeout.</p></div><div class="actions"><button class="btn" @onclick="AddRule">Add rule</button><button class="btn" @onclick="AddPreset">Add preset</button><button class="btn primary" @onclick="Save">Save changes</button></div></div>
+@if (!string.IsNullOrWhiteSpace(message)) { <div class="notice @messageClass">@message</div> }
+
+<div class="panel"><div class="panel-head"><h2>Routing rules</h2></div><div class="table-wrap"><table><thead><tr><th>On</th><th>Order / Name</th><th>Server</th><th>Application</th><th>Instance</th><th>Stream</th><th>Media</th><th>Action</th><th></th></tr></thead><tbody>
+@foreach (var rule in settings.Rules.OrderBy(x => x.Order))
+{
+    <tr><td><InputCheckbox @bind-Value="rule.Enabled" /></td><td><InputNumber @bind-Value="rule.Order" style="width:72px" /><InputText @bind-Value="rule.Name" /></td><td><InputText @bind-Value="rule.ServerPattern" /></td><td><InputText @bind-Value="rule.ApplicationPattern" /></td><td><InputText @bind-Value="rule.InstancePattern" /></td><td><InputText @bind-Value="rule.StreamPattern" /></td>
+        <td><InputText @bind-Value="rule.Codec" placeholder="codec" /><InputText @bind-Value="rule.Tag" placeholder="tag" /></td><td><select @bind="rule.PresetId">@foreach(var preset in settings.Presets){<option value="@preset.Id">@preset.Name</option>}</select><InputText @bind-Value="rule.FixedPortId" placeholder="optional port ID" /><label class="check"><InputCheckbox @bind-Value="rule.LockAssignment" /> Lock</label></td><td><button class="btn small danger" @onclick="() => settings.Rules.Remove(rule)">Remove</button></td></tr>
+}
+@if(settings.Rules.Count == 0){<tr><td colspan="9"><div class="empty-state">No rule matches means automatic assignment with the first preset.</div></td></tr>}
+</tbody></table></div></div>
+
+<div class="panel"><div class="panel-head"><h2>Output presets</h2></div><div class="table-wrap"><table><thead><tr><th>ID / Name</th><th>Raster</th><th>Rate</th><th>Scan</th><th>Pixel format</th><th>Audio / latency</th><th>Buffers</th><th>Standby</th><th></th></tr></thead><tbody>
+@foreach (var preset in settings.Presets)
+{
+    <tr><td><InputText @bind-Value="preset.Id" /><InputText @bind-Value="preset.Name" /></td><td><InputNumber @bind-Value="preset.Width" style="width:90px" /> × <InputNumber @bind-Value="preset.Height" style="width:90px" /></td><td><InputNumber @bind-Value="preset.FrameRateNumerator" style="width:75px" /> / <InputNumber @bind-Value="preset.FrameRateDenominator" style="width:60px" /></td><td><select @bind="preset.Interlaced"><option value="false">Progressive</option><option value="true">Interlaced</option></select></td><td><InputText @bind-Value="preset.PixelFormat" /></td><td><label class="check"><InputCheckbox @bind-Value="preset.IncludeAudio" /> Audio</label><label class="check"><InputCheckbox @bind-Value="preset.LowLatency" /> Low latency</label></td><td><InputNumber @bind-Value="preset.BufferSizeMegabytes" style="width:80px" /> MB</td><td><InputSelect @bind-Value="preset.StandbyMode"><option value="Black">Black</option><option value="TestPattern">Color bars</option><option value="FreezeLastFrame">Freeze</option><option value="File">File</option><option value="StandbySource">Source</option></InputSelect><InputText @bind-Value="preset.StandbyValue" placeholder="optional file/source" /></td><td><button class="btn small danger" disabled="@(settings.Presets.Count == 1)" @onclick="() => settings.Presets.Remove(preset)">Remove</button></td></tr>
+}
+</tbody></table></div></div>
+
+@code {
+    private OperatorSettings settings = null!; private string message = ""; private string messageClass = "";
+    protected override void OnInitialized() => settings = Coordinator.GetSettings();
+    private void AddRule() => settings.Rules.Add(new RoutingRuleProfile { Order = settings.Rules.Select(x => x.Order).DefaultIfEmpty(0).Max() + 10, PresetId = settings.Presets.First().Id });
+    private void AddPreset() => settings.Presets.Add(new OutputPresetProfile { Id = UniqueIdGenerator.Next("preset", settings.Presets.Select(x => x.Id)), Name = "New preset" });
+    private async Task Save() { try { await Coordinator.SaveSettingsAsync(settings); message = "Rules and presets saved."; messageClass = "success"; } catch(Exception ex) { message = ex.Message; messageClass = "danger"; } }
+}

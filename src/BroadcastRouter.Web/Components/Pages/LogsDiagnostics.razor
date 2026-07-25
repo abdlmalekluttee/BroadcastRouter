@@ -1,0 +1,23 @@
+@page "/logs"
+@rendermode InteractiveServer
+@inject RouterCoordinator Coordinator
+
+<PageTitle>Logs &amp; Diagnostics · BroadcastRouter</PageTitle>
+<div class="page-head"><div><h1>Logs and diagnostics</h1><p class="lead">Searchable structured history with credential redaction and a sanitized support package.</p></div><div class="actions"><a class="btn" href="/health" target="_blank">Health JSON</a><AuthorizeView Roles="Administrator"><Authorized><a class="btn primary" href="/diagnostics/package">Download diagnostics</a></Authorized></AuthorizeView></div></div>
+<div class="grid two-col">
+    <div class="panel"><div class="panel-head"><h2>Structured logs</h2><div class="actions"><input aria-label="Search logs" @bind="search" @bind:event="oninput" placeholder="Search messages, category, source…" style="width:280px" /><button class="btn small" @onclick="Load">Search</button></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Level</th><th>Category</th><th>Message</th><th>Source / Correlation</th></tr></thead><tbody>
+    @foreach(var log in logs){<tr><td class="mono">@log.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td><td class="log-@log.Level.ToLowerInvariant()">@log.Level</td><td>@log.Category</td><td style="white-space:normal;min-width:360px">@log.Message</td><td class="mono"><span class="secondary-text">@log.SourceId</span><span class="secondary-text">@log.CorrelationId</span></td></tr>}
+    @if(logs.Count == 0){<tr><td colspan="5"><div class="empty-state">No matching log entries.</div></td></tr>}
+    </tbody></table></div></div>
+    <div>
+        <div class="panel"><div class="panel-head"><h2>Media validation</h2><BroadcastRouter.Web.Components.Shared.StateBadge Value="Coordinator.Snapshot.ToolValidation.State" /></div><div class="panel-body"><ul class="validation-list">@foreach(var finding in Coordinator.Snapshot.ToolValidation.Findings){<li class="@(finding.StartsWith("PASS") ? "pass" : finding.StartsWith("FAIL") ? "fail" : "warn")">@finding</li>}</ul></div></div>
+        <div class="panel"><div class="panel-head"><h2>Support package contents</h2></div><div class="panel-body"><ul><li>Sanitized runtime snapshot and settings</li><li>Recent structured logs</li><li>SQLite integrity result and consistent backup</li><li>FFmpeg/FFprobe validation findings</li><li>DeckLink enumeration, route states, and recent failures</li></ul><p class="secondary-text">Wowza passwords and URI credentials are omitted or redacted.</p></div></div>
+        <div class="panel"><div class="panel-head"><h2>Failure summary</h2></div><div class="panel-body">@foreach(var route in Coordinator.Snapshot.Routes.Where(x => x.FailureCategory is not null)){<div class="notice danger"><strong>@route.SourceName · @route.FailureCategory</strong><br />@route.FailureMessage</div>}@if(!Coordinator.Snapshot.Routes.Any(x => x.FailureCategory is not null)){<p class="secondary-text">No current route failures.</p>}</div></div>
+    </div>
+</div>
+
+@code {
+    private IReadOnlyList<StructuredLogEntry> logs = []; private string search = "";
+    protected override async Task OnInitializedAsync() => await Load();
+    private async Task Load() { logs = await Coordinator.ReadLogsAsync(search, 1000); }
+}

@@ -1,0 +1,53 @@
+@page "/settings"
+@attribute [Authorize(Roles = "Administrator")]
+@rendermode InteractiveServer
+@inject RouterCoordinator Coordinator
+
+<PageTitle>Settings · BroadcastRouter</PageTitle>
+<div class="page-head"><div><h1>Settings</h1><p class="lead">Persistent SQLite configuration, DPAPI credentials, media-tool validation, routing policy, and manual inputs.</p></div><button class="btn primary" @onclick="Save">Save settings</button></div>
+@if (!string.IsNullOrWhiteSpace(message)) { <div class="notice @messageClass">@message</div> }
+
+<div class="panel"><div class="panel-head"><h2>Operating mode</h2></div><div class="panel-body"><label class="check"><InputCheckbox @bind-Value="settings.SimulationMode" /><strong>Simulation mode</strong></label><p class="secondary-text">Turn simulation off only after selecting and validating production media tools. Changing hosting address or authentication requires an application restart.</p></div></div>
+
+<div class="panel"><div class="panel-head"><h2>Media Tools</h2><div class="actions"><BroadcastRouter.Web.Components.Shared.StateBadge Value="Coordinator.Snapshot.ToolValidation.State" /><button class="btn small" @onclick="Validate">Validate / rescan</button></div></div><div class="panel-body">
+    <div class="form-grid"><div class="form-group wide"><label>ffmpeg.exe</label><InputText @bind-Value="settings.MediaTools.FfmpegPath" placeholder="C:\MediaTools\ffmpeg.exe" /></div><div class="form-group wide"><label>ffprobe.exe</label><InputText @bind-Value="settings.MediaTools.FfprobePath" placeholder="C:\MediaTools\ffprobe.exe" /></div><div class="form-group wide"><label>ffplay.exe (optional)</label><InputText @bind-Value="settings.MediaTools.FfplayPath" /></div></div>
+    <ul class="validation-list" style="margin-top:15px">@foreach(var finding in Coordinator.Snapshot.ToolValidation.Findings){<li class="@(finding.StartsWith("PASS") ? "pass" : finding.StartsWith("FAIL") ? "fail" : "warn")">@finding</li>}</ul>
+</div></div>
+
+<div class="panel"><div class="panel-head"><h2>Routing and recovery</h2></div><div class="panel-body"><div class="form-grid">
+    <div class="form-group check"><InputCheckbox @bind-Value="settings.Routing.AutomaticRoutingEnabled" /><label>Automatic routing enabled</label></div><div class="form-group"><label>Reservation grace (seconds)</label><InputNumber @bind-Value="settings.Routing.ReservationGraceSeconds" /></div><div class="form-group"><label>Primary stable before restore (seconds)</label><InputNumber @bind-Value="settings.Routing.StableRestoreSeconds" /></div><div class="form-group"><label>Stall timeout (seconds)</label><InputNumber @bind-Value="settings.Routing.StallTimeoutSeconds" /></div><div class="form-group"><label>Graceful stop timeout (seconds)</label><InputNumber @bind-Value="settings.Routing.GracefulStopSeconds" /></div><div class="form-group"><label>Retry delays</label><input value="@retryDelays" @oninput="e => retryDelays = e.Value?.ToString() ?? retryDelays" /><span class="secondary-text">Comma-separated seconds, e.g. 1,2,5,10,20,30</span></div>
+</div></div></div>
+
+<div class="panel"><div class="panel-head"><h2>DeckLink port mappings</h2></div><div class="table-wrap"><table><thead><tr><th>Detected output</th><th>Stable ID</th><th>Operator name</th><th>Port group</th><th>Reserved</th></tr></thead><tbody>
+@foreach(var port in Coordinator.Snapshot.Ports)
+{
+    var mapping = PortOverride(port);
+    <tr><td>@port.FfmpegName<span class="secondary-text">@port.ModelName</span></td><td class="mono">@port.StableId</td><td><InputText @bind-Value="mapping.FriendlyName" /></td><td><InputText @bind-Value="mapping.PortGroup" placeholder="e.g. Transmission" /></td><td><InputCheckbox @bind-Value="mapping.Reserved" /></td></tr>
+}
+</tbody></table></div></div>
+
+<div class="panel" id="manual"><div class="panel-head"><h2>Manual RTSP sources</h2><button class="btn small" @onclick="AddManual">Add source</button></div><div class="table-wrap"><table><thead><tr><th>On</th><th>Name</th><th>RTSP URL</th><th>Priority</th><th>Fixed output</th><th>Lock</th><th></th></tr></thead><tbody>
+@foreach(var source in settings.ManualSources){<tr><td><InputCheckbox @bind-Value="source.Enabled" /></td><td><InputText @bind-Value="source.FriendlyName" /></td><td><InputText @bind-Value="source.RtspUrl" /></td><td><InputNumber @bind-Value="source.Priority" /></td><td><select @bind="source.FixedPortId"><option value="">Automatic</option>@foreach(var port in Coordinator.Snapshot.Ports){<option value="@port.StableId">@(port.FriendlyName ?? port.FfmpegName)</option>}</select></td><td><InputCheckbox @bind-Value="source.Locked" /></td><td><button class="btn small danger" @onclick="() => settings.ManualSources.Remove(source)">Remove</button></td></tr>}
+</tbody></table></div></div>
+
+<div class="panel"><div class="panel-head"><h2>LAN access and security</h2></div><div class="panel-body"><div class="notice warning">The server binds to localhost by default. For LAN access, enable authentication, configure HTTPS through Kestrel or a trusted reverse proxy, set allowed networks, and restart. Passwords come from <span class="mono">BROADCASTROUTER_ADMIN_PASSWORD</span> and <span class="mono">BROADCASTROUTER_OPERATOR_PASSWORD</span>.</div><div class="form-grid"><div class="form-group"><label>Bind address</label><InputText @bind-Value="settings.Security.BindAddress" /></div><div class="form-group"><label>Port</label><InputNumber @bind-Value="settings.Security.Port" /></div><div class="form-group check"><InputCheckbox @bind-Value="settings.Security.RequireAuthentication" /><label>Require login</label></div><div class="form-group wide"><label>Allowed networks</label><InputText @bind-Value="settings.Security.AllowedNetworks" /></div><div class="form-group"><label>Session timeout (minutes)</label><InputNumber @bind-Value="settings.Security.SessionTimeoutMinutes" /></div></div></div></div>
+
+@code {
+    private OperatorSettings settings = null!; private string message = ""; private string messageClass = ""; private string retryDelays = "";
+    protected override void OnInitialized() { settings = Coordinator.GetSettings(); retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); }
+    private void AddManual() => settings.ManualSources.Add(new ManualSourceProfile());
+    private DeckLinkPortOverride PortOverride(DeckLinkPort port)
+    {
+        var value = settings.DeckLinkPortOverrides.FirstOrDefault(x => x.StableId.Equals(port.StableId, StringComparison.OrdinalIgnoreCase));
+        if (value is not null) return value;
+        value = new DeckLinkPortOverride { StableId = port.StableId, FriendlyName = port.FriendlyName ?? port.FfmpegName, PortGroup = port.PortGroup, Reserved = port.Reserved };
+        settings.DeckLinkPortOverrides.Add(value);
+        return value;
+    }
+    private async Task Save()
+    {
+        try { settings.Routing.RetryDelaysSeconds = retryDelays.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(int.Parse).ToArray(); await Coordinator.SaveSettingsAsync(settings); message = "Settings saved to SQLite. Host/bind/security changes take effect after restart."; messageClass = "success"; }
+        catch(Exception ex) { message = ex.Message; messageClass = "danger"; }
+    }
+    private async Task Validate() { await Save(); if(messageClass == "success") { await Coordinator.CommandAsync("rescan"); message = "Validation and hardware rescan requested."; } }
+}

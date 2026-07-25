@@ -1,0 +1,74 @@
+@page "/"
+@rendermode InteractiveServer
+@inject RouterCoordinator Coordinator
+@implements IDisposable
+
+<PageTitle>Dashboard · BroadcastRouter</PageTitle>
+<div class="page-head">
+    <div><h1>Broadcast dashboard</h1><p class="lead">Live source, route, output, and process health from the server.</p></div>
+    <AuthorizeView Roles="Administrator"><Authorized><div class="actions">
+        @if (snapshot.EmergencyStopped) { <button class="btn warning" @onclick='() => Run("clear-emergency")'>Clear emergency stop</button> }
+        else { <button class="btn danger" @onclick='() => Run("emergency-stop")'>Emergency stop</button> }
+    </div></Authorized></AuthorizeView>
+</div>
+@if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger">@error</div> }
+
+@if (snapshot.SimulationMode)
+{
+    <div class="notice warning"><strong>Simulation mode is active.</strong> No Wowza, RTSP, FFmpeg, or DeckLink hardware is being opened. Use this mode to verify queues and recovery behavior.</div>
+}
+@if (!snapshot.ToolValidation.CanStartHardwareRoutes && !snapshot.SimulationMode)
+{
+    <div class="notice danger"><strong>Hardware output is blocked.</strong> Media Tools validation must pass before a DeckLink route can start.</div>
+}
+
+<div class="grid stats">
+    <div class="card"><div class="stat-label">Discovered sources</div><div class="stat-value">@snapshot.Sources.Count</div><div class="stat-detail">@snapshot.Sources.Count(x => x.State == SourceState.Ready) media-ready</div></div>
+    <div class="card"><div class="stat-label">Running routes</div><div class="stat-value">@snapshot.Routes.Count(x => x.State == RouteState.Running)</div><div class="stat-detail">@snapshot.Routes.Count(x => x.State is RouteState.Reconnecting or RouteState.Failed) need attention</div></div>
+    <div class="card"><div class="stat-label">DeckLink ports</div><div class="stat-value">@snapshot.Ports.Count</div><div class="stat-detail">@FreePorts free / @snapshot.Ports.Count total</div></div>
+    <div class="card"><div class="stat-label">Waiting queue</div><div class="stat-value">@snapshot.Waiting.Count</div><div class="stat-detail">priority ordered</div></div>
+    <div class="card"><div class="stat-label">Server uptime</div><div class="stat-value">@FormatUptime</div><div class="stat-detail">browser-independent</div></div>
+</div>
+
+<div class="panel">
+    <div class="panel-head"><h2>Active routes</h2><a class="btn small" href="/routes">Open routing matrix</a></div>
+    <div class="table-wrap">
+        <table><thead><tr><th>Source</th><th>Input</th><th>Output</th><th>State</th><th>FPS</th><th>Frames</th><th>Uptime</th><th>Retries</th><th>Actions</th></tr></thead>
+        <tbody>
+        @foreach (var route in snapshot.Routes)
+        {
+            var source = snapshot.Sources.FirstOrDefault(x => x.Identity.Value == route.SourceId);
+            <tr>
+                <td><span class="primary-text">@route.SourceName</span><span class="secondary-text">@route.SourceId</span></td>
+                <td>@FormatMedia(source?.Media)</td>
+                <td><span class="primary-text">@(route.PortName ?? "—")</span><span class="secondary-text">@route.PresetId @(route.Locked ? "· locked" : "")</span></td>
+                <td><BroadcastRouter.Web.Components.Shared.StateBadge Value="route.State" />@if (route.FailureMessage is not null){<span class="secondary-text" title="@route.FailureMessage">@route.FailureCategory</span>}</td>
+                <td>@(route.Fps?.ToString("0.00") ?? "—")</td><td>@(route.Frame?.ToString("N0") ?? "—")</td>
+                <td>@FormatDuration(route.StartedAt is null ? null : DateTimeOffset.UtcNow - route.StartedAt)</td><td>@route.RestartCount</td>
+                <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn small" @onclick='() => Run("restart", route.SourceId)'>Restart</button><button class="btn small" @onclick='() => Run("stop", route.SourceId)'>Stop</button></div></Authorized></AuthorizeView></td>
+            </tr>
+        }
+        @if (snapshot.Routes.Count == 0) { <tr><td colspan="9"><div class="empty-state">No routes have been created.</div></td></tr> }
+        </tbody></table>
+    </div>
+</div>
+
+@if (snapshot.Waiting.Count > 0)
+{
+    <div class="panel"><div class="panel-head"><h2>Priority waiting queue</h2></div><div class="table-wrap"><table><thead><tr><th>Priority</th><th>Source</th><th>Reason</th></tr></thead><tbody>
+        @foreach (var item in snapshot.Waiting) { <tr><td>@item.Priority</td><td class="mono">@item.SourceId</td><td>@item.Reason</td></tr> }
+    </tbody></table></div></div>
+}
+
+@code {
+    private RouterSnapshot snapshot = null!;
+    private string error = "";
+    private int FreePorts => snapshot.Ports.Count(p => !snapshot.Routes.Any(r => r.PortId == p.StableId && r.State is not RouteState.Released));
+    private string FormatUptime => FormatDuration(DateTimeOffset.UtcNow - snapshot.StartedAt);
+    protected override void OnInitialized() { snapshot = Coordinator.Snapshot; Coordinator.Changed += OnChanged; }
+    private void OnChanged() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
+    private async Task Run(string action, string? source = null) { try { error = ""; await Coordinator.CommandAsync(action, source); } catch(Exception ex) { error = ex.Message; } }
+    public void Dispose() => Coordinator.Changed -= OnChanged;
+    private static string FormatMedia(MediaProperties? media) => media is null ? "Unknown" : $"{media.Width}×{media.Height} {media.FramesPerSecond:0.##}p · {media.VideoCodec}";
+    private static string FormatDuration(TimeSpan? value) => value is null ? "—" : value.Value.TotalHours >= 1 ? $"{(int)value.Value.TotalHours}:{value.Value:mm\\:ss}" : value.Value.ToString("mm\\:ss");
+}

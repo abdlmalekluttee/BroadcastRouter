@@ -1,0 +1,62 @@
+@page "/wowza"
+@attribute [Authorize(Roles = "Administrator")]
+@rendermode InteractiveServer
+@inject RouterCoordinator Coordinator
+
+<PageTitle>Wowza Servers · BroadcastRouter</PageTitle>
+<div class="page-head"><div><h1>Wowza Servers</h1><p class="lead">Supported management API discovery only; BroadcastRouter never scans the network.</p></div><div class="actions"><button class="btn" @onclick="Add">Add server</button><button class="btn primary" @onclick="Save">Save all</button></div></div>
+@if (!string.IsNullOrWhiteSpace(message)) { <div class="notice @messageClass">@message</div> }
+
+@foreach (var server in settings.WowzaServers)
+{
+    var health = Coordinator.Snapshot.Servers.FirstOrDefault(x => x.ServerId.Equals(server.ServerId, StringComparison.OrdinalIgnoreCase));
+    <div class="panel">
+        <div class="panel-head"><h2>@server.FriendlyName</h2><div class="actions">@if(health is not null){<BroadcastRouter.Web.Components.Shared.StateBadge Value="@(health.Reachable && health.Authenticated ? "Ready" : "Failed")" />}<button class="btn small" @onclick="() => Test(server)">Test connection</button><button class="btn small danger" @onclick="() => Remove(server)">Remove</button></div></div>
+        <div class="panel-body"><div class="form-grid">
+            <div class="form-group"><label>Friendly name</label><InputText @bind-Value="server.FriendlyName" /></div>
+            <div class="form-group"><label>Stable server ID</label><InputText @bind-Value="server.ServerId" /><span class="secondary-text">Changing this replaces prior discovered source identities after the next successful refresh.</span></div>
+            <div class="form-group check"><InputCheckbox @bind-Value="server.Enabled" /><label>Enabled</label></div>
+            <div class="form-group wide"><label>Management URL (HTTP/HTTPS and port)</label><InputText @bind-Value="server.ManagementUrl" /></div>
+            <div class="form-group"><label>Username</label><InputText @bind-Value="server.Username" /></div>
+            <div class="form-group"><label>Password (leave blank to keep stored DPAPI value)</label><input type="password" value="@Password(server)" @oninput="e => passwords[server] = e.Value?.ToString() ?? string.Empty" autocomplete="new-password" /></div>
+            <div class="form-group check"><InputCheckbox @bind-Value="server.ValidateTlsCertificate" /><label>Validate TLS certificate</label></div>
+            <div class="form-group"><label>RTSP host</label><InputText @bind-Value="server.RtspHost" /></div>
+            <div class="form-group"><label>RTSP port</label><InputNumber @bind-Value="server.RtspPort" /></div>
+            <div class="form-group"><label>Priority</label><InputNumber @bind-Value="server.Priority" /></div>
+            <div class="form-group"><label>Applications (comma separated)</label><InputText @bind-Value="server.Applications" /></div>
+            <div class="form-group"><label>Instances (comma separated)</label><InputText @bind-Value="server.ApplicationInstances" /></div>
+            <div class="form-group"><label>Polling interval (seconds)</label><InputNumber @bind-Value="server.PollingIntervalSeconds" /></div>
+            <div class="form-group"><label>Connection timeout (seconds)</label><InputNumber @bind-Value="server.ConnectionTimeoutSeconds" /></div>
+            <div class="form-group wide"><label>RTSP URL template</label><InputText @bind-Value="server.RtspUrlTemplate" /><span class="secondary-text">Tokens: {wowza-host}, {rtsp-port}, {application}, {application-instance}, {stream-name}, {server-id}</span></div>
+        </div>
+        @if (health is not null) { <div class="notice @(health.Reachable && health.Authenticated ? "success" : "danger")" style="margin-top:15px;margin-bottom:0">@health.Summary · @health.ActiveStreamCount active stream(s) · checked @health.CheckedAt.ToLocalTime().ToString("HH:mm:ss")</div> }
+        </div>
+    </div>
+}
+@if (settings.WowzaServers.Count == 0) { <div class="panel"><div class="empty-state">No Wowza server is configured. Add one, or use manually entered RTSP sources.</div></div> }
+
+@code {
+    private OperatorSettings settings = null!;
+    private readonly Dictionary<WowzaServerProfile, string> passwords = new();
+    private string message = "";
+    private string messageClass = "";
+    protected override void OnInitialized() => settings = Coordinator.GetSettings();
+    private void Add() { var server = new WowzaServerProfile { ServerId = UniqueIdGenerator.Next("WOWZA", settings.WowzaServers.Select(x => x.ServerId)) }; settings.WowzaServers.Add(server); passwords[server] = ""; }
+    private void Remove(WowzaServerProfile server) { settings.WowzaServers.Remove(server); passwords.Remove(server); }
+    private string Password(WowzaServerProfile server) => passwords.GetValueOrDefault(server, "");
+    private async Task Save()
+    {
+        try
+        {
+            foreach (var pair in passwords.Where(x => !string.IsNullOrEmpty(x.Value))) await Coordinator.SetWowzaPasswordAsync(pair.Key, pair.Value);
+            await Coordinator.SaveSettingsAsync(settings); message = "Wowza settings saved. Discovery will refresh automatically."; messageClass = "success";
+            passwords.Clear();
+        }
+        catch (Exception ex) { message = ex.Message; messageClass = "danger"; }
+    }
+    private async Task Test(WowzaServerProfile server)
+    {
+        var result = await Coordinator.TestWowzaAsync(server, string.IsNullOrEmpty(Password(server)) ? null : Password(server));
+        message = result.Summary; messageClass = result.Authenticated ? "success" : "danger";
+    }
+}

@@ -1,0 +1,14 @@
+<span class="badge @Css">@Text</span>
+
+@code {
+    [Parameter, EditorRequired] public object Value { get; set; } = "";
+    private string Text => Value.ToString() ?? "Unknown";
+    private string Css => Text.ToLowerInvariant() switch
+    {
+        "running" or "ready" or "valid" or "available" => "success",
+        "starting" or "probing" or "reserved" or "reconnecting" or "waitingforport" => "warning",
+        "failed" or "stalled" or "invalid" or "unavailable" => "danger",
+        "fallback" => "accent",
+        _ => "neutral"
+    };
+}

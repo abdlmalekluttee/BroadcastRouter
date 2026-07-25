@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <Version>1.1.1</Version>
+    <Authors>Abdlmalek Luttee</Authors>
+    <Product>BroadcastRouter</Product>
+    <Description>Production Wowza-to-Blackmagic DeckLink routing control for Windows.</Description>
+    <RepositoryUrl>https://github.com/abdlmalekluttee/BroadcastRouter</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+</Project>

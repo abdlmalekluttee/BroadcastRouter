@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet restore .\BroadcastRouter.sln
+      - run: dotnet build .\BroadcastRouter.sln --configuration Release --no-restore
+      - run: dotnet run --project .\tests\BroadcastRouter.Tests\BroadcastRouter.Tests.csproj --configuration Release --no-build
+      - name: Build self-contained release
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          .\scripts\Publish-Release.ps1 -Version $version -OutputRoot .\artifacts
+      - uses: actions/upload-artifact@v7
+        with:
+          name: BroadcastRouter-${{ github.ref_name }}
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem .\artifacts\*.zip).FullName (Get-ChildItem .\artifacts\*.sha256).FullName --verify-tag --generate-notes --title "BroadcastRouter $env:GITHUB_REF_NAME"

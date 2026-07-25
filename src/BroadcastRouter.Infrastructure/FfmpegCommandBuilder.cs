@@ -1,0 +1,126 @@
+using System.Diagnostics;
+using System.Globalization;
+using BroadcastRouter.Domain;
+
+namespace BroadcastRouter.Infrastructure;
+
+public sealed record FfmpegRouteOptions(
+    string ExecutablePath,
+    bool UseTcpTransport = true,
+    TimeSpan? ReadTimeout = null,
+    string LogLevel = "warning");
+
+public static class FfmpegCommandBuilder
+{
+    public static ProcessStartInfo Build(
+        FfmpegRouteOptions options,
+        DiscoveredSource source,
+        DeckLinkPort port,
+        OutputPreset preset)
+    {
+        if (string.IsNullOrWhiteSpace(options.ExecutablePath)) throw new ArgumentException("FFmpeg path is required.", nameof(options));
+        ValidateToken(port.FfmpegName, nameof(port.FfmpegName));
+        ValidateToken(preset.Mode.PixelFormat, nameof(preset.Mode.PixelFormat));
+
+        var start = new ProcessStartInfo(options.ExecutablePath)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            CreateNoWindow = true
+        };
+
+        Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats");
+        if (options.UseTcpTransport) Add(start, "-rtsp_transport", "tcp");
+        if (options.ReadTimeout is { } timeout)
+            Add(start, "-rw_timeout", ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture));
+        if (preset.BufferSizeMegabytes > 0) Add(start, "-buffer_size", $"{preset.BufferSizeMegabytes}M");
+        if (preset.LowLatency) Add(start, "-flags", "low_delay");
+        Add(start, "-i", source.RtspUri.AbsoluteUri);
+
+        var rate = $"{preset.Mode.FrameRateNumerator}/{preset.Mode.FrameRateDenominator}";
+        Add(start,
+            "-map", "0:v:0",
+            "-vf", $"scale={preset.Mode.Width}:{preset.Mode.Height}:flags=lanczos,fps={rate}",
+            "-pix_fmt", preset.Mode.PixelFormat);
+        if (preset.IncludeAudio) Add(start, "-map", "0:a:0?"); else Add(start, "-an");
+        Add(start, "-f", "decklink", port.FfmpegName);
+        return start;
+    }
+
+    public static ProcessStartInfo BuildFallback(
+        FfmpegRouteOptions options,
+        DeckLinkPort port,
+        OutputPreset preset,
+        FallbackMode mode,
+        string? value)
+    {
+        if (string.IsNullOrWhiteSpace(options.ExecutablePath)) throw new ArgumentException("FFmpeg path is required.", nameof(options));
+        ValidateToken(port.FfmpegName, nameof(port.FfmpegName));
+        var start = new ProcessStartInfo(options.ExecutablePath)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            CreateNoWindow = true
+        };
+        Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats");
+        var rate = $"{preset.Mode.FrameRateNumerator}/{preset.Mode.FrameRateDenominator}";
+        switch (mode)
+        {
+            case FallbackMode.TestPattern:
+                Add(start, "-re", "-f", "lavfi", "-i", $"smptebars=size={preset.Mode.Width}x{preset.Mode.Height}:rate={rate}");
+                break;
+            case FallbackMode.File:
+                if (string.IsNullOrWhiteSpace(value) || !File.Exists(value)) throw new InvalidOperationException("The configured standby media file does not exist.");
+                Add(start, "-stream_loop", "-1", "-re", "-i", value);
+                break;
+            case FallbackMode.FreezeLastFrame:
+                if (string.IsNullOrWhiteSpace(value) || !File.Exists(value)) throw new InvalidOperationException("Freeze-frame standby requires a configured image file.");
+                Add(start, "-loop", "1", "-framerate", rate, "-i", value);
+                break;
+            case FallbackMode.StandbySource:
+                if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != "rtsp") throw new InvalidOperationException("Standby source must be an absolute RTSP URL.");
+                Add(start, "-rtsp_transport", "tcp", "-i", uri.AbsoluteUri);
+                break;
+            default:
+                Add(start, "-re", "-f", "lavfi", "-i", $"color=c=black:size={preset.Mode.Width}x{preset.Mode.Height}:rate={rate}");
+                break;
+        }
+        Add(start, "-map", "0:v:0", "-vf", $"scale={preset.Mode.Width}:{preset.Mode.Height}:flags=lanczos,fps={rate}", "-pix_fmt", preset.Mode.PixelFormat);
+        if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "1:a:0", "-shortest");
+        else Add(start, "-an");
+        Add(start, "-f", "decklink", port.FfmpegName);
+        return start;
+    }
+
+    public static string ToRedactedDisplay(ProcessStartInfo start)
+    {
+        var tokens = start.ArgumentList.Select(RedactUri).Select(QuoteForDisplay);
+        return $"{QuoteForDisplay(start.FileName)} {string.Join(' ', tokens)}";
+    }
+
+    private static void Add(ProcessStartInfo start, params string[] arguments)
+    {
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+    }
+
+    private static void ValidateToken(string value, string name)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Any(char.IsControl))
+            throw new ArgumentException("FFmpeg argument values cannot be empty or contain control characters.", name);
+    }
+
+    private static string RedactUri(string token)
+    {
+        if (!Uri.TryCreate(token, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.UserInfo)) return token;
+        var builder = new UriBuilder(uri) { UserName = "***", Password = "***" };
+        return builder.Uri.AbsoluteUri;
+    }
+
+    private static string QuoteForDisplay(string value) => value.Any(char.IsWhiteSpace) || value.Contains('"')
+        ? $"\"{value.Replace("\"", "\\\"")}\""
+        : value;
+}

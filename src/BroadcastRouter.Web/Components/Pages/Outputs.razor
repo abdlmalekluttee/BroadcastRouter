@@ -1,0 +1,30 @@
+@page "/outputs"
+@rendermode InteractiveServer
+@inject RouterCoordinator Coordinator
+@implements IDisposable
+
+<PageTitle>DeckLink Outputs · BroadcastRouter</PageTitle>
+<div class="page-head"><div><h1>DeckLink Outputs</h1><p class="lead">FFmpeg enumeration with mapping-confidence warnings and atomic reservation state.</p></div><AuthorizeView Roles="Administrator"><Authorized><button class="btn" @onclick='() => Coordinator.CommandAsync("rescan")'>Rescan hardware</button></Authorized></AuthorizeView></div>
+@if (!snapshot.SimulationMode && !snapshot.ToolValidation.CanStartHardwareRoutes) { <div class="notice danger">DeckLink starts are blocked: @snapshot.ToolValidation.Findings.LastOrDefault(x => x.StartsWith("FAIL"))</div> }
+<div class="grid port-grid">
+@foreach (var port in snapshot.Ports)
+{
+    var route = snapshot.Routes.FirstOrDefault(x => x.PortId == port.StableId && x.State != RouteState.Released);
+    <div class="card port-card @(route is null ? "" : "occupied")">
+        <span class="connector"></span><div class="stat-label">Card @port.CardIndex · Subdevice @port.SubdeviceIndex</div><h2 style="margin-top:8px">@(port.FriendlyName ?? port.FfmpegName)</h2>
+        <span class="secondary-text">@port.ModelName</span><div style="margin-top:16px"><BroadcastRouter.Web.Components.Shared.StateBadge Value="@(port.IsAvailable ? (route is null ? "Available" : "Running") : "Unavailable")" /></div>
+        <dl><dt>FFmpeg name</dt><dd class="mono">@port.FfmpegName</dd><dt>Stable ID</dt><dd class="mono">@port.StableId</dd><dt>Hardware path</dt><dd>@(port.PciLocation ?? "Not exposed by FFmpeg")</dd><dt>Port group</dt><dd>@(string.IsNullOrWhiteSpace(port.PortGroup) ? "Default" : port.PortGroup) @(port.Reserved ? "· reserved from automatic routing" : "")</dd><dt>Mapping confidence</dt><dd>@port.IdentityConfidence</dd><dt>Supported modes</dt><dd>@(port.SupportedModes.Count == 0 ? "Query not exposed / verified when FFmpeg starts" : string.Join(", ", port.SupportedModes.Select(Mode)))</dd></dl>
+        @if (route is not null) { <div class="notice success" style="margin:12px 0 0"><strong>@route.SourceName</strong><br />@route.PresetId · @(route.Locked ? "locked" : "unlocked")</div> }
+    </div>
+}
+</div>
+@if (snapshot.Ports.Count == 0) { <div class="panel"><div class="empty-state">No DeckLink outputs enumerated. Configure a DeckLink-enabled FFmpeg build and install Blackmagic Desktop Video, then rescan.</div></div> }
+<div class="notice warning" style="margin-top:18px">FFmpeg names are address aliases, not guaranteed physical identities. Re-verify operator port names after Desktop Video upgrades, PCI slot changes, device-profile changes, or card replacement.</div>
+
+@code {
+    private RouterSnapshot snapshot = null!;
+    protected override void OnInitialized() { snapshot = Coordinator.Snapshot; Coordinator.Changed += Changed; }
+    private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
+    public void Dispose() => Coordinator.Changed -= Changed;
+    private static string Mode(VideoMode m) => $"{m.Width}×{m.Height}@{m.FramesPerSecond:0.##} {m.PixelFormat}";
+}

@@ -1,0 +1,5 @@
+FFmpeg is intentionally not bundled.
+
+Open Settings > Media Tools and select a trusted prebuilt DeckLink-enabled
+ffmpeg.exe and matching ffprobe.exe. Hardware route starts remain blocked
+until every validation gate passes.

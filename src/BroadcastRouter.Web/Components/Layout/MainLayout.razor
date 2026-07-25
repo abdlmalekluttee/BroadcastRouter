@@ -1,0 +1,29 @@
+@inherits LayoutComponentBase
+@inject RouterCoordinator Coordinator
+@implements IDisposable
+
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark"><img src="images/broadcastrouter-logo-64.png" alt="" /></span><div><strong>BroadcastRouter</strong><small>DeckLink control</small></div></div>
+        <NavMenu />
+        <div class="sidebar-foot">
+            <span class="status-dot @(snapshot.EmergencyStopped ? "danger" : "online")"></span>
+            <span>@(snapshot.EmergencyStopped ? "Emergency stop" : snapshot.SimulationMode ? "Simulation" : "Production")</span>
+        </div>
+    </aside>
+    <main>
+        <header class="topbar">
+            <div><strong>@snapshot.StatusMessage</strong><small> Updated @snapshot.UpdatedAt.ToLocalTime().ToString("HH:mm:ss")</small></div>
+            <div class="system-stats"><span>CPU @snapshot.CpuPercent.ToString("0.0")%</span><span>RAM @FormatBytes(snapshot.WorkingSetBytes)</span><span>@snapshot.Routes.Count(x => x.State == RouteState.Running) live</span></div>
+        </header>
+        <section class="content">@Body</section>
+    </main>
+</div>
+
+@code {
+    private RouterSnapshot snapshot = null!;
+    protected override void OnInitialized() { snapshot = Coordinator.Snapshot; Coordinator.Changed += OnChanged; }
+    private void OnChanged() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
+    public void Dispose() => Coordinator.Changed -= OnChanged;
+    private static string FormatBytes(long value) => $"{value / 1024d / 1024d:0} MB";
+}

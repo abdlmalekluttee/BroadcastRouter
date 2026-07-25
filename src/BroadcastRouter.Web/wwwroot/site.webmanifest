@@ -1,0 +1,21 @@
+{
+  "name": "BroadcastRouter",
+  "short_name": "BroadcastRouter",
+  "description": "Production Wowza, FFmpeg, and Blackmagic DeckLink routing control.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#08111e",
+  "theme_color": "#0b1625",
+  "icons": [
+    {
+      "src": "/images/broadcastrouter-logo-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/images/broadcastrouter-logo-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
