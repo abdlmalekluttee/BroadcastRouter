@@ -56,4 +56,8 @@ public static class FfmpegStallDetector
 {
     public static bool IsStalled(bool processRunning, FfmpegProgressSnapshot? progress, DateTimeOffset now, TimeSpan timeout) =>
         processRunning && progress is not null && !progress.Completed && now - progress.LastProgressAt > timeout;
+
+    public static bool IsFirstProgressTimedOut(bool processRunning, FfmpegProgressSnapshot? progress, DateTimeOffset startedAt,
+        DateTimeOffset now, TimeSpan timeout) =>
+        processRunning && (progress is null || progress.Frame <= 0) && timeout > TimeSpan.Zero && now - startedAt > timeout;
 }

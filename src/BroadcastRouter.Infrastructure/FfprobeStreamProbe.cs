@@ -46,17 +46,33 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            TryKill(process);
+            await TerminateAsync(process, stdoutTask, stderrTask).ConfigureAwait(false);
             return new(false, false, null, "Timeout", $"FFprobe exceeded the {timeout.TotalSeconds:0.#} second deadline.");
+        }
+        catch (OperationCanceledException)
+        {
+            await TerminateAsync(process, stdoutTask, stderrTask).ConfigureAwait(false);
+            throw;
         }
         catch
         {
-            TryKill(process);
+            await TerminateAsync(process, stdoutTask, stderrTask).ConfigureAwait(false);
             throw;
         }
     }
 
     public static StreamProbeResult Parse(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return new(false, false, null, "InvalidOutput", "FFprobe returned empty output.");
+        try { return ParseDocument(json); }
+        catch (JsonException)
+        {
+            return new(false, false, null, "InvalidOutput", "FFprobe returned malformed JSON.");
+        }
+    }
+
+    private static StreamProbeResult ParseDocument(string json)
     {
         using var document = JsonDocument.Parse(json);
         if (!document.RootElement.TryGetProperty("streams", out var streams) || streams.ValueKind != JsonValueKind.Array)
@@ -81,6 +97,13 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
         var frameCount = Integer64(video.Value, "nb_read_frames") ?? 0;
         var fps = Rational(Text(video.Value, "avg_frame_rate")) ?? Rational(Text(video.Value, "r_frame_rate"));
         var bitRate = Integer64(video.Value, "bit_rate");
+        var fieldOrder = Text(video.Value, "field_order");
+        var interlaced = fieldOrder switch
+        {
+            "tt" or "bb" or "tb" or "bt" => true,
+            "progressive" => false,
+            _ => (bool?)null
+        };
         if (bitRate is null && document.RootElement.TryGetProperty("format", out var format)) bitRate = Integer64(format, "bit_rate");
         var media = new MediaProperties(
             Text(video.Value, "codec_name"),
@@ -91,7 +114,8 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
             bitRate,
             audio is null ? null : Integer(audio.Value, "sample_rate"),
             audio is null ? null : Integer(audio.Value, "channels"),
-            frameCount > 0);
+            frameCount > 0,
+            interlaced);
         return frameCount > 0
             ? new(true, true, media, null, $"Received {frameCount} video frame(s) during validation.")
             : new(true, false, media, "NoVideoFrames", "Video metadata was detected but no decoded/read frames were reported.");
@@ -114,5 +138,11 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
         var line = stderr.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "FFprobe failed.";
         return line.Length <= 500 ? line : line[..500];
     }
-    private static void TryKill(Process process) { try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { } }
+    private static async Task TerminateAsync(Process process, Task<string> stdoutTask, Task<string> stderrTask)
+    {
+        try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+        try { await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+        try { await stdoutTask.ConfigureAwait(false); } catch { }
+        try { await stderrTask.ConfigureAwait(false); } catch { }
+    }
 }

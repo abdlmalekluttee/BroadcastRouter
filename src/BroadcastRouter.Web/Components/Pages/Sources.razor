@@ -1,10 +1,11 @@
 @page "/sources"
 @rendermode InteractiveServer
 @inject RouterCoordinator Coordinator
+@inject AuthorizedRouterCommands Commands
 @implements IDisposable
 
 <PageTitle>Sources · BroadcastRouter</PageTitle>
-<div class="page-head"><div><h1>Sources</h1><p class="lead">Wowza-discovered publishers and explicitly configured RTSP inputs.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" @onclick='() => Coordinator.CommandAsync("rescan")'>Refresh discovery</button><a class="btn" href="/settings#manual">Add manual RTSP</a></div></Authorized></AuthorizeView></div>
+<div class="page-head"><div><h1>Sources</h1><p class="lead">Wowza-discovered publishers and explicitly configured RTSP inputs.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" @onclick='() => Commands.ExecuteAsync("rescan")'>Refresh discovery</button><a class="btn" href="/settings#manual">Add manual RTSP</a></div></Authorized></AuthorizeView></div>
 @if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger">@error</div> }
 <div class="panel"><div class="table-wrap"><table><thead><tr><th>Source</th><th>Origin</th><th>RTSP</th><th>Media</th><th>Audio</th><th>State</th><th>Priority</th><th>Last observed</th><th>Actions</th></tr></thead><tbody>
 @foreach (var source in snapshot.Sources)
@@ -12,8 +13,8 @@
     var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source.Identity.Value);
     <tr><td><span class="primary-text">@source.FriendlyName</span><span class="secondary-text">@source.Identity.Value</span></td>
         <td>@source.Identity.ServerId<span class="secondary-text">@source.Identity.Application / @source.Identity.ApplicationInstance</span></td>
-        <td class="mono" title="@source.RtspUri">@Sanitize(source.RtspUri)</td>
-        <td>@(source.Media is null ? "—" : $"{source.Media.VideoCodec} · {source.Media.Width}×{source.Media.Height} · {source.Media.FramesPerSecond:0.##} fps")</td>
+        <td class="mono" title="@Sanitize(source.RtspUri)">@Sanitize(source.RtspUri)</td>
+        <td>@(source.Media is null ? "—" : $"{source.Media.VideoCodec} · {source.Media.Width}×{source.Media.Height} · {FormatRate(source.Media)}")</td>
         <td>@(source.Media?.AudioCodec is null ? "None" : $"{source.Media.AudioCodec} · {source.Media.AudioSampleRate} Hz · {source.Media.AudioChannels} ch")</td>
         <td><BroadcastRouter.Web.Components.Shared.StateBadge Value="source.State" /></td><td>@source.Priority</td><td>@source.LastObservedAt?.ToLocalTime().ToString("HH:mm:ss")</td>
         <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn small primary" disabled="@(route?.State is RouteState.Running or RouteState.Starting)" @onclick='() => Run("start", source.Identity.Value)'>Route</button><button class="btn small" @onclick='() => Run("reprobe", source.Identity.Value)'>Reprobe</button></div></Authorized></AuthorizeView></td></tr>
@@ -26,7 +27,10 @@
     private string error = "";
     protected override void OnInitialized() { snapshot = Coordinator.Snapshot; Coordinator.Changed += Changed; }
     private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
-    private async Task Run(string action, string id) { try { error = ""; await Coordinator.CommandAsync(action, id); } catch(Exception ex) { error = ex.Message; } }
+    private async Task Run(string action, string id) { try { error = ""; await Commands.ExecuteAsync(action, id); } catch(Exception ex) { error = ex.Message; } }
     public void Dispose() => Coordinator.Changed -= Changed;
-    private static string Sanitize(Uri value) { var b = new UriBuilder(value); if (!string.IsNullOrEmpty(b.UserName)) { b.UserName = "***"; b.Password = "***"; } return b.Uri.AbsoluteUri; }
+    private static string Sanitize(Uri value) => LogRedactor.RedactForDiagnostics(value.AbsoluteUri);
+    private static string FormatRate(MediaProperties media) => media.Interlaced is null
+        ? $"{media.FramesPerSecond:0.##} fps"
+        : $"{media.FramesPerSecond:0.##}{(media.Interlaced.Value ? "i" : "p")}";
 }

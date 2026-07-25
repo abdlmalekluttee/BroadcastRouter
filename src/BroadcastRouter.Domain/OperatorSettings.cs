@@ -2,7 +2,7 @@ namespace BroadcastRouter.Domain;
 
 public sealed class OperatorSettings
 {
-    public int SchemaVersion { get; set; } = 2;
+    public int SchemaVersion { get; set; } = 3;
     public bool SimulationMode { get; set; } = false;
     public MediaToolPaths MediaTools { get; set; } = new();
     public List<WowzaServerProfile> WowzaServers { get; set; } = [];
@@ -120,7 +120,9 @@ public sealed class RoutingPolicySettings
     public int ReservationGraceSeconds { get; set; } = 30;
     public int StableRestoreSeconds { get; set; } = 5;
     public int StallTimeoutSeconds { get; set; } = 10;
+    public int FirstProgressTimeoutSeconds { get; set; } = 20;
     public int GracefulStopSeconds { get; set; } = 5;
+    public int MaxRetryAttempts { get; set; }
     public int[] RetryDelaysSeconds { get; set; } = [1, 2, 5, 10, 20, 30];
 }
 
@@ -131,5 +133,6 @@ public sealed class SecuritySettings
     public bool RequireAuthentication { get; set; }
     public bool HttpsEnabled { get; set; }
     public string AllowedNetworks { get; set; } = "127.0.0.1/32;::1/128";
+    public string TrustedProxies { get; set; } = "";
     public int SessionTimeoutMinutes { get; set; } = 30;
 }

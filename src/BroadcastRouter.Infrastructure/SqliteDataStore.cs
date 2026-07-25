@@ -325,6 +325,9 @@ public sealed class SqliteDataStore
     private static void ValidateSettings(OperatorSettings settings)
     {
         if (settings.SchemaVersion < 1) throw new InvalidOperationException("Settings schema version is invalid.");
+        ValidateOptionalPath(settings.MediaTools.FfmpegPath, "FFmpeg executable");
+        ValidateOptionalPath(settings.MediaTools.FfprobePath, "FFprobe executable");
+        ValidateOptionalPath(settings.MediaTools.FfplayPath, "FFplay executable");
         if (settings.WowzaServers.GroupBy(x => x.ServerId, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
             throw new InvalidOperationException("Wowza server IDs must be unique.");
         foreach (var server in settings.WowzaServers)
@@ -332,6 +335,8 @@ public sealed class SqliteDataStore
             if (string.IsNullOrWhiteSpace(server.ServerId)) throw new InvalidOperationException("Every Wowza server requires a stable ID.");
             if (!Uri.TryCreate(server.ManagementUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
                 throw new InvalidOperationException($"Wowza server {server.ServerId} has an invalid management URL.");
+            if (!string.IsNullOrEmpty(uri.UserInfo))
+                throw new InvalidOperationException($"Wowza server {server.ServerId} must not embed credentials in its management URL.");
             if (string.IsNullOrWhiteSpace(server.RtspHost)) throw new InvalidOperationException($"Wowza server {server.ServerId} requires an RTSP host.");
             if (server.RtspPort is < 1 or > 65535) throw new InvalidOperationException($"Wowza server {server.ServerId} has an invalid RTSP port.");
             if (string.IsNullOrWhiteSpace(server.Applications)) throw new InvalidOperationException($"Wowza server {server.ServerId} requires at least one application.");
@@ -348,6 +353,8 @@ public sealed class SqliteDataStore
             if (string.IsNullOrWhiteSpace(source.FriendlyName)) throw new InvalidOperationException($"Manual source {source.StableId} requires a name.");
             if (!Uri.TryCreate(source.RtspUrl, UriKind.Absolute, out var rtsp) || !rtsp.Scheme.Equals("rtsp", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"Manual source {source.FriendlyName} requires an absolute RTSP URL.");
+            if (!string.IsNullOrEmpty(rtsp.UserInfo))
+                throw new InvalidOperationException($"Manual source {source.FriendlyName} must not embed credentials in its RTSP URL because settings are persisted.");
         }
         if (settings.Presets.Count == 0) throw new InvalidOperationException("At least one output preset is required.");
         if (settings.Presets.GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
@@ -359,6 +366,20 @@ public sealed class SqliteDataStore
             if (preset.FrameRateNumerator <= 0 || preset.FrameRateDenominator <= 0) throw new InvalidOperationException($"Preset {preset.Id} requires a positive frame rate.");
             if (string.IsNullOrWhiteSpace(preset.PixelFormat)) throw new InvalidOperationException($"Preset {preset.Id} requires a pixel format.");
             if (preset.BufferSizeMegabytes is < 1 or > 4096) throw new InvalidOperationException($"Preset {preset.Id} buffer size must be between 1 and 4096 MB.");
+            if (preset.RtspTransport is not ("tcp" or "udp")) throw new InvalidOperationException($"Preset {preset.Id} has an unsupported RTSP transport.");
+            if (preset.AspectHandling is not ("Fit" or "Fill" or "Stretch")) throw new InvalidOperationException($"Preset {preset.Id} has an unsupported aspect-handling mode.");
+            if (preset.StandbyMode == FallbackMode.StandbySource)
+            {
+                if (!Uri.TryCreate(preset.StandbyValue, UriKind.Absolute, out var standby) || !standby.Scheme.Equals("rtsp", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"Preset {preset.Id} requires an absolute RTSP standby-source URL.");
+                if (!string.IsNullOrEmpty(standby.UserInfo))
+                    throw new InvalidOperationException($"Preset {preset.Id} must not embed credentials in its standby RTSP URL because settings are persisted.");
+            }
+            if (preset.StandbyMode is FallbackMode.File or FallbackMode.FreezeLastFrame)
+            {
+                if (string.IsNullOrWhiteSpace(preset.StandbyValue)) throw new InvalidOperationException($"Preset {preset.Id} requires a standby media path.");
+                ValidateOptionalPath(preset.StandbyValue, $"Preset {preset.Id} standby media");
+            }
         }
         var presetIds = settings.Presets.Select(x => x.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (settings.Rules.GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
@@ -372,17 +393,21 @@ public sealed class SqliteDataStore
             RoutingRuleEvaluator.ValidatePattern(rule.InstancePattern);
             RoutingRuleEvaluator.ValidatePattern(rule.StreamPattern);
         }
-        if (settings.Routing.ReservationGraceSeconds < 0 || settings.Routing.StableRestoreSeconds < 0 || settings.Routing.StallTimeoutSeconds <= 0 || settings.Routing.GracefulStopSeconds <= 0)
+        if (settings.Routing.ReservationGraceSeconds < 0 || settings.Routing.StableRestoreSeconds < 0 || settings.Routing.StallTimeoutSeconds <= 0
+            || settings.Routing.FirstProgressTimeoutSeconds <= 0 || settings.Routing.GracefulStopSeconds <= 0 || settings.Routing.MaxRetryAttempts < 0)
             throw new InvalidOperationException("Routing and recovery timeouts contain an invalid value.");
         if (settings.Routing.RetryDelaysSeconds.Length == 0 || settings.Routing.RetryDelaysSeconds.Any(value => value < 0))
             throw new InvalidOperationException("Retry delays require one or more non-negative values.");
-        if (!IPAddress.TryParse(settings.Security.BindAddress, out _)) throw new InvalidOperationException("Bind address must be a valid IP address.");
+        NetworkAccessPolicy.ValidateExposure(settings.Security.BindAddress, settings.Security.RequireAuthentication);
+        NetworkAccessPolicy.Validate(settings.Security.AllowedNetworks);
+        _ = NetworkAccessPolicy.ParseTrustedProxies(settings.Security.TrustedProxies);
         if (settings.Security.Port is < 1 or > 65535) throw new InvalidOperationException("Security port must be between 1 and 65535.");
         if (settings.Security.SessionTimeoutMinutes is < 5 or > 1440) throw new InvalidOperationException("Session timeout must be between 5 and 1440 minutes.");
     }
 
     private static void NormalizeSettings(OperatorSettings settings)
     {
+        settings.SchemaVersion = Math.Max(settings.SchemaVersion, 3);
         settings.MediaTools.FfmpegPath = settings.MediaTools.FfmpegPath.Trim();
         settings.MediaTools.FfprobePath = settings.MediaTools.FfprobePath.Trim();
         settings.MediaTools.FfplayPath = settings.MediaTools.FfplayPath.Trim();
@@ -421,5 +446,16 @@ public sealed class SqliteDataStore
         }
         settings.Security.BindAddress = settings.Security.BindAddress.Trim();
         settings.Security.AllowedNetworks = settings.Security.AllowedNetworks.Trim();
+        settings.Security.TrustedProxies = settings.Security.TrustedProxies.Trim();
+    }
+
+    private static void ValidateOptionalPath(string path, string label)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        try { _ = Path.GetFullPath(path); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new InvalidOperationException($"{label} path is invalid.", ex);
+        }
     }
 }

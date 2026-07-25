@@ -2,6 +2,21 @@ using BroadcastRouter.Application;
 using BroadcastRouter.Domain;
 using BroadcastRouter.Infrastructure;
 
+if (args is ["--write-simulation-settings", var databasePath, var portText, var authenticationText]
+    && int.TryParse(portText, out var runtimePort) && bool.TryParse(authenticationText, out var runtimeAuthentication))
+{
+    var runtimeStore = new SqliteDataStore(databasePath);
+    await runtimeStore.InitializeAsync();
+    var runtimeSettings = await runtimeStore.LoadSettingsAsync();
+    runtimeSettings.SimulationMode = true;
+    runtimeSettings.Security.BindAddress = "127.0.0.1";
+    runtimeSettings.Security.Port = runtimePort;
+    runtimeSettings.Security.RequireAuthentication = runtimeAuthentication;
+    runtimeSettings.Security.AllowedNetworks = "127.0.0.1/32;::1/128";
+    await runtimeStore.SaveSettingsAsync(runtimeSettings);
+    return 0;
+}
+
 var tests = new (string Name, Action Body)[]
 {
     ("Persistent source identity", SourceIdentityIsUnambiguous),
@@ -9,23 +24,34 @@ var tests = new (string Name, Action Body)[]
     ("RTSP URL generation", RtspUrlIsGeneratedAndEscaped),
     ("Invalid RTSP token rejected", InvalidRtspTokenIsRejected),
     ("Atomic duplicate reservation prevention", DuplicateReservationIsPrevented),
+    ("Concurrent reservation stress", ConcurrentReservationStressAllowsOneOwner),
     ("Locked reservation protection", LockedReservationRequiresForce),
+    ("Startup failure releases reservation", StartupFailureReleasesReservation),
+    ("Missing-source lease retention", MissingSourceLeaseRetentionHonorsLockAndGrace),
+    ("Emergency stop blocks route starts", EmergencyStopBlocksRouteStarts),
+    ("Locked route stop is refused before release", LockedRouteStopIsRefused),
+    ("Administrator route commands are authorized", RouteCommandsRequireAdministrator),
     ("Priority waiting queue", HigherPriorityDequeuesFirst),
     ("Route transition validation", InvalidStateJumpIsRejected),
     ("Automatic assignment", AutomaticAssignmentUsesOnePort),
     ("Simulation discovery", SimulationReturnsUsableVideo),
     ("Retry policy caps delay", RetryPolicyCapsAtMaximum),
+    ("Retry attempt cap is opt-in", RetryAttemptCapIsOptIn),
     ("FFmpeg command uses argument list", FfmpegCommandUsesArgumentList),
     ("FFmpeg display redacts credentials", FfmpegDisplayRedactsCredentials),
     ("FFmpeg progress parsing", FfmpegProgressIsParsed),
     ("FFmpeg stall detection", FfmpegStallIsDetected),
+    ("FFmpeg first-progress timeout", FfmpegFirstProgressTimeoutIsDetected),
     ("FFmpeg failure classification", FfmpegFailureIsClassified),
     ("FFprobe media parsing", FfprobeMediaIsParsed),
+    ("FFprobe scan type parsing", FfprobeScanTypeIsParsed),
     ("FFprobe rejects metadata-only video", FfprobeRequiresReadFrames),
+    ("FFprobe rejects malformed output", FfprobeRejectsMalformedOutput),
     ("Wowza incoming stream parsing", WowzaIncomingStreamsAreParsed),
     ("Renamed Wowza source is pruned", RenamedWowzaSourceIsPruned),
     ("Failed Wowza poll retains source", FailedWowzaPollRetainsSource),
     ("Log credential redaction", AuthenticatedUrisAreRedacted),
+    ("Diagnostics omit sensitive data", DiagnosticsOmitSensitiveData),
     ("Windows DPAPI credential round trip", DpapiCredentialRoundTrips),
     ("Atomic operator settings persistence", OperatorSettingsPersistAtomically),
     ("DeckLink sink enumeration parsing", DeckLinkSinksAreParsed),
@@ -37,6 +63,10 @@ var tests = new (string Name, Action Body)[]
     ("SQLite settings persistence", SqliteSettingsPersist),
     ("All GUI settings round trip", AllGuiSettingsRoundTrip),
     ("Settings reject invalid GUI values", SettingsRejectInvalidGuiValues),
+    ("Settings reject invalid CIDR ranges", SettingsRejectInvalidCidrRanges),
+    ("Network exposure and proxy trust are fail-closed", NetworkExposureIsFailClosed),
+    ("Settings reject embedded credentials", SettingsRejectEmbeddedCredentials),
+    ("Failed validation preserves active settings", FailedValidationPreservesActiveSettings),
     ("SQLite route restart recovery", SqliteRoutesRestore),
     ("SQLite structured log redaction", SqliteLogsAreRedacted),
     ("SQLite integrity check", SqliteIntegrityIsOk),
@@ -107,6 +137,19 @@ static void DuplicateReservationIsPrevented()
     True(!manager.TryReserve("PORT-1", second, false, DateTimeOffset.UtcNow, out _));
 }
 
+static void ConcurrentReservationStressAllowsOneOwner()
+{
+    var manager = new PortReservationManager();
+    var winners = 0;
+    Parallel.For(0, 500, index =>
+    {
+        var source = new SourceIdentity("STRESS", "live", "_definst_", $"source-{index}");
+        if (manager.TryReserve("PORT-1", source, false, DateTimeOffset.UtcNow, out _)) Interlocked.Increment(ref winners);
+    });
+    Equal(1, winners);
+    Equal(1, manager.Snapshot().Count);
+}
+
 static void LockedReservationRequiresForce()
 {
     var manager = new PortReservationManager();
@@ -114,6 +157,55 @@ static void LockedReservationRequiresForce()
     True(manager.TryReserve("PORT-1", source, true, DateTimeOffset.UtcNow, out _));
     True(!manager.Release("PORT-1", source));
     True(manager.Release("PORT-1", source, true));
+}
+
+static void StartupFailureReleasesReservation()
+{
+    var manager = new PortReservationManager();
+    var source = new SourceIdentity("A", "live", "_definst_", "one");
+    True(manager.TryReserve("PORT-1", source, true, DateTimeOffset.UtcNow, out _));
+    var now = DateTimeOffset.UtcNow;
+    var route = new RuntimeRoute(source.Value, "One", "PORT-1", "Output 1", "1080p25", RouteState.Starting,
+        AssignmentMode.Manual, true, 100, 0, null, null, null, 0, 0, null, now, null, null);
+    var failed = RouteStartFailureRecovery.ReleaseAndFail(manager, route, source, "Process could not start.", now);
+    Equal(0, manager.Snapshot().Count);
+    Equal(RouteState.Failed, failed.State);
+    Equal<string?>(null, failed.PortId);
+    Equal("ProcessStart", failed.FailureCategory);
+}
+
+static void MissingSourceLeaseRetentionHonorsLockAndGrace()
+{
+    var missing = DateTimeOffset.UtcNow;
+    True(!RouteLeaseRetentionPolicy.ShouldRelease(false, missing, missing.AddSeconds(29), TimeSpan.FromSeconds(30)));
+    True(RouteLeaseRetentionPolicy.ShouldRelease(false, missing, missing.AddSeconds(30), TimeSpan.FromSeconds(30)));
+    True(!RouteLeaseRetentionPolicy.ShouldRelease(true, missing, missing.AddDays(1), TimeSpan.FromSeconds(30)));
+    True(!RouteLeaseRetentionPolicy.IsStable(missing, missing.AddSeconds(4), TimeSpan.FromSeconds(5)));
+    True(RouteLeaseRetentionPolicy.IsStable(missing, missing.AddSeconds(5), TimeSpan.FromSeconds(5)));
+}
+
+static void EmergencyStopBlocksRouteStarts()
+{
+    RouteControlSafety.EnsureStartAllowed(false);
+    Throws<InvalidOperationException>(() => RouteControlSafety.EnsureStartAllowed(true));
+}
+
+static void LockedRouteStopIsRefused()
+{
+    RouteControlSafety.EnsureStopAllowed(false, false);
+    RouteControlSafety.EnsureStopAllowed(true, true);
+    Throws<InvalidOperationException>(() => RouteControlSafety.EnsureStopAllowed(true, false));
+}
+
+static void RouteCommandsRequireAdministrator()
+{
+    var admin = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+        [new(System.Security.Claims.ClaimTypes.Role, "Administrator")], "test"));
+    var readOnly = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+        [new(System.Security.Claims.ClaimTypes.Role, "Operator")], "test"));
+    OperatorAuthorization.EnsureAdministrator(admin);
+    Throws<UnauthorizedAccessException>(() => OperatorAuthorization.EnsureAdministrator(readOnly));
+    Throws<UnauthorizedAccessException>(() => OperatorAuthorization.EnsureAdministrator(new System.Security.Claims.ClaimsPrincipal()));
 }
 
 static void HigherPriorityDequeuesFirst()
@@ -154,6 +246,13 @@ static void RetryPolicyCapsAtMaximum()
     var policy = RetryPolicy.BroadcastDefault;
     Equal(TimeSpan.FromSeconds(1), policy.GetDelay(1));
     Equal(TimeSpan.FromSeconds(30), policy.GetDelay(100));
+}
+
+static void RetryAttemptCapIsOptIn()
+{
+    True(!RetryLimitPolicy.IsExhausted(100, 0));
+    True(!RetryLimitPolicy.IsExhausted(3, 3));
+    True(RetryLimitPolicy.IsExhausted(4, 3));
 }
 
 static void FfmpegCommandUsesArgumentList()
@@ -201,6 +300,17 @@ static void FfmpegStallIsDetected()
     True(!FfmpegStallDetector.IsStalled(false, progress, now, TimeSpan.FromSeconds(10)));
 }
 
+static void FfmpegFirstProgressTimeoutIsDetected()
+{
+    var now = DateTimeOffset.UtcNow;
+    True(FfmpegStallDetector.IsFirstProgressTimedOut(true, null, now.AddSeconds(-21), now, TimeSpan.FromSeconds(20)));
+    True(!FfmpegStallDetector.IsFirstProgressTimedOut(true, null, now.AddSeconds(-19), now, TimeSpan.FromSeconds(20)));
+    var progress = new FfmpegProgressSnapshot(1, 25, TimeSpan.Zero, 0, 0, 1, now, false);
+    True(!FfmpegStallDetector.IsFirstProgressTimedOut(true, progress, now.AddMinutes(-1), now, TimeSpan.FromSeconds(20)));
+    var noFrames = progress with { Frame = 0 };
+    True(FfmpegStallDetector.IsFirstProgressTimedOut(true, noFrames, now.AddSeconds(-21), now, TimeSpan.FromSeconds(20)));
+}
+
 static void FfmpegFailureIsClassified()
 {
     Equal(FfmpegFailureCategory.Authentication, FfmpegErrorClassifier.Classify(1, "RTSP server returned 401 Unauthorized"));
@@ -212,7 +322,7 @@ static void FfprobeMediaIsParsed()
 {
     const string json = """
     {"streams":[
-      {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"25/1","bit_rate":"3000000","nb_read_frames":"50"},
+      {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"25/1","bit_rate":"3000000","nb_read_frames":"50","field_order":"progressive"},
       {"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2}
     ],"format":{"bit_rate":"3200000"}}
     """;
@@ -221,6 +331,13 @@ static void FfprobeMediaIsParsed()
     Equal("h264", result.Media!.VideoCodec);
     Equal(25d, result.Media.FramesPerSecond!.Value);
     Equal(48_000, result.Media.AudioSampleRate!.Value);
+    Equal(false, result.Media.Interlaced!.Value);
+}
+
+static void FfprobeScanTypeIsParsed()
+{
+    const string json = """{"streams":[{"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"25/1","nb_read_frames":"5","field_order":"tt"}]}""";
+    Equal(true, FfprobeStreamProbe.Parse(json).Media!.Interlaced!.Value);
 }
 
 static void FfprobeRequiresReadFrames()
@@ -230,6 +347,12 @@ static void FfprobeRequiresReadFrames()
     True(result.Opened);
     True(!result.FramesReceived);
     Equal("NoVideoFrames", result.FailureCategory);
+}
+
+static void FfprobeRejectsMalformedOutput()
+{
+    Equal("InvalidOutput", FfprobeStreamProbe.Parse("").FailureCategory);
+    Equal("InvalidOutput", FfprobeStreamProbe.Parse("{not-json").FailureCategory);
 }
 
 static void WowzaIncomingStreamsAreParsed()
@@ -250,10 +373,40 @@ static void WowzaIncomingStreamsAreParsed()
 
 static void AuthenticatedUrisAreRedacted()
 {
-    var result = LogRedactor.Redact("opening rtsp://operator:secret@10.0.0.1/live/feed failed");
+    var result = LogRedactor.Redact("opening rtsp://operator:secret@10.0.0.1/live/feed and https://admin:password@example.test failed");
     True(!result.Contains("operator", StringComparison.Ordinal));
     True(!result.Contains("secret", StringComparison.Ordinal));
+    True(!result.Contains("password", StringComparison.Ordinal));
+    True(!result.Contains("10.0.0.1", StringComparison.Ordinal));
     True(result.Contains("rtsp://***:***@", StringComparison.Ordinal));
+}
+
+static void DiagnosticsOmitSensitiveData()
+{
+    var secretUri = new Uri("rtsp://operator:secret@10.20.30.40/live/customer-stream");
+    var source = new DiscoveredSource(new SourceIdentity("INTERNAL-WOWZA", "live", "_definst_", "customer-stream"),
+        "Customer Stream", secretUri, SourceState.Ready, 100);
+    var route = new RuntimeRoute(source.Identity.Value, source.FriendlyName, "PORT-SECRET", "Transmission Secret", "1080p25",
+        RouteState.Failed, AssignmentMode.Fixed, false, 100, 1, null, null, null, 0, 0, null, DateTimeOffset.UtcNow,
+        "Network", $"Failed {secretUri}");
+    var snapshot = new RouterSnapshot([source], [], [route], [],
+        [new ServerHealth("INTERNAL-WOWZA", "Secret server", false, false, 0, "Failed http://10.20.30.40:8087/", DateTimeOffset.UtcNow)],
+        MediaToolValidation.NotConfigured, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, 0, false, false, "Running");
+    var settings = new OperatorSettings
+    {
+        MediaTools = new() { FfmpegPath = @"C:\Secret\ffmpeg.exe" },
+        WowzaServers = [new() { ManagementUrl = "http://10.20.30.40:8087/", Username = "admin", ProtectedPassword = "DPAPI-CIPHERTEXT" }],
+        ManualSources = [new() { RtspUrl = secretUri.AbsoluteUri }]
+    };
+    var logs = new[] { new StructuredLogEntry(1, DateTimeOffset.UtcNow, "Error", "RTSP", $"Failed {secretUri}", source.Identity.Value, "abc") };
+    var json = System.Text.Json.JsonSerializer.Serialize(new
+    {
+        Snapshot = DiagnosticSanitizer.SanitizeSnapshot(snapshot),
+        Settings = DiagnosticSanitizer.SanitizeSettings(settings),
+        Logs = DiagnosticSanitizer.SanitizeLogs(logs)
+    });
+    foreach (var forbidden in new[] { "secret", "10.20.30.40", "INTERNAL-WOWZA", "customer-stream", "DPAPI-CIPHERTEXT", @"C:\Secret" })
+        if (json.Contains(forbidden, StringComparison.OrdinalIgnoreCase)) throw new Exception($"Diagnostics still contain '{forbidden}'.");
 }
 
 static void DpapiCredentialRoundTrips()
@@ -360,6 +513,62 @@ static void SettingsRejectInvalidGuiValues()
         settings.ManualSources.Clear();
         settings.Security.Port = 70000;
         Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
+        settings.Security.Port = 5080;
+        settings.Presets[0].StandbyMode = FallbackMode.StandbySource;
+        settings.Presets[0].StandbyValue = "not-an-rtsp-url";
+        Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
+    });
+}
+
+static void SettingsRejectInvalidCidrRanges()
+{
+    WithSqliteStore(store =>
+    {
+        store.InitializeAsync().GetAwaiter().GetResult();
+        var settings = new OperatorSettings();
+        settings.Security.AllowedNetworks = "10.0.0.0/33";
+        Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
+        settings.Security.AllowedNetworks = "not-an-address";
+        Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
+        True(NetworkAccessPolicy.IsAllowed(System.Net.IPAddress.Parse("::ffff:10.1.2.3"), "10.1.2.0/24"));
+        True(!NetworkAccessPolicy.IsAllowed(System.Net.IPAddress.Parse("10.1.3.3"), "10.1.2.0/24"));
+    });
+}
+
+static void NetworkExposureIsFailClosed()
+{
+    NetworkAccessPolicy.ValidateExposure("127.0.0.1", false);
+    Throws<InvalidOperationException>(() => NetworkAccessPolicy.ValidateExposure("0.0.0.0", false));
+    NetworkAccessPolicy.ValidateExposure("0.0.0.0", true);
+    Equal(1, NetworkAccessPolicy.ParseTrustedProxies("10.0.0.10").Count);
+    Throws<InvalidOperationException>(() => NetworkAccessPolicy.ParseTrustedProxies("10.0.0.0/24"));
+    True(NetworkAccessPolicy.IsClientAllowed(System.Net.IPAddress.Loopback, System.Net.IPAddress.Loopback, "127.0.0.1/32"));
+    True(!NetworkAccessPolicy.IsClientAllowed(System.Net.IPAddress.Parse("10.0.0.10"), System.Net.IPAddress.Loopback, "127.0.0.1/32"));
+    True(NetworkAccessPolicy.IsClientAllowed(System.Net.IPAddress.Parse("10.0.0.10"), System.Net.IPAddress.Parse("192.168.5.2"), "192.168.5.0/24"));
+}
+
+static void SettingsRejectEmbeddedCredentials()
+{
+    Throws<FormatException>(() => RtspUrlGenerator.ValidateTemplate("rtsp://operator:secret@{wowza-host}/{stream-name}"));
+    WithSqliteStore(store =>
+    {
+        store.InitializeAsync().GetAwaiter().GetResult();
+        var settings = new OperatorSettings();
+        settings.ManualSources.Add(new ManualSourceProfile { FriendlyName = "Credentialed", RtspUrl = "rtsp://operator:secret@example.test/live/feed" });
+        Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
+    });
+}
+
+static void FailedValidationPreservesActiveSettings()
+{
+    WithSqliteStore(store =>
+    {
+        store.InitializeAsync().GetAwaiter().GetResult();
+        var valid = new OperatorSettings { Security = new() { Port = 5099 } };
+        store.SaveSettingsAsync(valid).GetAwaiter().GetResult();
+        var invalid = new OperatorSettings { Security = new() { Port = 70000 } };
+        Throws<InvalidOperationException>(() => store.SaveSettingsAsync(invalid).GetAwaiter().GetResult());
+        Equal(5099, store.LoadSettingsAsync().GetAwaiter().GetResult().Security.Port);
     });
 }
 
@@ -372,8 +581,8 @@ static void AllGuiSettingsRoundTrip()
         {
             SimulationMode = true,
             MediaTools = new() { FfmpegPath = @"C:\Media\ffmpeg.exe", FfprobePath = @"C:\Media\ffprobe.exe", FfplayPath = @"C:\Media\ffplay.exe" },
-            Routing = new() { AutomaticRoutingEnabled = false, ReservationGraceSeconds = 31, StableRestoreSeconds = 6, StallTimeoutSeconds = 11, GracefulStopSeconds = 7, RetryDelaysSeconds = [2, 4, 8] },
-            Security = new() { BindAddress = "127.0.0.1", Port = 5085, RequireAuthentication = true, HttpsEnabled = true, AllowedNetworks = "127.0.0.1/32", SessionTimeoutMinutes = 60 }
+            Routing = new() { AutomaticRoutingEnabled = false, ReservationGraceSeconds = 31, StableRestoreSeconds = 6, FirstProgressTimeoutSeconds = 22, StallTimeoutSeconds = 11, GracefulStopSeconds = 7, MaxRetryAttempts = 9, RetryDelaysSeconds = [2, 4, 8] },
+            Security = new() { BindAddress = "127.0.0.1", Port = 5085, RequireAuthentication = true, HttpsEnabled = true, AllowedNetworks = "127.0.0.1/32", TrustedProxies = "127.0.0.2", SessionTimeoutMinutes = 60 }
         };
         settings.WowzaServers.Add(new WowzaServerProfile
         {
@@ -389,6 +598,7 @@ static void AllGuiSettingsRoundTrip()
 
         store.SaveSettingsAsync(settings).GetAwaiter().GetResult();
         var loaded = store.LoadSettingsAsync().GetAwaiter().GetResult();
+        Equal(3, loaded.SchemaVersion);
         True(loaded.SimulationMode && !loaded.Routing.AutomaticRoutingEnabled);
         Equal(@"C:\Media\ffplay.exe", loaded.MediaTools.FfplayPath);
         Equal("WOWZA-QA", loaded.WowzaServers.Single().ServerId);
@@ -401,6 +611,9 @@ static void AllGuiSettingsRoundTrip()
         Equal(512, loaded.Presets.Single().BufferSizeMegabytes);
         Equal("rule-qa", loaded.Rules.Single().Id);
         Equal(5085, loaded.Security.Port);
+        Equal("127.0.0.2", loaded.Security.TrustedProxies);
+        Equal(22, loaded.Routing.FirstProgressTimeoutSeconds);
+        Equal(9, loaded.Routing.MaxRetryAttempts);
         Equal(3, loaded.Routing.RetryDelaysSeconds.Length);
 
         loaded.WowzaServers.Clear();
@@ -454,6 +667,7 @@ static void SqliteLogsAreRedacted()
         store.WriteLogAsync("Error", "RTSP", "Failed rtsp://operator:secret@127.0.0.1/live/input", "source-1").GetAwaiter().GetResult();
         var entry = store.ReadLogsAsync().GetAwaiter().GetResult().Single();
         True(!entry.Message.Contains("secret", StringComparison.Ordinal));
+        True(!entry.Message.Contains("127.0.0.1", StringComparison.Ordinal));
         True(entry.Message.Contains("***", StringComparison.Ordinal));
     });
 }

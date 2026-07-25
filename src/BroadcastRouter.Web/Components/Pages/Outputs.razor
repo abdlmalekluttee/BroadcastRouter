@@ -1,10 +1,11 @@
 @page "/outputs"
 @rendermode InteractiveServer
 @inject RouterCoordinator Coordinator
+@inject AuthorizedRouterCommands Commands
 @implements IDisposable
 
 <PageTitle>DeckLink Outputs · BroadcastRouter</PageTitle>
-<div class="page-head"><div><h1>DeckLink Outputs</h1><p class="lead">FFmpeg enumeration with mapping-confidence warnings and atomic reservation state.</p></div><AuthorizeView Roles="Administrator"><Authorized><button class="btn" @onclick='() => Coordinator.CommandAsync("rescan")'>Rescan hardware</button></Authorized></AuthorizeView></div>
+<div class="page-head"><div><h1>DeckLink Outputs</h1><p class="lead">FFmpeg enumeration with mapping-confidence warnings and atomic reservation state.</p></div><AuthorizeView Roles="Administrator"><Authorized><button class="btn" @onclick='() => Commands.ExecuteAsync("rescan")'>Rescan hardware</button></Authorized></AuthorizeView></div>
 @if (!snapshot.SimulationMode && !snapshot.ToolValidation.CanStartHardwareRoutes) { <div class="notice danger">DeckLink starts are blocked: @snapshot.ToolValidation.Findings.LastOrDefault(x => x.StartsWith("FAIL"))</div> }
 <div class="grid port-grid">
 @foreach (var port in snapshot.Ports)
