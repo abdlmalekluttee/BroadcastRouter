@@ -1,13 +1,13 @@
 # Production validation checklist
 
-The July 25, 2026 release check authenticated to the configured Wowza server, discovered an active publisher, received RTSP frames, and completed a bounded FFplay/VU start-stop check. The current machine still has no DeckLink card available for connector validation, so automated checks cannot certify physical SDI output.
+The July 26, 2026 release check authenticated to the configured Wowza server, discovered an active publisher, received RTSP frames, and completed a bounded embedded-browser/VU start-stop check. The current machine still has no DeckLink card available for connector validation, so automated checks cannot certify physical SDI output.
 
 The live preview check can be repeated with `BroadcastRouter.Verify --database <database> --ffprobe <ffprobe.exe> --preview-seconds 8`. It requires an interactive Windows logon and a successfully probed active publisher; the duration is bounded to 30 seconds.
 
 Before broadcast use, verify:
 
 - FFmpeg/FFprobe versions, DeckLink compilation, `scale`/`fps`/`yadif`, `uyvy422`, rawvideo, and every enumerated output pass in Media Tools.
-- FFplay starts a 1440×900 preview under the dedicated interactive account; video, stereo audio, peak/dB VU overlay, close/stop cleanup, and repeated source switching work without orphan processes.
+- The Sources page plays a 720×450 embedded preview; video, muted-autoplay/unmute, stereo confidence audio, peak/dB VU overlay, browser-disconnect cleanup, and repeated source switching work without orphan processes.
 - FFmpeg aliases map to the labeled physical connectors; power-cycle and reboot twice, then confirm mappings do not change.
 - 1080p25, 1080p50, 1080i50, and 720p50 presets play for at least 30 minutes on every compatible port with embedded audio checked.
 - Two concurrent route-start requests never obtain the same port; locked routes retain ownership through publisher and Wowza-API outages.

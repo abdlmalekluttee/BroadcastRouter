@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.2.2 — 2026-07-26
+
+- Replaced the external FFplay desktop window with an embedded H.264/AAC browser preview.
+- Reduced the preview canvas from 1440×900 to a compact 720×450 player.
+- Preserved the real FFmpeg `showvolume` peak/dB overlay inside the browser video.
+- Added an administrator-only, no-store preview stream endpoint with a random per-session token.
+- Reduced preview ownership to one exact FFmpeg process and stop it when the player disconnects or the operator stops it.
+- Removed FFplay from the preview and deployment requirements while retaining tokenized process arguments and bounded cleanup.
+
 ## 1.2.1 — 2026-07-25
 
 - Replaced the cramped fixed-width output-preset table with responsive labeled editor cards.

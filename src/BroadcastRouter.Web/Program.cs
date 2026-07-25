@@ -38,7 +38,7 @@ if (requireAuthentication && string.IsNullOrWhiteSpace(Environment.GetEnvironmen
 
 builder.Services.AddSingleton(bootstrapStore);
 builder.Services.AddSingleton<RouterCoordinator>();
-builder.Services.AddSingleton<FfplayPreviewSupervisor>();
+builder.Services.AddSingleton<BrowserPreviewSupervisor>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<RouterCoordinator>());
 builder.Services.AddScoped<AuthorizedRouterCommands>();
 builder.Services.AddScoped<AuthorizedPreviewCommands>();
@@ -130,6 +130,28 @@ app.Use(async (context, next) =>
     await next();
 });
 app.UseAuthorization();
+
+var previewStreamEndpoint = app.MapGet("/preview/stream/{token}", async (
+    HttpContext context,
+    string token,
+    BrowserPreviewSupervisor preview,
+    CancellationToken cancellationToken) =>
+{
+    context.Response.ContentType = "video/mp4";
+    context.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+    context.Response.Headers.Pragma = "no-cache";
+    context.Response.Headers.XContentTypeOptions = "nosniff";
+    try
+    {
+        await preview.CopyStreamToAsync(token, context.Response.Body, cancellationToken);
+    }
+    catch (InvalidOperationException exception) when (!context.Response.HasStarted)
+    {
+        context.Response.StatusCode = StatusCodes.Status409Conflict;
+        await context.Response.WriteAsync(LogRedactor.Redact(exception.Message), cancellationToken);
+    }
+});
+previewStreamEndpoint.RequireAuthorization(new AuthorizeAttribute { Roles = "Administrator" });
 
 app.MapGet("/health", async (SqliteDataStore store, CancellationToken cancellationToken) =>
 {

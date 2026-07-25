@@ -143,18 +143,22 @@ try
         if (previewSource is null)
             throw new InvalidOperationException("A successfully probed source is required for the live preview check.");
 
-        await using var preview = new FfplayPreviewSupervisor();
+        await using var preview = new BrowserPreviewSupervisor();
         await preview.StartAsync(previewSource, settings.MediaTools);
         var running = preview.Snapshot;
-        await Task.Delay(TimeSpan.FromSeconds(previewSeconds));
-        await preview.StopAsync();
+        using var previewCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(previewSeconds));
+        await using var previewBytes = new MemoryStream();
+        await preview.CopyStreamToAsync(running.StreamToken!, previewBytes, previewCancellation.Token);
+        var completed = preview.Snapshot;
         result["previewCheck"] = new
         {
             started = running.State == PreviewState.Running,
             audioMeterEnabled = running.AudioMeterEnabled,
             producerProcessStarted = running.ProducerProcessId.HasValue,
-            playerProcessStarted = running.PlayerProcessId.HasValue,
-            stoppedCleanly = preview.Snapshot.State == PreviewState.Stopped
+            embeddedStreamBytes = previewBytes.Length,
+            finalState = completed.State.ToString(),
+            stoppedCleanly = completed.State == PreviewState.Stopped,
+            error = completed.ErrorMessage
         };
     }
 

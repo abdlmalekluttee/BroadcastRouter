@@ -1,9 +1,9 @@
 # BroadcastRouter production-safety review
 
-Review date: 2026-07-25  
-Review branch: `codex/functional-gui-hardening`  
-Reviewed baseline: `0a03b25` (`v1.1.1`, `origin/main`)
-Resulting release version: `1.2.1`
+Review date: 2026-07-26
+Review branch: `codex/embedded-browser-preview-1.2.2`
+Reviewed baseline: `31032d3` (`v1.2.1`, `origin/main`)
+Resulting release version: `1.2.2`
 
 ## Executive summary
 
@@ -11,7 +11,9 @@ BroadcastRouter has a strong compact architecture and several correct production
 
 This review confirmed and fixed high-severity issues in failed-start lease rollback, emergency-stop enforcement, locked-route stopping, diagnostics confidentiality, anonymous LAN exposure, reverse-proxy trust, and a vulnerable native SQLite dependency. Additional fixes cover missing-source lease grace, stable restore timing, per-source route serialization, runtime state-transition enforcement, waiting-queue fairness, retry exhaustion, first-progress supervision, FFprobe termination/scan detection, strict CIDR and proxy validation, persisted embedded credentials, antiforgery, server-side command authorization, login throttling, diagnostics streaming/redaction, duplicate UI commands, destructive-action confirmation, and accessible form names.
 
-The repository is materially safer after these changes, but this review does **not** certify production broadcast readiness. Real Wowza, DeckLink hardware, Blackmagic drivers, a DeckLink-enabled FFmpeg build, power-cycle identity stability, Session 0, and an 8–24 hour soak were not available for this pass. The principal remaining software risk is the coordinator's breadth and the limited end-to-end process-supervision integration coverage.
+The repository is materially safer after these changes, but this review does **not** certify production broadcast readiness. DeckLink hardware, matching Blackmagic driver output, power-cycle identity stability, Session 0, and an 8–24 hour soak were not available for this pass. The principal remaining software risk is the coordinator's breadth and the limited end-to-end process-supervision integration coverage.
+
+The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. The real configured Wowza publisher, RTSP frame receipt, H.264/AAC fragmented-MP4 stream, VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified on the production host; physical DeckLink output remains unverified.
 
 ## Architecture assessment
 
@@ -60,6 +62,7 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-016 | Medium | Concurrency / supervision | `src/BroadcastRouter.Web/Services/RouterCoordinator.cs`; `src/BroadcastRouter.Infrastructure/FfmpegProgressParser.cs` | Duplicate starts could interleave and a live child that never emitted its first progress record could remain `Starting` indefinitely. | **Fixed.** Per-source async gates deduplicate active starts, emergency stop is rechecked during launch, and a configurable first-progress deadline triggers owned-process cleanup/retry. |
 | BR-017 | Medium | Responsive GUI | `src/BroadcastRouter.Web/Components/Pages/RulesPresets.razor`; `wwwroot/app.css`; `Components/App.razor` | The fixed-width preset table exceeded the available viewport and compressed inline controls into overlapping text/fields. Unversioned CSS could retain the broken layout after upgrade. | **Fixed.** Presets use responsive labeled editor cards and versioned stylesheets. Browser checks at 1920×1080 and 768×1024 found zero document/card overflow and zero controls outside their cards. |
 | BR-018 | Medium | Operator monitoring | `src/BroadcastRouter.Infrastructure/FfplayPreviewSupervisor.cs`; `Components/Pages/Sources.razor` | Operators had no safe local confidence preview, VU meter, or dedicated preview status surface. | **Fixed.** Added one-at-a-time administrator FFplay preview, FFmpeg `showvolume` overlay, 1440×900 window, tokenized arguments, exact process ownership, large UI status/statistics, audio/no-audio handling, and Session 0 refusal. Regression: `FFplay preview is tokenized with VU overlay`. |
+| BR-019 | Medium | Preview UX / process ownership | `src/BroadcastRouter.Infrastructure/BrowserPreviewSupervisor.cs`; `src/BroadcastRouter.Web/Program.cs`; `Components/Pages/Sources.razor` | Operator feedback confirmed that opening a separate 1440×900 FFplay window was disruptive and oversized. A forced Scheduled Task stop could also outlive the host briefly before the legacy child pair exited. | **Fixed.** Replaced FFplay with one exact FFmpeg producer serving authenticated, non-cacheable H.264/AAC fragmented MP4 to a 720×450 in-page player. A random session token prevents stale attachment; player disconnect, explicit stop, process exit, and host disposal all converge on owned-process cleanup. Regression: `Browser preview is tokenized with VU overlay`; real browser playback and zero remaining child processes verified. |
 
 ## GUI review
 
@@ -68,7 +71,7 @@ The failed documented web start is an environmental port conflict, not an applic
 | Login | Token rendered; tokenless POST returns 400; invalid credential with valid token returns to `?failed=1`; controls labeled. |
 | Dashboard | Production/simulation and hardware-block status are explicit text; emergency stop confirmed and busy-guarded. |
 | Wowza Servers | Controls have accessible names; password remains blank-to-preserve; no network scanning action exists; removal now requires confirmation and explains grace-period impact. |
-| Sources | Credential/internal-address-safe RTSP display; route/reprobe actions visible only to Administrator. Added large FFplay preview control, video/audio/uptime/process/playback statistics, real audio VU overlay, busy guard, and explicit stop. |
+| Sources | Credential/internal-address-safe RTSP display; route/reprobe actions visible only to Administrator. The preview is now a compact 720×450 in-page player with video/audio/uptime/process statistics, confidence-audio controls, a real VU overlay, busy guard, and explicit stop. |
 | DeckLink Outputs | Identity-confidence warning is prominent; rescan remains non-destructive. |
 | Routes / Matrix | Accessible selects; emergency and reassign confirmation; locked stop refusal; busy guard. A richer modal could explain affected routes/ports before reassign. |
 | Rules & Presets | All generated controls named; bounded regex validation retained; rule removal is confirmed and referenced presets cannot be removed until dependencies are changed. Output presets are responsive cards instead of an overlapping wide table; interlaced Boolean values render correctly. |
@@ -76,7 +79,7 @@ The failed documented web start is an environmental port conflict, not an applic
 | Settings | All current and generated port/manual controls named; strict validation preserves prior active settings; bind/authentication/HTTPS/allowlist/proxy changes require a disruption warning confirmation. |
 | Error | Sanitized generic error content; no detailed exception exposed. |
 
-Responsive checks passed without document-level horizontal overflow at 1366×768, 1920×1080, 2560×1440, and 768×1024. Wide tables intentionally scroll inside `.table-wrap`. Browser console inspection reported no warnings or errors. No before/after screenshots were captured because the fixes were behavioral/accessibility changes rather than a visual redesign; the live v1.1.1 process was intentionally not interrupted.
+Responsive checks passed without document-level horizontal overflow at 1366×768, 1920×1080, 2560×1440, and 768×1024. The 1.2.2 preview measured exactly 720×450 at a 1920×1080 viewport and scaled to 581×362 inside the panel at 768×1024, with no document overflow. Wide tables intentionally scroll inside `.table-wrap`. The only recorded browser errors were expected SignalR disconnects during controlled production restarts; the stable final playback had no media error. A final embedded-preview screenshot was captured under `release/ui-screenshots`.
 
 ## Test coverage
 
@@ -99,7 +102,7 @@ Added coverage:
 13. No-first-progress timeout classification.
 14. Progressive/interlaced FFprobe field-order parsing.
 15. Anonymous exposure, trusted-proxy, and forwarded-loopback fail-closed behavior.
-16. Tokenized FFmpeg/FFplay preview commands, real VU filter inclusion, 1440×900 sizing, and video-only fallback.
+16. Tokenized embedded-browser FFmpeg preview commands, real VU filter inclusion, H.264/AAC fragmented MP4, 720×450 sizing, and video-only fallback.
 
 Expanded existing credential/log redaction assertions. HTTP integration checks separately verified antiforgery and diagnostics authorization.
 
@@ -120,9 +123,9 @@ Still requiring integration or hardware coverage:
 | Package vulnerability audit | **Verified automatically**: no vulnerable packages reported. |
 | Atomic single-port ownership | **Verified automatically** with 500 concurrent contenders. |
 | Local browser pages/viewports | **Verified locally** in isolated simulation on port 5180; stable-session console clean; zero document/preset-card overflow at 1920×1080 and 768×1024; zero controls outside cards. |
-| Preview filter graph | **Verified locally** with generated video+stereo audio through the exact `showvolume`/overlay graph. Real RTSP preview still requires an active publisher. |
+| Embedded preview | **Verified locally and against the configured Wowza publisher**: RTSP frames, 720×450 H.264/AAC fragmented MP4 bytes, browser `readyState=4`, advancing playback time, 720×450 decoded video, real `showvolume` overlay, explicit stop, and zero remaining FFmpeg/FFplay children. |
 | Authentication/antiforgery/diagnostics gate | **Verified locally** in isolated authenticated modes on ports 5181/5183, including operator denial and login throttling. |
-| Real Wowza REST and RTSP | **Requires a real Wowza server**; not certified in this pass. |
+| Real Wowza REST and RTSP | **Verified on the configured server**: management authentication, application discovery, active publisher discovery, RTSP open, frame receipt, H.264 video, and AAC audio. |
 | DeckLink enumeration and output | **Requires DeckLink hardware**, matching Desktop Video drivers, and DeckLink-enabled FFmpeg. |
 | Physical connector identity stability | **Requires two reboots and power cycles** plus labeled-output verification. |
 | Broadcast modes/audio | **Requires physical tests** for 1080p25, 1080p50, 1080i50, and 720p50 on every compatible port. |
@@ -134,8 +137,8 @@ Still requiring integration or hardware coverage:
 ## Files changed
 
 - Safety policies: `RouteControlSafety.cs`, `RouteLeaseRetentionPolicy.cs`, `RouteStartFailureRecovery.cs`.
-- Infrastructure: `DiagnosticSanitizer.cs`, `NetworkAccessPolicy.cs`, FFprobe cleanup, redaction, SQLite validation/dependencies, and `FfplayPreviewSupervisor.cs`.
-- Web: coordinator recovery/emergency handling, authentication/diagnostics/health endpoints, responsive preset editors, cache-busted styles, large preview status UI, and targeted Razor accessibility/operator safeguards.
+- Infrastructure: `DiagnosticSanitizer.cs`, `NetworkAccessPolicy.cs`, FFprobe cleanup, redaction, SQLite validation/dependencies, and `BrowserPreviewSupervisor.cs`.
+- Web: coordinator recovery/emergency handling, authentication/diagnostics/health endpoints, responsive preset editors, cache-busted styles, embedded preview stream/player UI, and targeted Razor accessibility/operator safeguards.
 - Tests: ten new regression cases and expanded redaction coverage.
 - Documentation: README, security, architecture, deployment, changelog, and this report.
 
@@ -150,7 +153,7 @@ dotnet run --no-build --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.cs
 git diff --check
 ```
 
-Final results: restore passed; Release build passed with 0 warnings/errors; 53/53 tests passed; vulnerability audit and .NET 8 servicing audit were clean; isolated simulation/authenticated hosts passed page, authorization, antiforgery, diagnostic-streaming, login-throttling, responsive-layout, and preview-filter checks; `git diff --check` reported no whitespace errors. The self-contained `win-x64` 1.2.1 package built successfully with file version `1.2.1.0`, a generated SHA-256 checksum, and no database/diagnostics archive.
+Final results: restore passed; Release build passed with 0 warnings/errors; 53/53 tests passed; vulnerability audit and .NET 8 servicing audit were clean; local browser playback and responsive checks passed against the configured production host; `git diff --check` reported no whitespace errors. The self-contained `win-x64` 1.2.2 package built successfully with file version `1.2.2.0`, a generated SHA-256 checksum, and no database/diagnostics archive.
 
 ## Recommended follow-up
 

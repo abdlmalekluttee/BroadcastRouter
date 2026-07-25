@@ -6,7 +6,7 @@ namespace BroadcastRouter.Web.Services;
 
 public sealed class AuthorizedPreviewCommands(
     RouterCoordinator coordinator,
-    FfplayPreviewSupervisor preview,
+    BrowserPreviewSupervisor preview,
     AuthenticationStateProvider authenticationStateProvider)
 {
     public async Task StartAsync(string sourceId, CancellationToken cancellationToken = default)

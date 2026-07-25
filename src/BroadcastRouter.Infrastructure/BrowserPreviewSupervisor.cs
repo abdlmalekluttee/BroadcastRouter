@@ -15,7 +15,7 @@ public sealed record PreviewSnapshot(
     bool AudioMeterEnabled,
     DateTimeOffset? StartedAt,
     int? ProducerProcessId,
-    int? PlayerProcessId,
+    string? StreamToken,
     string PlaybackStatistics,
     string? ErrorMessage)
 {
@@ -24,17 +24,18 @@ public sealed record PreviewSnapshot(
         null, null, null, "Waiting for an operator to start preview.", null);
 }
 
-public sealed record FfplayPreviewCommandPlan(ProcessStartInfo Producer, ProcessStartInfo Player);
+public sealed record BrowserPreviewCommandPlan(ProcessStartInfo Producer);
 
-public static class FfplayPreviewCommandBuilder
+public static class BrowserPreviewCommandBuilder
 {
-    public const int WindowWidth = 1440;
-    public const int WindowHeight = 900;
+    public const int CanvasWidth = 720;
+    public const int CanvasHeight = 450;
+    public const int VideoHeight = 404;
 
-    public static FfplayPreviewCommandPlan Build(MediaToolPaths tools, DiscoveredSource source)
+    public static BrowserPreviewCommandPlan Build(MediaToolPaths tools, DiscoveredSource source)
     {
-        if (string.IsNullOrWhiteSpace(tools.FfmpegPath)) throw new InvalidOperationException("FFmpeg is not configured.");
-        if (string.IsNullOrWhiteSpace(tools.FfplayPath)) throw new InvalidOperationException("FFplay is not configured.");
+        if (string.IsNullOrWhiteSpace(tools.FfmpegPath))
+            throw new InvalidOperationException("FFmpeg is not configured.");
 
         var hasAudio = !string.IsNullOrWhiteSpace(source.Media?.AudioCodec);
         var producer = new ProcessStartInfo
@@ -54,47 +55,27 @@ public static class FfplayPreviewCommandBuilder
             "-i", source.RtspUri.AbsoluteUri);
 
         var filter = hasAudio
-            ? "[0:v:0]scale=1440:810:force_original_aspect_ratio=decrease,pad=1440:810:(ow-iw)/2:(oh-ih)/2:color=0x060b12,pad=1440:900:0:0:color=0x060b12[canvas];" +
+            ? "[0:v:0]scale=720:404:force_original_aspect_ratio=decrease,pad=720:404:(ow-iw)/2:(oh-ih)/2:color=0x060b12,pad=720:450:0:0:color=0x060b12[canvas];" +
               "[0:a:0]asplit=2[previewaudio][meter];" +
-              "[meter]showvolume=w=1400:h=70:r=25:b=3:f=0.25:t=1:v=1:dm=1:dmc=orange:o=h:p=0.25:m=p:ds=log[vu];" +
-              "[canvas][vu]overlay=20:820:shortest=1[outv];[previewaudio]anull[outa]"
-            : "[0:v:0]scale=1440:810:force_original_aspect_ratio=decrease,pad=1440:810:(ow-iw)/2:(oh-ih)/2:color=0x060b12,pad=1440:900:0:0:color=0x060b12[outv]";
+              "[meter]showvolume=w=700:h=36:r=25:b=2:f=0.25:t=1:v=1:dm=1:dmc=orange:o=h:p=0.25:m=p:ds=log[vu];" +
+              "[canvas][vu]overlay=10:414:shortest=1[outv];[previewaudio]anull[outa]"
+            : "[0:v:0]scale=720:404:force_original_aspect_ratio=decrease,pad=720:404:(ow-iw)/2:(oh-ih)/2:color=0x060b12,pad=720:450:0:0:color=0x060b12[outv]";
 
         Add(producer, "-filter_complex", filter, "-map", "[outv]");
         if (hasAudio)
-            Add(producer, "-map", "[outa]", "-c:a", "mp2", "-b:a", "192k", "-ar", "48000", "-ac", "2");
+            Add(producer, "-map", "[outa]", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2");
         else
             producer.ArgumentList.Add("-an");
+
         Add(producer,
-            "-c:v", "mpeg2video", "-q:v", "4", "-pix_fmt", "yuv420p",
-            "-f", "mpegts", "pipe:1");
+            "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+            "-profile:v", "main", "-level", "3.1", "-pix_fmt", "yuv420p",
+            "-g", "25", "-keyint_min", "25", "-sc_threshold", "0",
+            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+            "-flush_packets", "1", "-progress", "pipe:2", "-nostats",
+            "-f", "mp4", "pipe:1");
 
-        var player = new ProcessStartInfo
-        {
-            FileName = tools.FfplayPath,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-        Add(player,
-            "-hide_banner", "-loglevel", "info", "-stats", "-autoexit",
-            "-fflags", "nobuffer", "-flags", "low_delay", "-framedrop",
-            "-x", WindowWidth.ToString(), "-y", WindowHeight.ToString(),
-            "-window_title", BuildWindowTitle(source),
-            "-f", "mpegts", "-i", "pipe:0");
-        return new(producer, player);
-    }
-
-    private static string BuildWindowTitle(DiscoveredSource source)
-    {
-        var safeName = new string(source.FriendlyName.Where(character => !char.IsControl(character)).ToArray()).Trim();
-        if (safeName.Length > 70) safeName = safeName[..70];
-        var media = source.Media;
-        var video = media is null ? "unprobed" : $"{media.Width}x{media.Height} {media.FramesPerSecond:0.##}fps {media.VideoCodec}";
-        var audio = string.IsNullOrWhiteSpace(media?.AudioCodec) ? "no audio" : $"{media.AudioCodec} {media.AudioSampleRate}Hz {media.AudioChannels}ch";
-        return $"BroadcastRouter Preview | {safeName} | {video} | {audio}";
+        return new(producer);
     }
 
     private static void Add(ProcessStartInfo start, params string[] arguments)
@@ -103,7 +84,7 @@ public static class FfplayPreviewCommandBuilder
     }
 }
 
-public sealed class FfplayPreviewSupervisor : IAsyncDisposable
+public sealed class BrowserPreviewSupervisor : IAsyncDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _snapshotLock = new();
@@ -124,24 +105,19 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
         try
         {
             await StopCurrentCoreAsync().ConfigureAwait(false);
-            if (!Environment.UserInteractive)
-                throw new InvalidOperationException("Desktop preview requires an interactive Windows logon and is unavailable in service/Session 0 mode.");
-            if (!File.Exists(tools.FfmpegPath)) throw new FileNotFoundException("Configured FFmpeg executable was not found.");
-            if (!File.Exists(tools.FfplayPath)) throw new FileNotFoundException("Configured FFplay executable was not found.");
+            if (!File.Exists(tools.FfmpegPath))
+                throw new FileNotFoundException("Configured FFmpeg executable was not found.");
 
-            var plan = FfplayPreviewCommandBuilder.Build(tools, source);
-            candidate = new PreviewSession(source, new Process { StartInfo = plan.Producer }, new Process { StartInfo = plan.Player });
-            SetSnapshot(CreateSnapshot(candidate, PreviewState.Starting, "Opening the large FFplay monitor...", null));
+            var plan = BrowserPreviewCommandBuilder.Build(tools, source);
+            candidate = new PreviewSession(source, new Process { StartInfo = plan.Producer });
+            SetSnapshot(CreateSnapshot(candidate, PreviewState.Starting, "Preparing the embedded browser stream...", null));
 
-            if (!candidate.Player.Start()) throw new InvalidOperationException("FFplay did not start.");
-            if (!candidate.Producer.Start()) throw new InvalidOperationException("FFmpeg preview producer did not start.");
+            if (!candidate.Producer.Start())
+                throw new InvalidOperationException("FFmpeg preview producer did not start.");
 
             _current = candidate;
-            candidate.ProducerErrors = PumpErrorsAsync(candidate, candidate.Producer.StandardError, isPlayer: false);
-            candidate.PlayerErrors = PumpErrorsAsync(candidate, candidate.Player.StandardError, isPlayer: true);
-            candidate.PlayerOutput = DrainAsync(candidate.Player.StandardOutput);
-            candidate.Pipe = PipeAsync(candidate);
-            SetSnapshot(CreateSnapshot(candidate, PreviewState.Running, "Live playback statistics are initializing...", null));
+            candidate.ProducerErrors = PumpErrorsAsync(candidate, candidate.Producer.StandardError);
+            SetSnapshot(CreateSnapshot(candidate, PreviewState.Running, "Connecting the browser player...", null));
             _ = ObserveAsync(candidate);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -165,6 +141,40 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
         }
     }
 
+    public async Task CopyStreamToAsync(string token, Stream destination, CancellationToken cancellationToken)
+    {
+        PreviewSession session;
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            session = _current is { } current && current.StreamToken.Equals(token, StringComparison.Ordinal)
+                ? current
+                : throw new InvalidOperationException("The preview stream is no longer available.");
+            if (Interlocked.CompareExchange(ref session.StreamClaimed, 1, 0) != 0)
+                throw new InvalidOperationException("The preview stream is already open in another browser player.");
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, session.Cancellation.Token);
+        try
+        {
+            await session.Producer.StandardOutput.BaseStream
+                .CopyToAsync(destination, 64 * 1024, linkedCancellation.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (linkedCancellation.IsCancellationRequested) { }
+        catch (IOException) { }
+        catch (ObjectDisposedException) { }
+        finally
+        {
+            Interlocked.Exchange(ref session.StreamClaimed, 0);
+            await CompleteStreamSessionAsync(session).ConfigureAwait(false);
+        }
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -183,18 +193,17 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
     {
         try
         {
-            await Task.WhenAny(session.Producer.WaitForExitAsync(), session.Player.WaitForExitAsync(), session.Pipe ?? Task.CompletedTask)
-                .ConfigureAwait(false);
+            await session.Producer.WaitForExitAsync().ConfigureAwait(false);
             await _gate.WaitAsync().ConfigureAwait(false);
             try
             {
                 if (!ReferenceEquals(_current, session)) return;
                 _current = null;
-                var expected = HasExitedSuccessfully(session.Player) || HasExitedSuccessfully(session.Producer);
+                var success = HasExitedSuccessfully(session.Producer);
                 await StopSessionAsync(session).ConfigureAwait(false);
-                var error = expected ? null : session.LastError;
-                SetSnapshot(CreateSnapshot(session, expected ? PreviewState.Stopped : PreviewState.Failed,
-                    expected ? "Preview window closed." : "Preview ended unexpectedly.", error));
+                SetSnapshot(CreateSnapshot(session, success ? PreviewState.Stopped : PreviewState.Failed,
+                    success ? "Browser preview ended." : "Browser preview ended unexpectedly.",
+                    success ? null : session.LastError));
             }
             finally { _gate.Release(); }
         }
@@ -202,6 +211,23 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
         {
             session.AddError(LogRedactor.Redact(exception.Message));
         }
+    }
+
+    private async Task CompleteStreamSessionAsync(PreviewSession session)
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (!ReferenceEquals(_current, session)) return;
+            _current = null;
+            var exited = HasExited(session.Producer);
+            var success = !exited || HasExitedSuccessfully(session.Producer);
+            await StopSessionAsync(session).ConfigureAwait(false);
+            SetSnapshot(CreateSnapshot(session, success ? PreviewState.Stopped : PreviewState.Failed,
+                success ? "Browser preview closed." : "Browser preview ended unexpectedly.",
+                success ? null : session.LastError));
+        }
+        finally { _gate.Release(); }
     }
 
     private async Task StopCurrentCoreAsync()
@@ -217,23 +243,7 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
         SetSnapshot(CreateSnapshot(session, PreviewState.Stopped, "Preview stopped by the operator.", null));
     }
 
-    private static async Task PipeAsync(PreviewSession session)
-    {
-        try
-        {
-            await session.Producer.StandardOutput.BaseStream
-                .CopyToAsync(session.Player.StandardInput.BaseStream, session.Cancellation.Token)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (session.Cancellation.IsCancellationRequested) { }
-        catch (Exception exception) { session.AddError(LogRedactor.Redact(exception.Message)); }
-        finally
-        {
-            try { session.Player.StandardInput.Close(); } catch { }
-        }
-    }
-
-    private async Task PumpErrorsAsync(PreviewSession session, StreamReader reader, bool isPlayer)
+    private async Task PumpErrorsAsync(PreviewSession session, StreamReader reader)
     {
         try
         {
@@ -241,26 +251,17 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
             {
                 var safe = LogRedactor.Redact(line.Trim());
                 if (string.IsNullOrWhiteSpace(safe)) continue;
-                session.AddError(safe);
-                if (isPlayer && (safe.Contains("A-V:", StringComparison.OrdinalIgnoreCase) || safe.Contains("aq=", StringComparison.OrdinalIgnoreCase)))
+                var separator = safe.IndexOf('=');
+                if (separator > 0 && ProgressKeys.Contains(safe[..separator]))
                 {
-                    if (safe.Length > 220) safe = safe[..220];
-                    var now = DateTimeOffset.UtcNow;
-                    if (now - session.LastStatisticsPublishedAt >= TimeSpan.FromMilliseconds(500))
-                    {
-                        session.LastStatisticsPublishedAt = now;
-                        UpdateStatistics(session, safe);
-                    }
+                    session.Progress[safe[..separator]] = safe[(separator + 1)..];
+                    if (safe.StartsWith("progress=", StringComparison.Ordinal))
+                        UpdateStatistics(session);
+                    continue;
                 }
+                session.AddError(safe);
             }
         }
-        catch (ObjectDisposedException) { }
-        catch (InvalidOperationException) { }
-    }
-
-    private static async Task DrainAsync(StreamReader reader)
-    {
-        try { while (await reader.ReadLineAsync().ConfigureAwait(false) is not null) { } }
         catch (ObjectDisposedException) { }
         catch (InvalidOperationException) { }
     }
@@ -269,14 +270,8 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
     {
         session.Cancellation.Cancel();
         await StopOwnedProcessAsync(session.Producer).ConfigureAwait(false);
-        try { session.Player.StandardInput.Close(); } catch { }
-        await StopOwnedProcessAsync(session.Player).ConfigureAwait(false);
-        await IgnoreFailure(session.Pipe).ConfigureAwait(false);
         await IgnoreFailure(session.ProducerErrors).ConfigureAwait(false);
-        await IgnoreFailure(session.PlayerErrors).ConfigureAwait(false);
-        await IgnoreFailure(session.PlayerOutput).ConfigureAwait(false);
         session.Producer.Dispose();
-        session.Player.Dispose();
         session.Cancellation.Dispose();
     }
 
@@ -300,8 +295,17 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
         try { await task.ConfigureAwait(false); } catch { }
     }
 
-    private void UpdateStatistics(PreviewSession session, string statistics)
+    private void UpdateStatistics(PreviewSession session)
     {
+        var parts = new[]
+        {
+            Value(session, "frame", "frame"),
+            Value(session, "fps", "fps"),
+            Value(session, "bitrate", "bitrate"),
+            Value(session, "speed", "speed")
+        }.Where(value => value is not null);
+        var statistics = string.Join(" · ", parts!);
+        if (string.IsNullOrWhiteSpace(statistics)) return;
         lock (_snapshotLock)
         {
             if (!ReferenceEquals(_current, session) || _snapshot.State != PreviewState.Running) return;
@@ -309,6 +313,11 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
         }
         Changed?.Invoke();
     }
+
+    private static string? Value(PreviewSession session, string key, string label) =>
+        session.Progress.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? $"{label} {value.Trim()}"
+            : null;
 
     private void SetSnapshot(PreviewSnapshot snapshot)
     {
@@ -321,7 +330,7 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
         var active = state is PreviewState.Starting or PreviewState.Running;
         return new(state, session.Source.Identity.Value, session.Source.FriendlyName,
             VideoSummary(session.Source), AudioSummary(session.Source), HasAudio(session.Source), session.StartedAt,
-            active ? SafeProcessId(session.Producer) : null, active ? SafeProcessId(session.Player) : null, statistics, error);
+            active ? SafeProcessId(session.Producer) : null, active ? session.StreamToken : null, statistics, error);
     }
 
     private static string VideoSummary(DiscoveredSource source) => source.Media is null
@@ -334,21 +343,26 @@ public sealed class FfplayPreviewSupervisor : IAsyncDisposable
 
     private static bool HasAudio(DiscoveredSource source) => !string.IsNullOrWhiteSpace(source.Media?.AudioCodec);
     private static int? SafeProcessId(Process process) { try { return process.Id; } catch { return null; } }
+    private static bool HasExited(Process process) { try { return process.HasExited; } catch { return true; } }
     private static bool HasExitedSuccessfully(Process process) { try { return process.HasExited && process.ExitCode == 0; } catch { return false; } }
 
-    private sealed class PreviewSession(DiscoveredSource source, Process producer, Process player)
+    private static readonly HashSet<string> ProgressKeys = new(StringComparer.Ordinal)
+    {
+        "frame", "fps", "stream_0_0_q", "bitrate", "total_size", "out_time_us", "out_time_ms",
+        "out_time", "dup_frames", "drop_frames", "speed", "progress"
+    };
+
+    private sealed class PreviewSession(DiscoveredSource source, Process producer)
     {
         private readonly ConcurrentQueue<string> _errors = new();
         public DiscoveredSource Source { get; } = source;
         public Process Producer { get; } = producer;
-        public Process Player { get; } = player;
+        public string StreamToken { get; } = Guid.NewGuid().ToString("N");
         public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
         public CancellationTokenSource Cancellation { get; } = new();
-        public Task? Pipe { get; set; }
+        public ConcurrentDictionary<string, string> Progress { get; } = new(StringComparer.Ordinal);
         public Task? ProducerErrors { get; set; }
-        public Task? PlayerErrors { get; set; }
-        public Task? PlayerOutput { get; set; }
-        public DateTimeOffset LastStatisticsPublishedAt { get; set; }
+        public int StreamClaimed;
         public string? LastError => _errors.LastOrDefault();
 
         public void AddError(string error)
