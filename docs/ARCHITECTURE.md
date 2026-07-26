@@ -35,7 +35,7 @@ The executable supports Windows Service hosting, but service/Session 0 DeckLink 
 
 ## Supervision
 
-FFmpeg receives individually tokenized arguments and never a shell command. The command deliberately omits `-b:v` for uncompressed DeckLink output. The supervisor captures stdout/stderr asynchronously, tracks PID, frame, FPS, speed, output time, drop/duplicate counters, last progress, uptime, exit code, and recent redacted errors. Graceful `q` shutdown is followed by process-tree termination after the configured deadline. Permanent authentication/codec/format/configuration failures require operator action; network/process failures retry.
+FFmpeg receives individually tokenized arguments and never a shell command. The command deliberately omits `-b:v` for uncompressed DeckLink output. The supervisor captures stdout/stderr asynchronously, tracks PID, frame, FPS, speed, output time, drop/duplicate counters, last progress, uptime, exit code, and recent redacted errors. Graceful `q` shutdown is followed by process-tree termination after the configured deadline. Media validation detects the optional patched `win_safe_terminate` DeckLink capability and enables it only for builds that advertise support. Permanent authentication/codec/format/configuration failures require operator action; network/process failures retry.
 
 ## Embedded browser preview
 

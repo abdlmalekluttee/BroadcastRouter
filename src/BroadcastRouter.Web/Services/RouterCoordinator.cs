@@ -30,6 +30,7 @@ public sealed class RouterCoordinator(
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private FfmpegProcessSupervisor? _supervisor;
     private string? _supervisorPath;
+    private bool _supervisorUsesWindowsDeckLinkSafeTerminate;
     private OperatorSettings _settings = new();
     private MediaToolValidation _validation = MediaToolValidation.NotConfigured;
     private volatile bool _emergencyStopped;
@@ -502,7 +503,7 @@ public sealed class RouterCoordinator(
             return;
         }
 
-        EnsureSupervisor(_settings.MediaTools.FfmpegPath);
+        EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
         var domainRoute = new RouteRecord(source.Identity, port.StableId, preset.Id, RouteState.Starting, starting.AssignmentMode, starting.Locked, starting.RestartCount);
         await _supervisor!.StartAsync(domainRoute, source, port, preset.ToDomain(), cancellationToken);
         if (_emergencyStopped)
@@ -657,7 +658,7 @@ public sealed class RouterCoordinator(
             preset = _settings.Presets.FirstOrDefault(x => x.Id == route.PresetId);
         }
         if (port is null || preset is null) throw new InvalidOperationException("The reserved port or output preset is unavailable.");
-        EnsureSupervisor(_settings.MediaTools.FfmpegPath);
+        EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
         await _supervisor!.StartFallbackAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(), preset.StandbyMode, preset.StandbyValue, cancellationToken);
     }
 
@@ -796,13 +797,17 @@ public sealed class RouterCoordinator(
         await store.SaveRouteAsync(route, persistHistory ? persistedPrevious : route.State, cancellationToken);
     }
 
-    private void EnsureSupervisor(string ffmpegPath)
+    private void EnsureSupervisor(string ffmpegPath, bool useWindowsDeckLinkSafeTerminate)
     {
-        if (_supervisor is not null && string.Equals(_supervisorPath, ffmpegPath, StringComparison.OrdinalIgnoreCase)) return;
+        if (_supervisor is not null
+            && string.Equals(_supervisorPath, ffmpegPath, StringComparison.OrdinalIgnoreCase)
+            && _supervisorUsesWindowsDeckLinkSafeTerminate == useWindowsDeckLinkSafeTerminate) return;
         if (_supervisor is not null) _supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        _supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions(ffmpegPath, true, TimeSpan.FromSeconds(10)),
+        _supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions(ffmpegPath, true, TimeSpan.FromSeconds(10),
+                UseWindowsDeckLinkSafeTerminate: useWindowsDeckLinkSafeTerminate),
             TimeSpan.FromSeconds(Math.Clamp(_settings.Routing.GracefulStopSeconds, 1, 30)));
         _supervisorPath = ffmpegPath;
+        _supervisorUsesWindowsDeckLinkSafeTerminate = useWindowsDeckLinkSafeTerminate;
     }
 
     private TimeSpan RetryDelay(int count)

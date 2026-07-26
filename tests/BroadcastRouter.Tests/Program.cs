@@ -64,6 +64,7 @@ var tests = new (string Name, Action Body)[]
     ("Common broadcast presets", CommonPresetsAreAvailable),
     ("Output scan selection round trip", OutputScanSelectionRoundTrips),
     ("Manual route preset selection", ManualRoutePresetSelectionIsValidated),
+    ("Source route action reflects current route", SourceRouteActionReflectsCurrentRoute),
     ("Routing rule wildcard evaluation", RoutingRuleWildcardMatches),
     ("Routing regex validation", InvalidRoutingRegexIsRejected),
     ("Fallback command is uncompressed", FallbackCommandIsSafeAndUncompressed),
@@ -298,6 +299,14 @@ static void FfmpegCommandUsesArgumentList()
     True(!start.ArgumentList.Contains("-rw_timeout"));
     True(start.ArgumentList.Contains("48000"));
     True(start.ArgumentList.Contains("pcm_s16le"));
+    True(!start.ArgumentList.Contains("-win_safe_terminate"));
+
+    var safeStart = FfmpegCommandBuilder.Build(new FfmpegRouteOptions("ffmpeg.exe",
+        ReadTimeout: TimeSpan.FromSeconds(10), UseWindowsDeckLinkSafeTerminate: true), source, port, preset);
+    var safeIndex = safeStart.ArgumentList.IndexOf("-win_safe_terminate");
+    True(safeIndex >= 0);
+    Equal("1", safeStart.ArgumentList[safeIndex + 1]);
+    True(safeIndex < safeStart.ArgumentList.IndexOf("-f"));
 }
 
 static void FfmpegInterlacedOutputIsExplicit()
@@ -595,6 +604,18 @@ static void ManualRoutePresetSelectionIsValidated()
     Throws<InvalidOperationException>(() => OutputPresetSelection.Resolve([], "1080p25", null));
     OutputPresetSelection.EnsureReferencesAvailable(presets, ["1080p25", "1080I50"]);
     Throws<InvalidOperationException>(() => OutputPresetSelection.EnsureReferencesAvailable(presets, ["deleted-preset"]));
+}
+
+static void SourceRouteActionReflectsCurrentRoute()
+{
+    Equal(SourceRouteActionKind.Start, SourceRouteActionPolicy.Resolve(null));
+    var now = DateTimeOffset.UtcNow;
+    var route = new RuntimeRoute("A/live/_definst_/one", "One", "PORT-1", "Output 1", "1080p25",
+        RouteState.Running, AssignmentMode.Manual, false, 0, 0, 1, 25, 1, 0, 0, now, now, null, null);
+    Equal(SourceRouteActionKind.View, SourceRouteActionPolicy.Resolve(route));
+    Equal(SourceRouteActionKind.View, SourceRouteActionPolicy.Resolve(route with { State = RouteState.WaitingForPort }));
+    Equal(SourceRouteActionKind.Retry, SourceRouteActionPolicy.Resolve(route with { State = RouteState.Failed }));
+    Equal(SourceRouteActionKind.Start, SourceRouteActionPolicy.Resolve(route with { State = RouteState.Released }));
 }
 
 static void RoutingRuleWildcardMatches()

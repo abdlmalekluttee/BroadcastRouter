@@ -4,6 +4,7 @@
 
 1. Install the matching Blackmagic Desktop Video release and verify each output in Desktop Video Setup/Media Express.
 2. Obtain a trusted prebuilt 64-bit FFmpeg package that includes DeckLink, FFprobe, H.264/AAC encoding, fragmented MP4 output, and the `showvolume`, `overlay`, `scale`, and `pad` filters. Do not place it inside the BroadcastRouter release folder; upgrades should be explicit.
+   The GitHub release also provides a source-only FFmpeg 8.1.2 builder with the validated Windows DeckLink safe-termination patch. DeckLink builds require `--enable-nonfree`, so compiled binaries cannot be redistributed; supply the Blackmagic SDK and build locally.
 3. Extract `BroadcastRouter-production-win-x64-<version>.zip` to a versioned directory writable only by administrators and the dedicated broadcast account.
 4. Sign in as that account and run `BroadcastRouter.Server.exe` once. Open `http://127.0.0.1:5080`.
 5. In **Settings > Media Tools**, select `ffmpeg.exe` and `ffprobe.exe`, save, and require every routing validation gate to pass. Embedded preview additionally requires the H.264/AAC, fragmented MP4, and preview-filter capabilities listed above.

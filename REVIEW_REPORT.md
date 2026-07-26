@@ -3,7 +3,7 @@
 Review date: 2026-07-26
 Review branch: `codex/ffmpeg-startup-recovery-1.2.4`
 Reviewed baseline: `1aa62ac` (`v1.2.2`, `origin/main`)
-Resulting release version: `1.2.5`
+Resulting release version: `1.2.6`
 
 ## Executive summary
 
@@ -91,7 +91,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Final: 59/59 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Final: 60/60 tests.
 
 Added coverage:
 
@@ -131,7 +131,7 @@ Still requiring integration or hardware coverage:
 
 | Validation | Status |
 |---|---|
-| Restore, Release build, tests | **Verified automatically**: clean; 59/59 after FFmpeg startup, recovery, scan, audio, reservation, and process-containment fixes. |
+| Restore, Release build, tests | **Verified automatically**: clean; 60/60 after FFmpeg startup, recovery, scan, audio, reservation, process-containment, route-action, and safe-termination fixes. |
 | Package vulnerability audit | **Verified automatically**: no vulnerable packages reported. |
 | Atomic single-port ownership | **Verified automatically** with 500 concurrent contenders. |
 | Local browser pages/viewports | **Verified locally** in isolated simulation on port 5180; stable-session console clean; zero document/preset-card overflow at 1920×1080 and 768×1024; zero controls outside cards. |
@@ -140,7 +140,7 @@ Still requiring integration or hardware coverage:
 | Authentication/antiforgery/diagnostics gate | **Verified locally** in isolated authenticated modes on ports 5181/5183, including operator denial and login throttling. |
 | Real Wowza REST and RTSP | **Verified on the configured server**: management authentication, application discovery, active publisher discovery, RTSP open, frame receipt, H.264 video, and AAC audio. |
 | DeckLink enumeration | **Verified on the live host**: Desktop Video detected, DeckLink-enabled FFmpeg 8.1.2 validated, and 16 outputs enumerated. |
-| Physical DeckLink output | **Partially verified after 1.2.5 deployment**: a bounded live RTSP-to-DeckLink test produced 375 frames in 15 seconds with 0 drops and 0 duplicates. Physical SDI picture/audio was not independently observed. The current FFmpeg/DeckLink native build still faults in `MSVCP140.dll_unloaded` during output teardown. |
+| Physical DeckLink output | **Partially verified**: a bounded live RTSP-to-DeckLink test produced 375 frames in 15 seconds with 0 drops and 0 duplicates. The patched FFmpeg then produced 250 synthetic frames in 10 seconds, stopped with zero crash events, and left zero processes. Physical SDI picture/audio was not independently observed. |
 | Physical connector identity stability | **Requires two reboots and power cycles** plus labeled-output verification. |
 | Broadcast modes/audio | **Requires physical tests** for 1080p25, 1080p50, 1080i50, and 720p50 on every compatible port. |
 | Failure/recovery matrix | **Requires lab fault injection**: network pull, publisher stop, FFmpeg kill, RTSP stall, busy port, and safe card disconnect. |
@@ -158,6 +158,7 @@ Still requiring integration or hardware coverage:
 - 1.2.3 follow-up: `OutputPresetSelection`, `OutputScanSelection`, responsive route/rule editors, preset-aware authorized commands, and focused regressions/documentation.
 - 1.2.4 follow-up: RTSP timeout compatibility, single-shot startup recovery, process-error logging, explicit interlaced generation, DeckLink audio normalization, capability validation, and focused regressions/documentation.
 - 1.2.5 follow-up: fallback-audio input ordering, idempotent release of already-free leases, and Windows Job Object containment for abrupt-host orphan prevention.
+- 1.2.6 follow-up: explicit Sources-page route actions, patched-FFmpeg capability detection, and an opt-in Windows DeckLink final-release workaround validated against Desktop Video 16.1.
 
 ## Commands and results
 
@@ -170,7 +171,7 @@ dotnet run --no-build --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.cs
 git diff --check
 ```
 
-Final results: restore passed; Release build passed with 0 warnings/errors; 59/59 tests passed; the vulnerability audit was clean; and `git diff --check` reported no whitespace errors. The self-contained `win-x64` 1.2.5 package built successfully and was deployed to the live host with a rollback backup, preserved configuration/database, healthy endpoint, and scheduled-task supervision. A bounded live RTSP/1080i50-to-DeckLink run produced 375 frames in 15 seconds with 0 drops and 0 duplicates, 224.9 MB peak working set, and 6.11 CPU seconds. Physical SDI picture/audio remains unobserved, and native FFmpeg teardown still reproduces an access violation in the unloaded Visual C++ runtime after media production completes.
+Final results: restore passed; Release build passed with 0 warnings/errors; 60/60 tests passed; the vulnerability audit was clean; and `git diff --check` reported no whitespace errors. The self-contained `win-x64` 1.2.6 package was deployed to the live host with a rollback backup and preserved configuration/database. The scheduled task is running, health is good, the desired RTSP-to-DeckLink route recovered, and its tokenized command includes the automatically detected `-win_safe_terminate 1` option. A bounded patched-FFmpeg hardware test produced 250 frames in 10 seconds, recorded zero Application Error events, and left zero test processes. Physical SDI picture/audio remains unobserved.
 
 ## Recommended follow-up
 

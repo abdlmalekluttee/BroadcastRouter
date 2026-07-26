@@ -14,6 +14,7 @@ This file records the validated development baseline without publishing workstat
 - The selected production FFmpeg build reports compiled DeckLink output support.
 - DeckLink output enumeration still requires a compatible Blackmagic Desktop Video driver and visible hardware on the deployment host.
 - FFmpeg binaries, Blackmagic drivers/SDKs, and proprietary redistributables are never committed or bundled.
+- A source-only builder archive may be published. It contains no Blackmagic SDK and no compiled `--enable-nonfree` FFmpeg binary; operators supply the SDK and build locally.
 
 ## Wowza
 

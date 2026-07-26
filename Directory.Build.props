@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <Version>1.2.5</Version>
+    <Version>1.2.6</Version>
     <Authors>Abdlmalek Luttee</Authors>
     <Product>BroadcastRouter</Product>
     <Description>Production Wowza-to-Blackmagic DeckLink routing control for Windows.</Description>

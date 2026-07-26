@@ -8,7 +8,8 @@ public sealed record FfmpegRouteOptions(
     string ExecutablePath,
     bool UseTcpTransport = true,
     TimeSpan? ReadTimeout = null,
-    string LogLevel = "warning");
+    string LogLevel = "warning",
+    bool UseWindowsDeckLinkSafeTerminate = false);
 
 public static class FfmpegCommandBuilder
 {
@@ -47,7 +48,7 @@ public static class FfmpegCommandBuilder
         if (preset.IncludeAudio)
             Add(start, "-map", "0:a:0?", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
         else Add(start, "-an");
-        Add(start, "-f", "decklink", port.FfmpegName);
+        AddDeckLinkOutput(start, options, port.FfmpegName);
         return start;
     }
 
@@ -100,8 +101,14 @@ public static class FfmpegCommandBuilder
         Add(start, "-map", "0:v:0", "-vf", BuildVideoFilter(preset, sourceIsInterlaced: false), "-pix_fmt", preset.Mode.PixelFormat);
         if (preset.IncludeAudio) Add(start, "-map", "1:a:0", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", "-shortest");
         else Add(start, "-an");
-        Add(start, "-f", "decklink", port.FfmpegName);
+        AddDeckLinkOutput(start, options, port.FfmpegName);
         return start;
+    }
+
+    private static void AddDeckLinkOutput(ProcessStartInfo start, FfmpegRouteOptions options, string ffmpegName)
+    {
+        if (options.UseWindowsDeckLinkSafeTerminate) Add(start, "-win_safe_terminate", "1");
+        Add(start, "-f", "decklink", ffmpegName);
     }
 
     public static string ToRedactedDisplay(ProcessStartInfo start)

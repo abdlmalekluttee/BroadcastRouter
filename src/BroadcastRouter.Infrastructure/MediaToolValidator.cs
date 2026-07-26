@@ -19,6 +19,7 @@ public static class MediaToolValidator
         var encoders = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-encoders"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         var muxers = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-muxers"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         var rtspOptions = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-h", "demuxer=rtsp"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        var deckLinkOptions = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-h", "muxer=decklink"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         var environment = await SystemEnvironmentScanner.ScanAsync(paths, cancellationToken).ConfigureAwait(false);
 
         var ffprobeVersion = ffprobe.CombinedOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
@@ -27,6 +28,8 @@ public static class MediaToolValidator
         var hasPixelFormat = ContainsTool(pixelFormats.CombinedOutput, "uyvy422");
         var hasRawVideo = ContainsTool(codecs.CombinedOutput, "rawvideo");
         var hasRtspTimeout = rtspOptions.Started && rtspOptions.ExitCode == 0 && rtspOptions.CombinedOutput.Contains("-timeout", StringComparison.Ordinal);
+        var hasWindowsDeckLinkSafeTerminate = deckLinkOptions.Started && deckLinkOptions.ExitCode == 0
+            && deckLinkOptions.CombinedOutput.Contains("win_safe_terminate", StringComparison.Ordinal);
         var previewFilters = new[] { "scale", "pad", "overlay", "showvolume" };
         var missingPreviewFilters = previewFilters.Where(filter => !ContainsTool(filters.CombinedOutput, filter)).ToArray();
         var hasH264Encoder = ContainsTool(encoders.CombinedOutput, "libx264");
@@ -42,6 +45,9 @@ public static class MediaToolValidator
         findings.Add(hasRtspTimeout ? "PASS: The RTSP demuxer supports bounded socket timeouts." : "FAIL: The RTSP demuxer does not expose the required timeout option.");
         findings.Add(hasPixelFormat ? "PASS: uyvy422 pixel format is available." : "FAIL: uyvy422 pixel format is unavailable.");
         findings.Add(hasRawVideo ? "PASS: rawvideo codec support is available." : "FAIL: rawvideo codec support is unavailable.");
+        findings.Add(hasWindowsDeckLinkSafeTerminate
+            ? "PASS: Windows DeckLink safe-termination support is available and will be enabled for route outputs."
+            : "WARN: This FFmpeg build does not expose the optional Windows DeckLink safe-termination workaround.");
         findings.Add(missingPreviewFilters.Length == 0 && hasH264Encoder && hasAacEncoder && hasMp4Muxer
             ? "PASS: Embedded preview filters, H.264/AAC encoders, and MP4 output are available."
             : $"WARN: Embedded preview is unavailable or incomplete. Missing: {string.Join(", ", missingPreviewFilters
@@ -53,7 +59,8 @@ public static class MediaToolValidator
         var valid = ffmpeg.ExecutableFound && ffprobe.Started && ffprobe.ExitCode == 0 && ffmpeg.HasDeckLinkOutput
             && ffmpeg.OutputDevices.Count > 0 && missingFilters.Length == 0 && hasPixelFormat && hasRawVideo && hasRtspTimeout && driver;
         return new(valid ? ToolValidationState.Valid : ToolValidationState.Invalid, ffmpeg.VersionLine, ffprobeVersion,
-            ffmpeg.HasDeckLinkOutput, driver, ffmpeg.OutputDevices.Count, findings, DateTimeOffset.UtcNow);
+            ffmpeg.HasDeckLinkOutput, driver, ffmpeg.OutputDevices.Count, findings, DateTimeOffset.UtcNow,
+            hasWindowsDeckLinkSafeTerminate);
     }
 
     private static bool ContainsTool(string report, string token) =>

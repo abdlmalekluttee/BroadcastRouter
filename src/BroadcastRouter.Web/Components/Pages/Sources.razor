@@ -1,5 +1,6 @@
 @page "/sources"
 @rendermode InteractiveServer
+@using BroadcastRouter.Application
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject BrowserPreviewSupervisor PreviewSupervisor
@@ -8,7 +9,8 @@
 
 <PageTitle>Sources · BroadcastRouter</PageTitle>
 <div class="page-head"><div><h1>Sources</h1><p class="lead">Wowza-discovered publishers and explicitly configured RTSP inputs.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" @onclick='() => Commands.ExecuteAsync("rescan")'>Refresh discovery</button><a class="btn" href="/settings#manual">Add manual RTSP</a></div></Authorized></AuthorizeView></div>
-@if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger">@error</div> }
+@if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger" role="alert">@error</div> }
+@if (!string.IsNullOrWhiteSpace(commandMessage)) { <div class="notice" role="status">@commandMessage</div> }
 <div class="panel preview-panel">
     <div class="panel-head"><div><h2>Embedded browser preview</h2><span class="secondary-text">A compact 720×450 low-latency player stays inside this page. The audio VU meter is rendered into the video, with confidence audio controlled from the player.</span></div><div class="actions"><BroadcastRouter.Web.Components.Shared.StateBadge Value="preview.State" />@if(preview.State is PreviewState.Running or PreviewState.Starting){<button class="btn danger" disabled="@previewBusy" @onclick="StopPreview">Stop preview</button>}</div></div>
     <div class="preview-monitor">
@@ -45,13 +47,23 @@
 @foreach (var source in snapshot.Sources)
 {
     var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source.Identity.Value);
+    var routeAction = SourceRouteActionPolicy.Resolve(route);
     <tr><td><span class="primary-text">@source.FriendlyName</span><span class="secondary-text">@source.Identity.Value</span></td>
         <td>@source.Identity.ServerId<span class="secondary-text">@source.Identity.Application / @source.Identity.ApplicationInstance</span></td>
         <td class="mono" title="@Sanitize(source.RtspUri)">@Sanitize(source.RtspUri)</td>
         <td>@(source.Media is null ? "—" : $"{source.Media.VideoCodec} · {source.Media.Width}×{source.Media.Height} · {FormatRate(source.Media)}")</td>
         <td>@(source.Media?.AudioCodec is null ? "None" : $"{source.Media.AudioCodec} · {source.Media.AudioSampleRate} Hz · {source.Media.AudioChannels} ch")</td>
         <td><BroadcastRouter.Web.Components.Shared.StateBadge Value="source.State" /></td><td>@source.Priority</td><td>@source.LastObservedAt?.ToLocalTime().ToString("HH:mm:ss")</td>
-        <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn small primary" disabled="@(route?.State is RouteState.Running or RouteState.Starting)" @onclick='() => Run("start", source.Identity.Value)'>Route</button><button class="btn small" disabled="@(previewBusy || source.Media is null)" title="Play an embedded browser preview with audio VU meter" @onclick='() => StartPreview(source.Identity.Value)'>Preview</button><button class="btn small" @onclick='() => Run("reprobe", source.Identity.Value)'>Reprobe</button></div></Authorized></AuthorizeView></td></tr>
+        <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions">
+            @if (routeAction == SourceRouteActionKind.View)
+            {
+                <a class="btn small primary" href="/routes" title="This source already has a @route!.State route. Open the routing matrix to control it.">View route</a>
+            }
+            else
+            {
+                <button class="btn small primary" disabled="@(routeBusySource is not null)" @onclick='() => Run("start", source.Identity.Value)'>@(routeBusySource == source.Identity.Value ? "Routing…" : routeAction == SourceRouteActionKind.Retry ? "Retry route" : "Route")</button>
+            }
+            <button class="btn small" disabled="@(previewBusy || source.Media is null)" title="Play an embedded browser preview with audio VU meter" @onclick='() => StartPreview(source.Identity.Value)'>Preview</button><button class="btn small" disabled="@(routeBusySource is not null)" @onclick='() => Run("reprobe", source.Identity.Value)'>Reprobe</button></div></Authorized></AuthorizeView></td></tr>
 }
 @if (snapshot.Sources.Count == 0) { <tr><td colspan="9"><div class="empty-state">No active sources discovered. Check Wowza settings or add a manual RTSP source.</div></td></tr> }
 </tbody></table></div></div>
@@ -60,11 +72,29 @@
     private RouterSnapshot snapshot = null!;
     private PreviewSnapshot preview = PreviewSnapshot.Stopped;
     private string error = "";
+    private string commandMessage = "";
     private bool previewBusy;
+    private string? routeBusySource;
     protected override void OnInitialized() { snapshot = Coordinator.Snapshot; preview = PreviewSupervisor.Snapshot; Coordinator.Changed += Changed; PreviewSupervisor.Changed += PreviewChanged; }
     private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
     private void PreviewChanged() => _ = InvokeAsync(() => { preview = PreviewSupervisor.Snapshot; StateHasChanged(); });
-    private async Task Run(string action, string id) { try { error = ""; await Commands.ExecuteAsync(action, id); } catch(Exception ex) { error = ex.Message; } }
+    private async Task Run(string action, string id)
+    {
+        if (routeBusySource is not null) return;
+        routeBusySource = id;
+        try
+        {
+            error = "";
+            commandMessage = "";
+            await Commands.ExecuteAsync(action, id);
+            snapshot = Coordinator.Snapshot;
+            commandMessage = action == "start"
+                ? "Route request accepted. Use View route to monitor or change the output."
+                : "Source reprobe requested.";
+        }
+        catch(Exception ex) { error = ex.Message; }
+        finally { routeBusySource = null; }
+    }
     private async Task StartPreview(string id)
     {
         if (previewBusy) return;
