@@ -18,13 +18,15 @@ public static class MediaToolValidator
         var codecs = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-codecs"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         var encoders = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-encoders"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         var muxers = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-muxers"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        var rtspOptions = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-h", "demuxer=rtsp"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         var environment = await SystemEnvironmentScanner.ScanAsync(paths, cancellationToken).ConfigureAwait(false);
 
         var ffprobeVersion = ffprobe.CombinedOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-        var requiredFilters = new[] { "scale", "fps", "yadif" };
+        var requiredFilters = new[] { "scale", "fps", "yadif", "tinterlace", "setfield" };
         var missingFilters = requiredFilters.Where(filter => !ContainsTool(filters.CombinedOutput, filter)).ToArray();
         var hasPixelFormat = ContainsTool(pixelFormats.CombinedOutput, "uyvy422");
         var hasRawVideo = ContainsTool(codecs.CombinedOutput, "rawvideo");
+        var hasRtspTimeout = rtspOptions.Started && rtspOptions.ExitCode == 0 && rtspOptions.CombinedOutput.Contains("-timeout", StringComparison.Ordinal);
         var previewFilters = new[] { "scale", "pad", "overlay", "showvolume" };
         var missingPreviewFilters = previewFilters.Where(filter => !ContainsTool(filters.CombinedOutput, filter)).ToArray();
         var hasH264Encoder = ContainsTool(encoders.CombinedOutput, "libx264");
@@ -36,7 +38,8 @@ public static class MediaToolValidator
         findings.Add(ffprobe.Started && ffprobe.ExitCode == 0 ? $"PASS: {ffprobeVersion}" : "FAIL: FFprobe did not start successfully.");
         findings.Add(ffmpeg.HasDeckLinkOutput ? "PASS: DeckLink output is compiled into FFmpeg." : "FAIL: DeckLink output is not compiled into FFmpeg.");
         findings.Add(ffmpeg.OutputDevices.Count > 0 ? $"PASS: {ffmpeg.OutputDevices.Count} DeckLink output(s) enumerated." : "FAIL: No DeckLink outputs were enumerated.");
-        findings.Add(missingFilters.Length == 0 ? "PASS: Required filters scale, fps, and yadif are available." : $"FAIL: Missing filters: {string.Join(", ", missingFilters)}.");
+        findings.Add(missingFilters.Length == 0 ? "PASS: Required filters scale, fps, yadif, tinterlace, and setfield are available." : $"FAIL: Missing filters: {string.Join(", ", missingFilters)}.");
+        findings.Add(hasRtspTimeout ? "PASS: The RTSP demuxer supports bounded socket timeouts." : "FAIL: The RTSP demuxer does not expose the required timeout option.");
         findings.Add(hasPixelFormat ? "PASS: uyvy422 pixel format is available." : "FAIL: uyvy422 pixel format is unavailable.");
         findings.Add(hasRawVideo ? "PASS: rawvideo codec support is available." : "FAIL: rawvideo codec support is unavailable.");
         findings.Add(missingPreviewFilters.Length == 0 && hasH264Encoder && hasAacEncoder && hasMp4Muxer
@@ -48,7 +51,7 @@ public static class MediaToolValidator
         findings.Add(driver ? "PASS: Blackmagic Desktop Video is installed." : "FAIL: Blackmagic Desktop Video was not detected.");
 
         var valid = ffmpeg.ExecutableFound && ffprobe.Started && ffprobe.ExitCode == 0 && ffmpeg.HasDeckLinkOutput
-            && ffmpeg.OutputDevices.Count > 0 && missingFilters.Length == 0 && hasPixelFormat && hasRawVideo && driver;
+            && ffmpeg.OutputDevices.Count > 0 && missingFilters.Length == 0 && hasPixelFormat && hasRawVideo && hasRtspTimeout && driver;
         return new(valid ? ToolValidationState.Valid : ToolValidationState.Invalid, ffmpeg.VersionLine, ffprobeVersion,
             ffmpeg.HasDeckLinkOutput, driver, ffmpeg.OutputDevices.Count, findings, DateTimeOffset.UtcNow);
     }

@@ -83,7 +83,8 @@ public sealed record OutputPreset(
     VideoMode Mode,
     bool LowLatency,
     int BufferSizeMegabytes,
-    bool IncludeAudio = true);
+    bool IncludeAudio = true,
+    bool Interlaced = false);
 
 public sealed record RouteRecord(
     SourceIdentity Source,

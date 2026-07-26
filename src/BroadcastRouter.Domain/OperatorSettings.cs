@@ -80,7 +80,7 @@ public sealed class OutputPresetProfile
 
     public OutputPreset ToDomain() => new(Id, Name,
         new VideoMode(Width, Height, FrameRateNumerator, Math.Max(1, FrameRateDenominator), PixelFormat),
-        LowLatency, BufferSizeMegabytes, IncludeAudio);
+        LowLatency, BufferSizeMegabytes, IncludeAudio, Interlaced);
 
     public static List<OutputPresetProfile> CommonDefaults() =>
     [

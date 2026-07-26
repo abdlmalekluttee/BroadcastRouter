@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.2.4 — 2026-07-26
+
+- Replaced the rejected FFmpeg `-rw_timeout` input argument with the RTSP demuxer's supported `-timeout` option.
+- Made persisted-route recovery single-shot per host start so an immediately exiting FFmpeg process is classified instead of relaunched forever as `STARTING`.
+- Monitor process exits before route reconciliation and retain a redacted retry reason in structured logs.
+- Made interlaced output presets generate explicit 50-field/s temporal interlacing with top-field-first metadata.
+- Normalize DeckLink audio output to 48 kHz stereo PCM and validate the additional interlacing filters and RTSP timeout capability.
+- Added regression coverage for single-shot startup recovery, RTSP timeout tokenization, interlaced output, and audio normalization.
+
 ## 1.2.3 — 2026-07-26
 
 - Added saved output-preset selection to manual route creation and existing route reassignment.
