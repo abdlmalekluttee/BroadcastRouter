@@ -26,6 +26,7 @@ public sealed class RouterCoordinator(
     private readonly Dictionary<string, DateTimeOffset> _sourceReadySince = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _simulationFaults = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _routeGates = new(StringComparer.Ordinal);
+    private readonly StartupRouteRecoveryTracker _startupRecovery = new();
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private FfmpegProcessSupervisor? _supervisor;
     private string? _supervisorPath;
@@ -224,7 +225,12 @@ public sealed class RouterCoordinator(
     {
         await store.InitializeAsync(stoppingToken);
         _settings = await store.LoadSettingsAsync(stoppingToken);
-        foreach (var route in await store.LoadRoutesAsync(stoppingToken)) _routes[route.SourceId] = route;
+        foreach (var route in await store.LoadRoutesAsync(stoppingToken))
+        {
+            _routes[route.SourceId] = route;
+            if (route.PortId is not null && route.State is not RouteState.Released and not RouteState.Disabled)
+                _startupRecovery.Track(route.SourceId);
+        }
         await LogAsync("Information", "Host", "BroadcastRouter server started; persisted routes will be reconciled.", cancellationToken: stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -233,8 +239,8 @@ public sealed class RouterCoordinator(
             {
                 await RefreshToolsAndPortsAsync(stoppingToken);
                 await DiscoverAndProbeAsync(stoppingToken);
-                await ReconcileRoutesAsync(stoppingToken);
                 await MonitorProcessesAsync(stoppingToken);
+                await ReconcileRoutesAsync(stoppingToken);
                 Publish("Running");
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
@@ -605,6 +611,8 @@ public sealed class RouterCoordinator(
         var retry = route with { State = RouteState.Reconnecting, RestartCount = count, FailureCategory = category,
             FailureMessage = string.IsNullOrWhiteSpace(detail) ? "FFmpeg stopped unexpectedly." : detail,
             RetryAt = DateTimeOffset.UtcNow + RetryDelay(count), UpdatedAt = DateTimeOffset.UtcNow };
+        await LogAsync("Warning", "FFmpeg", $"Route process failed ({category}); retry {count} is scheduled. {retry.FailureMessage}",
+            route.SourceId, cancellationToken: cancellationToken);
         if (!_settings.SimulationMode && route.PortId is not null)
         {
             try
@@ -716,6 +724,7 @@ public sealed class RouterCoordinator(
             .OrderByDescending(x => x.Locked).ThenByDescending(x => x.Priority).ToArray();
         foreach (var route in candidates)
         {
+            if (!_startupRecovery.IsPending(route.SourceId)) continue;
             DiscoveredSource? source;
             DeckLinkPort? port;
             lock (_gate)
@@ -726,6 +735,7 @@ public sealed class RouterCoordinator(
             if (source is null || port is null) continue;
             if (!_reservations.TryReserve(route.PortId!, source.Identity, route.Locked, DateTimeOffset.UtcNow, out var existing))
             {
+                _startupRecovery.TryBegin(route.SourceId);
                 var waiting = route with { PortId = null, PortName = null, State = RouteState.WaitingForPort,
                     FailureCategory = "DuplicateReservation", FailureMessage = $"Persisted output is already reserved by {existing.Source.Value}.", UpdatedAt = DateTimeOffset.UtcNow };
                 _waiting.Enqueue(source.Identity, route.Priority, waiting.FailureMessage!);
@@ -733,6 +743,7 @@ public sealed class RouterCoordinator(
                 continue;
             }
             _waiting.Remove(source.Identity);
+            if (!_startupRecovery.TryBegin(route.SourceId)) continue;
             if (settings.SimulationMode) continue;
             var ownsProcess = _supervisor?.Snapshot().Any(x => x.Source.Value == route.SourceId && x.Running) ?? false;
             if (!ownsProcess && route.State is RouteState.Running or RouteState.Starting or RouteState.Reserved)
@@ -740,7 +751,23 @@ public sealed class RouterCoordinator(
                 var recovering = route with { State = RouteState.Reconnecting, RetryAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
                     FailureCategory = "RestartRecovery", FailureMessage = "Restoring persisted route after host restart." };
                 await ReplaceRouteAsync(recovering, route.State, cancellationToken);
-                await RestartReservedRouteAsync(recovering, cancellationToken);
+                try
+                {
+                    await RestartReservedRouteAsync(recovering, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    RuntimeRoute? current;
+                    lock (_gate) _routes.TryGetValue(route.SourceId, out current);
+                    if (current is null) continue;
+                    var detail = LogRedactor.Redact(ex.Message);
+                    var failed = RouteStartFailureRecovery.ReleaseAndFail(_reservations, current, source.Identity,
+                        string.IsNullOrWhiteSpace(detail) ? "FFmpeg could not be restored after host startup." : detail,
+                        DateTimeOffset.UtcNow);
+                    await ReplaceRouteAsync(failed, current.State, cancellationToken);
+                    await LogAsync("Error", "FFmpeg", "Persisted route recovery could not start FFmpeg; its output reservation was released.",
+                        route.SourceId, cancellationToken: cancellationToken);
+                }
             }
         }
     }

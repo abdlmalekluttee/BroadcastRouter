@@ -1,9 +1,9 @@
 # BroadcastRouter production-safety review
 
 Review date: 2026-07-26
-Review branch: `codex/routing-preset-ui-1.2.3`
+Review branch: `codex/ffmpeg-startup-recovery-1.2.4`
 Reviewed baseline: `1aa62ac` (`v1.2.2`, `origin/main`)
-Resulting release version: `1.2.3`
+Resulting release version: `1.2.4`
 
 ## Executive summary
 
@@ -15,7 +15,7 @@ The repository is materially safer after these changes, but this review does **n
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. The real configured Wowza publisher, RTSP frame receipt, H.264/AAC fragmented-MP4 stream, VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified on the production host; physical DeckLink output remains unverified.
 
-The 1.2.3 follow-up fixes the operator-reported routing and preset workflows. Manual creation and confirmed reassignment now accept a saved output preset, with server-side rejection of stale preset IDs before an existing route is stopped. The route matrix and rule editor use responsive cards, and scan selection uses stable progressive/interlaced values instead of fragile Boolean HTML conversion.
+The 1.2.4 production follow-up fixes a live FFmpeg startup failure reproduced against FFmpeg 8.1.2 and the configured RTSP publisher. The build rejected the generic `-rw_timeout` token before opening the input; startup reconciliation then relaunched the short-lived process before supervision could preserve its error, leaving the route indefinitely at `STARTING`. The command now uses the RTSP demuxer's supported `-timeout`, recovery is single-shot, exits are monitored before reconciliation, and 1080i50 plus DeckLink audio are generated explicitly.
 
 ## Architecture assessment
 
@@ -67,6 +67,8 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-019 | Medium | Preview UX / process ownership | `src/BroadcastRouter.Infrastructure/BrowserPreviewSupervisor.cs`; `src/BroadcastRouter.Web/Program.cs`; `Components/Pages/Sources.razor` | Operator feedback confirmed that opening a separate 1440×900 FFplay window was disruptive and oversized. A forced Scheduled Task stop could also outlive the host briefly before the legacy child pair exited. | **Fixed.** Replaced FFplay with one exact FFmpeg producer serving authenticated, non-cacheable H.264/AAC fragmented MP4 to a 720×450 in-page player. A random session token prevents stale attachment; player disconnect, explicit stop, process exit, and host disposal all converge on owned-process cleanup. Regression: `Browser preview is tokenized with VU overlay`; real browser playback and zero remaining child processes verified. |
 | BR-020 | Medium | Route configuration / operator UX | `src/BroadcastRouter.Web/Components/Pages/RoutesPage.razor`; `Services/RouterCoordinator.cs`; `Application/OutputPresetSelection.cs` | Manual route creation exposed only source/output and reassignment changed output immediately, so an operator could not choose a saved preset. | **Fixed.** Route cards expose Output and Output preset drafts with one confirmed apply action. Explicit preset IDs are normalized and validated server-side before destructive reassignment begins; presets referenced by active/waiting routes cannot be removed. Regression: `Manual route preset selection`. |
 | BR-021 | Low | Preset editor / responsive GUI | `src/BroadcastRouter.Web/Components/Pages/RulesPresets.razor`; `Domain/OutputScanSelection.cs`; `wwwroot/app.css` | Binding `False`/`True` option strings directly to `bool` could leave the 1080i50 scan selector blank after interaction; routing rules remained compressed in a wide table. | **Fixed.** Scan uses exact `progressive`/`interlaced` tokens with guarded parsing; rules use responsive labeled cards. Regression: `Output scan selection round trip`. |
+| BR-022 | High | FFmpeg startup / recovery | `src/BroadcastRouter.Infrastructure/FfmpegCommandBuilder.cs`; `src/BroadcastRouter.Web/Services/RouterCoordinator.cs` | Live FFmpeg 8.1.2 rejected `-rw_timeout` before opening RTSP. Reconciliation relaunched the exited child before monitoring classified it, repeatedly resetting the route to `STARTING`, zero frames, retry 0. | **Fixed.** Use the RTSP demuxer's verified `-timeout`; monitor exits before reconciliation; startup recovery is single-shot; retry details are redacted and logged. Reproduced against the configured publisher and exact DeckLink-enabled FFmpeg build. Regressions: `Startup route recovery is single shot`, timeout-token assertions. |
+| BR-023 | High | DeckLink mode/audio correctness | `src/BroadcastRouter.Domain/Models.cs`; `OperatorSettings.cs`; `src/BroadcastRouter.Infrastructure/FfmpegCommandBuilder.cs`; `MediaToolValidator.cs` | The profile stored `Interlaced`, but `ToDomain` discarded it and both FFmpeg paths always generated progressive frames. Input audio was passed through without enforcing DeckLink's 48 kHz/channel requirements. | **Fixed.** Preserve scan in the runtime preset; build explicit 50-field/s TFF output with `tinterlace`/`setfield`; deinterlace before conversion when required; normalize audio to 48 kHz stereo PCM; validate all required capabilities. Regression: `FFmpeg interlaced output is explicit`. |
 
 ## GUI review
 
@@ -89,7 +91,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Final: 55/55 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Final: 57/57 tests.
 
 Added coverage:
 
@@ -111,6 +113,8 @@ Added coverage:
 16. Tokenized embedded-browser FFmpeg preview commands, real VU filter inclusion, H.264/AAC fragmented MP4, 720×450 sizing, and video-only fallback.
 17. Stable progressive/interlaced scan selection round trips, including rejection of invalid/legacy option strings.
 18. Explicit manual preset selection, case-insensitive normalization, rule fallback behavior, missing-preset rejection, and empty-preset rejection.
+19. Single-shot persisted-route startup recovery.
+20. FFmpeg RTSP demuxer timeout tokenization, explicit 1080i50 TFF filtering, and DeckLink audio normalization.
 
 Expanded existing credential/log redaction assertions. HTTP integration checks separately verified antiforgery and diagnostics authorization.
 
@@ -127,7 +131,7 @@ Still requiring integration or hardware coverage:
 
 | Validation | Status |
 |---|---|
-| Restore, Release build, tests | **Verified automatically**: clean; 55/55 after route-preset and responsive-editor changes. |
+| Restore, Release build, tests | **Verified automatically**: clean; 57/57 after FFmpeg startup, recovery, scan, and audio fixes. |
 | Package vulnerability audit | **Verified automatically**: no vulnerable packages reported. |
 | Atomic single-port ownership | **Verified automatically** with 500 concurrent contenders. |
 | Local browser pages/viewports | **Verified locally** in isolated simulation on port 5180; stable-session console clean; zero document/preset-card overflow at 1920×1080 and 768×1024; zero controls outside cards. |
@@ -135,7 +139,8 @@ Still requiring integration or hardware coverage:
 | Embedded preview | **Verified locally and against the configured Wowza publisher**: RTSP frames, 720×450 H.264/AAC fragmented MP4 bytes, browser `readyState=4`, advancing playback time, 720×450 decoded video, real `showvolume` overlay, explicit stop, and zero remaining FFmpeg/FFplay children. |
 | Authentication/antiforgery/diagnostics gate | **Verified locally** in isolated authenticated modes on ports 5181/5183, including operator denial and login throttling. |
 | Real Wowza REST and RTSP | **Verified on the configured server**: management authentication, application discovery, active publisher discovery, RTSP open, frame receipt, H.264 video, and AAC audio. |
-| DeckLink enumeration and output | **Requires DeckLink hardware**, matching Desktop Video drivers, and DeckLink-enabled FFmpeg. |
+| DeckLink enumeration | **Verified on the live host**: Desktop Video detected, DeckLink-enabled FFmpeg 8.1.2 validated, and 16 outputs enumerated. |
+| Physical DeckLink output | **Not yet verified after 1.2.4 deployment**; requires observed SDI picture/audio and stable frame progress on the selected connector. |
 | Physical connector identity stability | **Requires two reboots and power cycles** plus labeled-output verification. |
 | Broadcast modes/audio | **Requires physical tests** for 1080p25, 1080p50, 1080i50, and 720p50 on every compatible port. |
 | Failure/recovery matrix | **Requires lab fault injection**: network pull, publisher stop, FFmpeg kill, RTSP stall, busy port, and safe card disconnect. |
@@ -151,6 +156,7 @@ Still requiring integration or hardware coverage:
 - Tests: ten new regression cases and expanded redaction coverage.
 - Documentation: README, security, architecture, deployment, changelog, and this report.
 - 1.2.3 follow-up: `OutputPresetSelection`, `OutputScanSelection`, responsive route/rule editors, preset-aware authorized commands, and focused regressions/documentation.
+- 1.2.4 follow-up: RTSP timeout compatibility, single-shot startup recovery, process-error logging, explicit interlaced generation, DeckLink audio normalization, capability validation, and focused regressions/documentation.
 
 ## Commands and results
 
@@ -163,7 +169,7 @@ dotnet run --no-build --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.cs
 git diff --check
 ```
 
-Final results: restore passed; Release build passed with 0 warnings/errors; 55/55 tests passed; vulnerability audit and .NET 8 servicing audit were clean; local browser responsive checks passed against the configured production host; `git diff --check` reported no whitespace errors. The supplied diagnostics archive was inspected by entry name and contained no database/WAL/SQLite file. The self-contained `win-x64` 1.2.3 package built successfully with file version `1.2.3.0`, a generated SHA-256 checksum, and no database/diagnostics archive.
+Final results: restore passed; Release build passed with 0 warnings/errors; 57/57 tests passed; the vulnerability audit was clean; all HTTP pages returned 200 in an isolated production-host smoke run; and `git diff --check` reported no whitespace errors. The live RTSP/1080i50 filter pipeline ran for five bounded seconds with the exact FFmpeg 8.1.2 DeckLink build and exited 0. The self-contained `win-x64` 1.2.4 package built successfully with file version `1.2.4.0`, a matching SHA-256 checksum, and no database/diagnostics archive. Physical SDI picture/audio remains pending deployment to the DeckLink host.
 
 ## Recommended follow-up
 

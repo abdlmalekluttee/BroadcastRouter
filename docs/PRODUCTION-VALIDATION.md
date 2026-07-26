@@ -6,10 +6,10 @@ The live preview check can be repeated with `BroadcastRouter.Verify --database <
 
 Before broadcast use, verify:
 
-- FFmpeg/FFprobe versions, DeckLink compilation, `scale`/`fps`/`yadif`, `uyvy422`, rawvideo, and every enumerated output pass in Media Tools.
+- FFmpeg/FFprobe versions, DeckLink compilation, RTSP demuxer timeout support, `scale`/`fps`/`yadif`/`tinterlace`/`setfield`, `uyvy422`, rawvideo, and every enumerated output pass in Media Tools.
 - The Sources page plays a 720×450 embedded preview; video, muted-autoplay/unmute, stereo confidence audio, peak/dB VU overlay, browser-disconnect cleanup, and repeated source switching work without orphan processes.
 - FFmpeg aliases map to the labeled physical connectors; power-cycle and reboot twice, then confirm mappings do not change.
-- 1080p25, 1080p50, 1080i50, and 720p50 presets play for at least 30 minutes on every compatible port with embedded audio checked.
+- 1080p25, 1080p50, 1080i50, and 720p50 presets play for at least 30 minutes on every compatible port with embedded audio checked. Confirm 1080i50 is top-field-first at 25 frames/50 fields per second and audio is 48 kHz stereo PCM at the DeckLink output.
 - Two concurrent route-start requests never obtain the same port; locked routes retain ownership through publisher and Wowza-API outages.
 - Wowza connection tests report authentication, applications, active streams, and successful RTSP frame receipt for each monitored application/instance.
 - Pull network, stop the publisher, kill FFmpeg, create an RTSP stall, mark a port busy, disconnect a card if safe, and verify classification, queueing, standby, backoff and recovery.

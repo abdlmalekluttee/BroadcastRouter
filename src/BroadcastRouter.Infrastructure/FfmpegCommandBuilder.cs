@@ -34,17 +34,19 @@ public static class FfmpegCommandBuilder
         Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats");
         if (options.UseTcpTransport) Add(start, "-rtsp_transport", "tcp");
         if (options.ReadTimeout is { } timeout)
-            Add(start, "-rw_timeout", ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture));
+            Add(start, "-timeout", ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture));
         if (preset.BufferSizeMegabytes > 0) Add(start, "-buffer_size", $"{preset.BufferSizeMegabytes}M");
         if (preset.LowLatency) Add(start, "-flags", "low_delay");
         Add(start, "-i", source.RtspUri.AbsoluteUri);
 
-        var rate = $"{preset.Mode.FrameRateNumerator}/{preset.Mode.FrameRateDenominator}";
+        var videoFilter = BuildVideoFilter(preset, source.Media?.Interlaced == true);
         Add(start,
             "-map", "0:v:0",
-            "-vf", $"scale={preset.Mode.Width}:{preset.Mode.Height}:flags=lanczos,fps={rate}",
+            "-vf", videoFilter,
             "-pix_fmt", preset.Mode.PixelFormat);
-        if (preset.IncludeAudio) Add(start, "-map", "0:a:0?"); else Add(start, "-an");
+        if (preset.IncludeAudio)
+            Add(start, "-map", "0:a:0?", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
+        else Add(start, "-an");
         Add(start, "-f", "decklink", port.FfmpegName);
         return start;
     }
@@ -67,7 +69,9 @@ public static class FfmpegCommandBuilder
             CreateNoWindow = true
         };
         Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats");
-        var rate = $"{preset.Mode.FrameRateNumerator}/{preset.Mode.FrameRateDenominator}";
+        var rate = preset.Interlaced
+            ? $"{checked(preset.Mode.FrameRateNumerator * 2)}/{preset.Mode.FrameRateDenominator}"
+            : $"{preset.Mode.FrameRateNumerator}/{preset.Mode.FrameRateDenominator}";
         switch (mode)
         {
             case FallbackMode.TestPattern:
@@ -89,8 +93,8 @@ public static class FfmpegCommandBuilder
                 Add(start, "-re", "-f", "lavfi", "-i", $"color=c=black:size={preset.Mode.Width}x{preset.Mode.Height}:rate={rate}");
                 break;
         }
-        Add(start, "-map", "0:v:0", "-vf", $"scale={preset.Mode.Width}:{preset.Mode.Height}:flags=lanczos,fps={rate}", "-pix_fmt", preset.Mode.PixelFormat);
-        if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "1:a:0", "-shortest");
+        Add(start, "-map", "0:v:0", "-vf", BuildVideoFilter(preset, sourceIsInterlaced: false), "-pix_fmt", preset.Mode.PixelFormat);
+        if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "1:a:0", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", "-shortest");
         else Add(start, "-an");
         Add(start, "-f", "decklink", port.FfmpegName);
         return start;
@@ -105,6 +109,21 @@ public static class FfmpegCommandBuilder
     private static void Add(ProcessStartInfo start, params string[] arguments)
     {
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
+    }
+
+    private static string BuildVideoFilter(OutputPreset preset, bool sourceIsInterlaced)
+    {
+        var outputRate = $"{preset.Mode.FrameRateNumerator}/{preset.Mode.FrameRateDenominator}";
+        var scale = $"scale={preset.Mode.Width}:{preset.Mode.Height}:flags=lanczos";
+        if (preset.Interlaced)
+        {
+            var fieldRate = $"{checked(preset.Mode.FrameRateNumerator * 2)}/{preset.Mode.FrameRateDenominator}";
+            var deinterlace = sourceIsInterlaced ? "yadif=mode=send_field:parity=auto:deint=interlaced," : "";
+            return $"{deinterlace}{scale},fps={fieldRate},tinterlace=interleave_top:flags=vlpf,setfield=tff";
+        }
+
+        var progressive = sourceIsInterlaced ? "yadif=mode=send_frame:parity=auto:deint=interlaced," : "";
+        return $"{progressive}{scale},fps={outputRate}";
     }
 
     private static void ValidateToken(string value, string name)

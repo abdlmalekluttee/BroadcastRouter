@@ -37,7 +37,9 @@ var tests = new (string Name, Action Body)[]
     ("Simulation discovery", SimulationReturnsUsableVideo),
     ("Retry policy caps delay", RetryPolicyCapsAtMaximum),
     ("Retry attempt cap is opt-in", RetryAttemptCapIsOptIn),
+    ("Startup route recovery is single shot", StartupRouteRecoveryIsSingleShot),
     ("FFmpeg command uses argument list", FfmpegCommandUsesArgumentList),
+    ("FFmpeg interlaced output is explicit", FfmpegInterlacedOutputIsExplicit),
     ("FFmpeg display redacts credentials", FfmpegDisplayRedactsCredentials),
     ("Browser preview is tokenized with VU overlay", BrowserPreviewIsTokenizedWithVuOverlay),
     ("FFmpeg progress parsing", FfmpegProgressIsParsed),
@@ -258,15 +260,44 @@ static void RetryAttemptCapIsOptIn()
     True(RetryLimitPolicy.IsExhausted(4, 3));
 }
 
+static void StartupRouteRecoveryIsSingleShot()
+{
+    var tracker = new StartupRouteRecoveryTracker();
+    tracker.Track("MAIN/live/_definst_/feed");
+    True(tracker.IsPending("MAIN/live/_definst_/feed"));
+    True(tracker.TryBegin("MAIN/live/_definst_/feed"));
+    True(!tracker.IsPending("MAIN/live/_definst_/feed"));
+    True(!tracker.TryBegin("MAIN/live/_definst_/feed"));
+}
+
 static void FfmpegCommandUsesArgumentList()
 {
     var source = new SimulationDiscoveryProvider().DiscoverAsync(default).Result.Single();
     var port = new SimulationDeckLinkEnumerator().EnumerateAsync(default).Result[0];
     var preset = new OutputPreset("HD25", "1080p25", new VideoMode(1920, 1080, 25, 1, "uyvy422"), true, 256);
-    var start = FfmpegCommandBuilder.Build(new FfmpegRouteOptions("ffmpeg.exe"), source, port, preset);
+    var start = FfmpegCommandBuilder.Build(new FfmpegRouteOptions("ffmpeg.exe", ReadTimeout: TimeSpan.FromSeconds(10)), source, port, preset);
     True(!start.UseShellExecute);
     True(start.ArgumentList.Contains("-progress"));
     True(start.ArgumentList.Contains(port.FfmpegName));
+    True(start.ArgumentList.Contains("-timeout"));
+    True(!start.ArgumentList.Contains("-rw_timeout"));
+    True(start.ArgumentList.Contains("48000"));
+    True(start.ArgumentList.Contains("pcm_s16le"));
+}
+
+static void FfmpegInterlacedOutputIsExplicit()
+{
+    var source = new SimulationDiscoveryProvider().DiscoverAsync(default).Result.Single();
+    var port = new SimulationDeckLinkEnumerator().EnumerateAsync(default).Result[0];
+    var preset = new OutputPreset("1080i50", "1080i50", new VideoMode(1920, 1080, 25, 1, "uyvy422"), true, 256, true, true);
+    var start = FfmpegCommandBuilder.Build(new FfmpegRouteOptions("ffmpeg.exe", ReadTimeout: TimeSpan.FromSeconds(10)), source, port, preset);
+    var filter = start.ArgumentList[start.ArgumentList.IndexOf("-vf") + 1];
+    True(filter.Contains("fps=50/1", StringComparison.Ordinal));
+    True(filter.Contains("tinterlace=interleave_top", StringComparison.Ordinal));
+    True(filter.Contains("setfield=tff", StringComparison.Ordinal));
+
+    var profile = OutputPresetProfile.CommonDefaults().Single(item => item.Id == "1080i50");
+    True(profile.ToDomain().Interlaced);
 }
 
 static void FfmpegDisplayRedactsCredentials()
@@ -558,6 +589,11 @@ static void FallbackCommandIsSafeAndUncompressed()
     True(start.ArgumentList.Contains("smptebars=size=1920x1080:rate=25/1"));
     True(!start.ArgumentList.Contains("-b:v"));
     Equal(port.FfmpegName, start.ArgumentList[^1]);
+
+    var interlaced = OutputPresetProfile.CommonDefaults().Single(item => item.Id == "1080i50").ToDomain();
+    var interlacedStart = FfmpegCommandBuilder.BuildFallback(new FfmpegRouteOptions("ffmpeg.exe"), port, interlaced, FallbackMode.Black, null);
+    True(interlacedStart.ArgumentList.Contains("color=c=black:size=1920x1080:rate=50/1"));
+    True(interlacedStart.ArgumentList.Any(argument => argument.Contains("tinterlace=interleave_top", StringComparison.Ordinal)));
 }
 
 static void SettingsRejectInvalidGuiValues()
