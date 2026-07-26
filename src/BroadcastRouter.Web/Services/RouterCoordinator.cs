@@ -681,8 +681,14 @@ public sealed class RouterCoordinator(
         if (_supervisor is not null) await _supervisor.StopAsync(identity, cancellationToken);
         if (route.PortId is not null)
         {
-            var released = _reservations.Release(route.PortId, identity, forceRelease);
-            if (!released) throw new InvalidOperationException("The output reservation could not be released because its ownership changed.");
+            var release = _reservations.ReleaseWithResult(route.PortId, identity, forceRelease);
+            if (release == PortReleaseResult.OwnedByOther)
+                throw new InvalidOperationException("The output reservation could not be released because another route now owns it.");
+            if (release == PortReleaseResult.Locked)
+                throw new InvalidOperationException("The output reservation is locked and requires a forced stop.");
+            if (release == PortReleaseResult.AlreadyFree)
+                await LogAsync("Warning", "Reservation", "A stale route referenced an output that was already free; stop reconciled the route without releasing another owner's lease.",
+                    sourceId, cancellationToken: cancellationToken);
         }
         await ReplaceRouteAsync(route with { State = RouteState.Released, PortId = null, PortName = null, UpdatedAt = DateTimeOffset.UtcNow }, route.State, cancellationToken);
         }

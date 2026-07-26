@@ -20,6 +20,7 @@ public sealed class FfmpegProcessSupervisor(
 {
     private readonly ConcurrentDictionary<string, ManagedProcess> _running = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RouteProcessSnapshot> _last = new(StringComparer.Ordinal);
+    private readonly WindowsKillOnCloseJob _containmentJob = WindowsKillOnCloseJob.Create();
 
     public Task StartAsync(RouteRecord route, DiscoveredSource source, DeckLinkPort port, OutputPreset preset, CancellationToken cancellationToken)
     {
@@ -36,6 +37,7 @@ public sealed class FfmpegProcessSupervisor(
         try
         {
             if (!process.Start()) throw new InvalidOperationException("FFmpeg did not start.");
+            ContainOrTerminate(process);
             managed.ProgressTask = PumpProgressAsync(managed);
             managed.ErrorTask = PumpErrorsAsync(managed);
             managed.ExitTask = ObserveExitAsync(managed);
@@ -76,6 +78,7 @@ public sealed class FfmpegProcessSupervisor(
         _running.Clear();
         foreach (var pair in processes)
             await StopManagedAsync(pair.Value, CancellationToken.None).ConfigureAwait(false);
+        _containmentJob.Dispose();
     }
 
     private Task StartProcessAsync(SourceIdentity source, ProcessStartInfo start)
@@ -90,6 +93,7 @@ public sealed class FfmpegProcessSupervisor(
         try
         {
             if (!process.Start()) throw new InvalidOperationException("FFmpeg did not start.");
+            ContainOrTerminate(process);
             managed.ProgressTask = PumpProgressAsync(managed);
             managed.ErrorTask = PumpErrorsAsync(managed);
             managed.ExitTask = ObserveExitAsync(managed);
@@ -99,6 +103,24 @@ public sealed class FfmpegProcessSupervisor(
         {
             _running.TryRemove(source.Value, out _);
             process.Dispose();
+            throw;
+        }
+    }
+
+    private void ContainOrTerminate(Process process)
+    {
+        try
+        {
+            _containmentJob.Add(process);
+        }
+        catch
+        {
+            try
+            {
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+                process.WaitForExit();
+            }
+            catch { }
             throw;
         }
     }

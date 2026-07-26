@@ -26,6 +26,7 @@ var tests = new (string Name, Action Body)[]
     ("Atomic duplicate reservation prevention", DuplicateReservationIsPrevented),
     ("Concurrent reservation stress", ConcurrentReservationStressAllowsOneOwner),
     ("Locked reservation protection", LockedReservationRequiresForce),
+    ("Reservation release distinguishes free and foreign ownership", ReservationReleaseDistinguishesMissingAndForeignOwnership),
     ("Startup failure releases reservation", StartupFailureReleasesReservation),
     ("Missing-source lease retention", MissingSourceLeaseRetentionHonorsLockAndGrace),
     ("Emergency stop blocks route starts", EmergencyStopBlocksRouteStarts),
@@ -45,6 +46,7 @@ var tests = new (string Name, Action Body)[]
     ("FFmpeg progress parsing", FfmpegProgressIsParsed),
     ("FFmpeg stall detection", FfmpegStallIsDetected),
     ("FFmpeg first-progress timeout", FfmpegFirstProgressTimeoutIsDetected),
+    ("Windows job kills orphaned media process", WindowsJobKillsOrphanedProcess),
     ("FFmpeg failure classification", FfmpegFailureIsClassified),
     ("FFprobe media parsing", FfprobeMediaIsParsed),
     ("FFprobe scan type parsing", FfprobeScanTypeIsParsed),
@@ -162,6 +164,19 @@ static void LockedReservationRequiresForce()
     True(manager.TryReserve("PORT-1", source, true, DateTimeOffset.UtcNow, out _));
     True(!manager.Release("PORT-1", source));
     True(manager.Release("PORT-1", source, true));
+}
+
+static void ReservationReleaseDistinguishesMissingAndForeignOwnership()
+{
+    var manager = new PortReservationManager();
+    var first = new SourceIdentity("A", "live", "_definst_", "one");
+    var second = new SourceIdentity("A", "live", "_definst_", "two");
+
+    Equal(PortReleaseResult.AlreadyFree, manager.ReleaseWithResult("PORT-1", first));
+    True(manager.TryReserve("PORT-1", first, false, DateTimeOffset.UtcNow, out _));
+    Equal(PortReleaseResult.OwnedByOther, manager.ReleaseWithResult("PORT-1", second, force: true));
+    Equal(first, manager.Snapshot().Single().Source);
+    Equal(PortReleaseResult.Released, manager.ReleaseWithResult("PORT-1", first));
 }
 
 static void StartupFailureReleasesReservation()
@@ -378,6 +393,25 @@ static void FfmpegFirstProgressTimeoutIsDetected()
     True(FfmpegStallDetector.IsFirstProgressTimedOut(true, noFrames, now.AddSeconds(-21), now, TimeSpan.FromSeconds(20)));
 }
 
+static void WindowsJobKillsOrphanedProcess()
+{
+    if (!OperatingSystem.IsWindows()) return;
+
+    using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/d /c ping 127.0.0.1 -n 30 > nul")
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true
+    }) ?? throw new InvalidOperationException("Containment test process did not start.");
+
+    using (var job = WindowsKillOnCloseJob.Create())
+    {
+        job.Add(process);
+        True(!process.HasExited);
+    }
+
+    True(process.WaitForExit(5000));
+}
+
 static void FfmpegFailureIsClassified()
 {
     Equal(FfmpegFailureCategory.Authentication, FfmpegErrorClassifier.Classify(1, "RTSP server returned 401 Unauthorized"));
@@ -589,6 +623,10 @@ static void FallbackCommandIsSafeAndUncompressed()
     True(start.ArgumentList.Contains("smptebars=size=1920x1080:rate=25/1"));
     True(!start.ArgumentList.Contains("-b:v"));
     Equal(port.FfmpegName, start.ArgumentList[^1]);
+    var arguments = start.ArgumentList.ToList();
+    var audioInput = arguments.IndexOf("anullsrc=r=48000:cl=stereo");
+    var firstMap = arguments.IndexOf("-map");
+    True(audioInput >= 0 && audioInput < firstMap);
 
     var interlaced = OutputPresetProfile.CommonDefaults().Single(item => item.Id == "1080i50").ToDomain();
     var interlacedStart = FfmpegCommandBuilder.BuildFallback(new FfmpegRouteOptions("ffmpeg.exe"), port, interlaced, FallbackMode.Black, null);

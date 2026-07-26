@@ -93,8 +93,12 @@ public static class FfmpegCommandBuilder
                 Add(start, "-re", "-f", "lavfi", "-i", $"color=c=black:size={preset.Mode.Width}x{preset.Mode.Height}:rate={rate}");
                 break;
         }
+        // FFmpeg requires every input to be declared before output-only options
+        // such as -map. Declaring anullsrc after the video map makes FFmpeg
+        // interpret the map as an input option for anullsrc and reject startup.
+        if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
         Add(start, "-map", "0:v:0", "-vf", BuildVideoFilter(preset, sourceIsInterlaced: false), "-pix_fmt", preset.Mode.PixelFormat);
-        if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "1:a:0", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", "-shortest");
+        if (preset.IncludeAudio) Add(start, "-map", "1:a:0", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", "-shortest");
         else Add(start, "-an");
         Add(start, "-f", "decklink", port.FfmpegName);
         return start;

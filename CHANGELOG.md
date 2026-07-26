@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.2.5 — 2026-07-27
+
+- Corrected fallback-audio FFmpeg argument ordering so `anullsrc` is declared as an input before output `-map` options.
+- Made route stops idempotent when an output lease is already free while preserving strict rejection of foreign-owned and locked leases.
+- Added Windows Job Object containment with kill-on-close semantics so abrupt server termination cannot leave application-owned FFmpeg processes running.
+- Added regressions for fallback argument ordering, reservation-release outcomes, and real Windows orphan-process termination.
+
 ## 1.2.4 — 2026-07-26
 
 - Replaced the rejected FFmpeg `-rw_timeout` input argument with the RTSP demuxer's supported `-timeout` option.
