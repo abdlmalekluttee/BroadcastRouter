@@ -3,3 +3,8 @@ FFmpeg is intentionally not bundled.
 Open Settings > Media Tools and select a trusted prebuilt DeckLink-enabled
 ffmpeg.exe and matching ffprobe.exe. Hardware route starts remain blocked
 until every validation gate passes.
+
+GitHub releases include a source-only DeckLink builder archive for the tested
+FFmpeg 8.1.2 patch. It does not include Blackmagic SDK files or compiled FFmpeg
+binaries. Download the DeckLink SDK from Blackmagic Design and build locally;
+FFmpeg builds configured with --enable-nonfree are not redistributable.

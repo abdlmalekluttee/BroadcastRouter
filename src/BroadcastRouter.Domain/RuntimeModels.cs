@@ -10,7 +10,8 @@ public sealed record MediaToolValidation(
     bool DesktopVideoInstalled,
     int DeckLinkOutputCount,
     IReadOnlyList<string> Findings,
-    DateTimeOffset? CheckedAt)
+    DateTimeOffset? CheckedAt,
+    bool WindowsDeckLinkSafeTerminateSupported = false)
 {
     public bool CanStartHardwareRoutes => State == ToolValidationState.Valid && DeckLinkCompiled
         && DesktopVideoInstalled && DeckLinkOutputCount > 0;

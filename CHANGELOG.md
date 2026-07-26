@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.2.6 — 2026-07-27
+
+- Replaced the disabled, ambiguous Sources-page Route button with explicit View route, Retry route, and busy/result states.
+- Detect the patched FFmpeg `win_safe_terminate` DeckLink capability and enable it only when supported.
+- Added an opt-in FFmpeg 8.1.2 DeckLink teardown patch for the Desktop Video 16.1 final `IDeckLink::Release()` crash.
+- Added a redistributable builder-source release asset; the resulting `--enable-nonfree` DeckLink binary remains local-only under FFmpeg licensing.
+- Added regression coverage for Sources-page route actions and safe-termination argument tokenization.
+
+## 1.2.5 — 2026-07-27
+
+- Corrected fallback-audio FFmpeg argument ordering so `anullsrc` is declared as an input before output `-map` options.
+- Made route stops idempotent when an output lease is already free while preserving strict rejection of foreign-owned and locked leases.
+- Added Windows Job Object containment with kill-on-close semantics so abrupt server termination cannot leave application-owned FFmpeg processes running.
+- Added regressions for fallback argument ordering, reservation-release outcomes, and real Windows orphan-process termination.
+
 ## 1.2.4 — 2026-07-26
 
 - Replaced the rejected FFmpeg `-rw_timeout` input argument with the RTSP demuxer's supported `-timeout` option.

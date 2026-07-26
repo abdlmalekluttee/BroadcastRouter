@@ -2,6 +2,14 @@ using BroadcastRouter.Domain;
 
 namespace BroadcastRouter.Application;
 
+public enum PortReleaseResult
+{
+    Released,
+    AlreadyFree,
+    OwnedByOther,
+    Locked
+}
+
 public sealed class PortReservationManager
 {
     private readonly object _gate = new();
@@ -32,12 +40,17 @@ public sealed class PortReservationManager
     }
 
     public bool Release(string portId, SourceIdentity source, bool force = false)
+        => ReleaseWithResult(portId, source, force) == PortReleaseResult.Released;
+
+    public PortReleaseResult ReleaseWithResult(string portId, SourceIdentity source, bool force = false)
     {
         lock (_gate)
         {
-            if (!_byPort.TryGetValue(portId, out var existing) || existing.Source != source) return false;
-            if (existing.Locked && !force) return false;
-            return _byPort.Remove(portId);
+            if (!_byPort.TryGetValue(portId, out var existing)) return PortReleaseResult.AlreadyFree;
+            if (existing.Source != source) return PortReleaseResult.OwnedByOther;
+            if (existing.Locked && !force) return PortReleaseResult.Locked;
+            _byPort.Remove(portId);
+            return PortReleaseResult.Released;
         }
     }
 

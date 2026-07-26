@@ -30,6 +30,7 @@ public sealed class RouterCoordinator(
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private FfmpegProcessSupervisor? _supervisor;
     private string? _supervisorPath;
+    private bool _supervisorUsesWindowsDeckLinkSafeTerminate;
     private OperatorSettings _settings = new();
     private MediaToolValidation _validation = MediaToolValidation.NotConfigured;
     private volatile bool _emergencyStopped;
@@ -502,7 +503,7 @@ public sealed class RouterCoordinator(
             return;
         }
 
-        EnsureSupervisor(_settings.MediaTools.FfmpegPath);
+        EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
         var domainRoute = new RouteRecord(source.Identity, port.StableId, preset.Id, RouteState.Starting, starting.AssignmentMode, starting.Locked, starting.RestartCount);
         await _supervisor!.StartAsync(domainRoute, source, port, preset.ToDomain(), cancellationToken);
         if (_emergencyStopped)
@@ -657,7 +658,7 @@ public sealed class RouterCoordinator(
             preset = _settings.Presets.FirstOrDefault(x => x.Id == route.PresetId);
         }
         if (port is null || preset is null) throw new InvalidOperationException("The reserved port or output preset is unavailable.");
-        EnsureSupervisor(_settings.MediaTools.FfmpegPath);
+        EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
         await _supervisor!.StartFallbackAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(), preset.StandbyMode, preset.StandbyValue, cancellationToken);
     }
 
@@ -681,8 +682,14 @@ public sealed class RouterCoordinator(
         if (_supervisor is not null) await _supervisor.StopAsync(identity, cancellationToken);
         if (route.PortId is not null)
         {
-            var released = _reservations.Release(route.PortId, identity, forceRelease);
-            if (!released) throw new InvalidOperationException("The output reservation could not be released because its ownership changed.");
+            var release = _reservations.ReleaseWithResult(route.PortId, identity, forceRelease);
+            if (release == PortReleaseResult.OwnedByOther)
+                throw new InvalidOperationException("The output reservation could not be released because another route now owns it.");
+            if (release == PortReleaseResult.Locked)
+                throw new InvalidOperationException("The output reservation is locked and requires a forced stop.");
+            if (release == PortReleaseResult.AlreadyFree)
+                await LogAsync("Warning", "Reservation", "A stale route referenced an output that was already free; stop reconciled the route without releasing another owner's lease.",
+                    sourceId, cancellationToken: cancellationToken);
         }
         await ReplaceRouteAsync(route with { State = RouteState.Released, PortId = null, PortName = null, UpdatedAt = DateTimeOffset.UtcNow }, route.State, cancellationToken);
         }
@@ -790,13 +797,17 @@ public sealed class RouterCoordinator(
         await store.SaveRouteAsync(route, persistHistory ? persistedPrevious : route.State, cancellationToken);
     }
 
-    private void EnsureSupervisor(string ffmpegPath)
+    private void EnsureSupervisor(string ffmpegPath, bool useWindowsDeckLinkSafeTerminate)
     {
-        if (_supervisor is not null && string.Equals(_supervisorPath, ffmpegPath, StringComparison.OrdinalIgnoreCase)) return;
+        if (_supervisor is not null
+            && string.Equals(_supervisorPath, ffmpegPath, StringComparison.OrdinalIgnoreCase)
+            && _supervisorUsesWindowsDeckLinkSafeTerminate == useWindowsDeckLinkSafeTerminate) return;
         if (_supervisor is not null) _supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        _supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions(ffmpegPath, true, TimeSpan.FromSeconds(10)),
+        _supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions(ffmpegPath, true, TimeSpan.FromSeconds(10),
+                UseWindowsDeckLinkSafeTerminate: useWindowsDeckLinkSafeTerminate),
             TimeSpan.FromSeconds(Math.Clamp(_settings.Routing.GracefulStopSeconds, 1, 30)));
         _supervisorPath = ffmpegPath;
+        _supervisorUsesWindowsDeckLinkSafeTerminate = useWindowsDeckLinkSafeTerminate;
     }
 
     private TimeSpan RetryDelay(int count)
