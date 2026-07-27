@@ -14,6 +14,7 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that discov
 - deterministic source identities with stale-source reconciliation after server-ID changes;
 - RTSP frame validation and media-property detection before routing;
 - atomic DeckLink port reservations, priorities, locks, queues, retries, standby, and recovery;
+- Blackmagic SDK persistent hardware identities that keep connector names and assignments attached when identical supported cards move between PCIe slots;
 - production-safe defaults: loopback binding, simulation disabled, and hardware starts blocked until validation passes;
 - SQLite persistence, DPAPI-protected Wowza credentials, structured redacted logs, minimal health checks, and sanitized diagnostics that never embed the production database;
 - a responsive dark operator UI for servers, sources, outputs, routes, rules, presets, logs, and settings;
@@ -37,7 +38,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.2.6`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.2.8`.
 3. Run `BroadcastRouter.Server.exe` as the dedicated Windows broadcast account.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
@@ -63,7 +64,7 @@ dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --conf
 Create a clean self-contained release:
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Version 1.2.6
+.\scripts\Publish-Release.ps1 -Version 1.2.8
 ```
 
 ## Configuration and security

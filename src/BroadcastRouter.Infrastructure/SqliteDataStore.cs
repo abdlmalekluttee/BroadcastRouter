@@ -158,7 +158,7 @@ public sealed class SqliteDataStore
 
     public async Task UpsertPortAsync(DeckLinkPort port, CancellationToken cancellationToken = default)
     {
-        var fingerprint = $"{port.FfmpegName}|{port.ModelName}|{port.CardIndex}|{port.SubdeviceIndex}|{port.PciLocation}";
+        var fingerprint = $"{port.PersistentId}|{port.DeviceGroupId}|{port.FfmpegName}|{port.ModelName}|{port.CardIndex}|{port.SubdeviceIndex}|{port.TopologicalId}|{port.PciLocation}";
         await _writeGate.WaitAsync(cancellationToken);
         try
         {

@@ -60,6 +60,8 @@ var tests = new (string Name, Action Body)[]
     ("Windows DPAPI credential round trip", DpapiCredentialRoundTrips),
     ("Atomic operator settings persistence", OperatorSettingsPersistAtomically),
     ("DeckLink sink enumeration parsing", DeckLinkSinksAreParsed),
+    ("DeckLink persistent hardware identity", DeckLinkPersistentIdentityIsResolved),
+    ("DeckLink identity reference migration", DeckLinkIdentityReferencesAreMigrated),
     ("Wowza instance discovery endpoint", WowzaInstanceEndpointIsCorrect),
     ("Common broadcast presets", CommonPresetsAreAvailable),
     ("Output scan selection round trip", OutputScanSelectionRoundTrips),
@@ -555,15 +557,85 @@ static void DeckLinkSinksAreParsed()
 {
     const string output = """
     Auto-detected sinks for decklink:
-      80:80ce89d0:00000000 [DeckLink Quad (1)]
-      80:80ce89d1:00000000 [DeckLink Quad (2)]
-      80:80ce89d4:00000000 [DeckLink Quad (5)]
+      80:80ce89d0:00000000 [DeckLink Quad (1)] (none)
+      80:80ce89d1:00000000 [DeckLink Quad (2)] (none)
+      80:80ce89d4:00000000 [DeckLink Quad (5)] (none)
     """;
     var devices = FfmpegDiagnostics.ParseDeckLinkSinks(output);
     Equal(3, devices.Count);
     Equal("80:80ce89d0:00000000", devices[0].FfmpegAddress);
     Equal("DeckLink Quad (1)", devices[0].DisplayName);
     Equal("DeckLink Quad (5)", devices[2].DisplayName);
+}
+
+static void DeckLinkPersistentIdentityIsResolved()
+{
+    var sinks = new[]
+    {
+        new DeckLinkSink("80:80ce89d0:00000000", "DeckLink Quad (1)"),
+        new DeckLinkSink("80:80ce89d1:00000000", "DeckLink Quad (2)")
+    };
+    var hardware = new[]
+    {
+        new DeckLinkHardwareIdentity(sinks[0].FfmpegAddress, sinks[0].DisplayName, "DeckLink Quad 2", 0x80ce89d0, 0x80ce89d0, 0x00502000, 0),
+        new DeckLinkHardwareIdentity(sinks[1].FfmpegAddress, sinks[1].DisplayName, "DeckLink Quad 2", 0x80ce89d1, 0x80ce89d0, 0x00502002, 1)
+    };
+
+    var ports = DeckLinkIdentityResolver.Resolve(sinks, hardware);
+    Equal("DECKLINK-PERSISTENT-80CE89D0", ports[0].StableId);
+    Equal("DECKLINK-PERSISTENT-80CE89D1", ports[1].StableId);
+    Equal("0x80CE89D0", ports[0].DeviceGroupId);
+    Equal(1, ports[1].SubdeviceIndex);
+    Equal(DeckLinkIdentityResolver.LegacyStableId(sinks[0].FfmpegAddress), ports[0].PreviousStableIds!.Single());
+    True(ports.All(port => port.IdentityConfidence.Contains("stable across PCIe slots", StringComparison.Ordinal)));
+    var reordered = DeckLinkIdentityResolver.Resolve(sinks.Reverse().ToArray(), hardware.Reverse().ToArray());
+    foreach (var port in ports)
+        Equal(port.StableId, reordered.Single(candidate => candidate.FfmpegName == port.FfmpegName).StableId);
+    var deferred = DeckLinkIdentityMigration.DeferUntilRestart(ports);
+    Equal(ports[0].PreviousStableIds!.Single(), deferred[0].StableId);
+    True(deferred[0].IdentityConfidence.Contains("deferred until restart", StringComparison.Ordinal));
+
+    var duplicateHardware = new[]
+    {
+        hardware[0],
+        hardware[1] with { PersistentId = hardware[0].PersistentId }
+    };
+    var fallback = DeckLinkIdentityResolver.Resolve(sinks, duplicateHardware);
+    True(fallback.All(port => port.StableId.StartsWith("FFMPEG-NAME-", StringComparison.Ordinal)));
+}
+
+static void DeckLinkIdentityReferencesAreMigrated()
+{
+    var oldId = DeckLinkIdentityResolver.LegacyStableId("80:80ce89d0:00000000");
+    var newId = "DECKLINK-PERSISTENT-80CE89D0";
+    var port = new DeckLinkPort(newId, "80:80ce89d0:00000000", "DeckLink Quad 2", 0, 0, null, [],
+        FriendlyName: "Transmission 3", PersistentId: "0x80CE89D0", PreviousStableIds: [oldId]);
+    var aliases = DeckLinkIdentityMigration.BuildAliasMap([port]);
+    var settings = new OperatorSettings
+    {
+        DeckLinkPortOverrides =
+        [
+            new() { StableId = oldId, FriendlyName = "Transmission 3", PortGroup = "TX", Reserved = true },
+            new() { StableId = "DECKLINK-PERSISTENT-80CE89D1", FriendlyName = "DeckLink Quad (2)] (none)" }
+        ],
+        ManualSources = [new() { FixedPortId = oldId }],
+        Rules = [new() { FixedPortId = oldId }]
+    };
+    var secondPort = port with { StableId = "DECKLINK-PERSISTENT-80CE89D1", FriendlyName = "DeckLink Quad (2)", PreviousStableIds = [] };
+    True(DeckLinkIdentityMigration.MigrateSettings(settings, aliases, [port, secondPort]));
+    Equal(newId, settings.DeckLinkPortOverrides[0].StableId);
+    Equal("Transmission 3", settings.DeckLinkPortOverrides[0].FriendlyName);
+    Equal("DeckLink Quad (2)", settings.DeckLinkPortOverrides[1].FriendlyName);
+    Equal(newId, settings.ManualSources.Single().FixedPortId);
+    Equal(newId, settings.Rules.Single().FixedPortId);
+
+    var now = DateTimeOffset.UtcNow;
+    var route = new RuntimeRoute("A/live/_definst_/one", "One", oldId, "Transmission 3", "1080i50", RouteState.Running,
+        AssignmentMode.Manual, false, 100, 0, 100, 25, 1, 0, 0, now, now, null, null);
+    var migrated = DeckLinkIdentityMigration.MigrateRoute(route, aliases,
+        new Dictionary<string, DeckLinkPort>(StringComparer.OrdinalIgnoreCase) { [newId] = port });
+    Equal(newId, migrated.PortId);
+    Equal("Transmission 3", migrated.PortName);
 }
 
 static void WowzaInstanceEndpointIsCorrect()

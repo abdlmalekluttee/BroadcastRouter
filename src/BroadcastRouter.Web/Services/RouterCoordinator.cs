@@ -285,9 +285,25 @@ public sealed class RouterCoordinator(
         _validation = await MediaToolValidator.ValidateAsync(settings.MediaTools, cancellationToken);
         _lastToolValidation = DateTimeOffset.UtcNow;
         _forceToolValidation = false;
-        IReadOnlyList<DeckLinkPort> ports = [];
+        IReadOnlyList<DeckLinkPort> rawPorts = [];
         if (_validation.DeckLinkCompiled && File.Exists(settings.MediaTools.FfmpegPath))
-            ports = ApplyOverrides(await new FfmpegDeckLinkEnumerator(settings.MediaTools.FfmpegPath).EnumerateAsync(cancellationToken), settings.DeckLinkPortOverrides);
+            rawPorts = await new FfmpegDeckLinkEnumerator(settings.MediaTools.FfmpegPath).EnumerateAsync(cancellationToken);
+        var aliases = DeckLinkIdentityMigration.BuildAliasMap(rawPorts);
+        var liveOwnershipExists = _reservations.Snapshot().Count > 0
+            || (_supervisor?.Snapshot().Any(process => process.Running) ?? false);
+        if (aliases.Count > 0 && liveOwnershipExists)
+        {
+            rawPorts = DeckLinkIdentityMigration.DeferUntilRestart(rawPorts);
+            aliases = DeckLinkIdentityMigration.BuildAliasMap(rawPorts);
+            await LogAsync("Warning", "DeckLinkIdentity",
+                "Persistent DeckLink IDs were detected while output ownership was active; migration is deferred until the next controlled host restart.",
+                cancellationToken: cancellationToken);
+        }
+        if (aliases.Count > 0)
+            settings = await MigrateDeckLinkIdentityReferencesAsync(settings, rawPorts, aliases, cancellationToken);
+        var ports = ApplyOverrides(rawPorts, settings.DeckLinkPortOverrides);
+        if (aliases.Count > 0)
+            await MigrateRoutePortIdsAsync(ports, aliases, cancellationToken);
         lock (_gate)
         {
             _ports.Clear();
@@ -296,6 +312,45 @@ public sealed class RouterCoordinator(
         foreach (var port in ports) await store.UpsertPortAsync(port, cancellationToken);
         await LogAsync(_validation.CanStartHardwareRoutes ? "Information" : "Error", "MediaTools",
             _validation.CanStartHardwareRoutes ? $"Validation passed; {ports.Count} DeckLink output(s) available." : "Validation failed; hardware routes are blocked.", cancellationToken: cancellationToken);
+    }
+
+    private async Task<OperatorSettings> MigrateDeckLinkIdentityReferencesAsync(
+        OperatorSettings settings,
+        IReadOnlyList<DeckLinkPort> ports,
+        IReadOnlyDictionary<string, string> aliases,
+        CancellationToken cancellationToken)
+    {
+        if (!DeckLinkIdentityMigration.MigrateSettings(settings, aliases, ports)) return settings;
+        await store.SaveSettingsAsync(settings, cancellationToken);
+        lock (_gate) _settings = Clone(settings);
+        await LogAsync("Information", "DeckLinkIdentity",
+            $"Migrated saved DeckLink references to {ports.Count(port => port.PersistentId is not null)} persistent hardware ID(s).",
+            cancellationToken: cancellationToken);
+        return settings;
+    }
+
+    private async Task MigrateRoutePortIdsAsync(
+        IReadOnlyList<DeckLinkPort> ports,
+        IReadOnlyDictionary<string, string> aliases,
+        CancellationToken cancellationToken)
+    {
+        var byId = ports.ToDictionary(port => port.StableId, StringComparer.OrdinalIgnoreCase);
+        RuntimeRoute[] routes;
+        lock (_gate) routes = _routes.Values.ToArray();
+        var migrated = routes
+            .Select(route => DeckLinkIdentityMigration.MigrateRoute(route, aliases, byId))
+            .Where(route => routes.Any(original => original.SourceId == route.SourceId
+                && !string.Equals(original.PortId, route.PortId, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        foreach (var route in migrated)
+        {
+            lock (_gate) _routes[route.SourceId] = route;
+            await store.SaveRouteAsync(route, route.State, cancellationToken);
+        }
+        if (migrated.Length > 0)
+            await LogAsync("Information", "DeckLinkIdentity",
+                $"Migrated {migrated.Length} persisted route assignment(s) to persistent DeckLink hardware IDs.",
+                cancellationToken: cancellationToken);
     }
 
     private async Task DiscoverAndProbeAsync(CancellationToken cancellationToken)

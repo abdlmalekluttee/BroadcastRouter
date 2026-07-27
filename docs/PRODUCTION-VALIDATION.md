@@ -1,6 +1,6 @@
 # Production validation checklist
 
-The July 26, 2026 release check authenticated to the configured Wowza server, discovered an active publisher, received RTSP frames, and completed a bounded embedded-browser/VU start-stop check. The current machine still has no DeckLink card available for connector validation, so automated checks cannot certify physical SDI output.
+The July 27, 2026 host check authenticated to the configured Wowza server, discovered an active publisher, received RTSP frames, enumerated two DeckLink Quad 2 cards and sixteen output subdevices, and completed bounded route/preview checks. Physical SDI picture and embedded audio must still be observed at the connected destination.
 
 The live preview check can be repeated with `BroadcastRouter.Verify --database <database> --ffprobe <ffprobe.exe> --preview-seconds 8`. It requires an interactive Windows logon and a successfully probed active publisher; the duration is bounded to 30 seconds.
 
@@ -8,7 +8,8 @@ Before broadcast use, verify:
 
 - FFmpeg/FFprobe versions, DeckLink compilation, RTSP demuxer timeout support, `scale`/`fps`/`yadif`/`tinterlace`/`setfield`, `uyvy422`, rawvideo, and every enumerated output pass in Media Tools.
 - The Sources page plays a 720×450 embedded preview; video, muted-autoplay/unmute, stereo confidence audio, peak/dB VU overlay, browser-disconnect cleanup, and repeated source switching work without orphan processes.
-- FFmpeg aliases map to the labeled physical connectors; power-cycle and reboot twice, then confirm mappings do not change.
+- Every supported output reports a unique `BMDDeckLinkPersistentID`; verify all sixteen IDs are unique, each group contains the expected eight subdevices, and operator names remain attached after swapping the two identical cards between PCIe slots.
+- Power-cycle and reboot twice, then confirm persistent IDs, output labels, fixed rules, desired routes, and connector pictures do not change. The topological IDs may change and must never be treated as saved identity.
 - 1080p25, 1080p50, 1080i50, and 720p50 presets play for at least 30 minutes on every compatible port with embedded audio checked. Confirm 1080i50 is top-field-first at 25 frames/50 fields per second and audio is 48 kHz stereo PCM at the DeckLink output.
 - Two concurrent route-start requests never obtain the same port; locked routes retain ownership through publisher and Wowza-API outages.
 - Wowza connection tests report authentication, applications, active streams, and successful RTSP frame receipt for each monitored application/instance.
