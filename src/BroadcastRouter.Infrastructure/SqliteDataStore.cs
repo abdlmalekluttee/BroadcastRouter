@@ -393,6 +393,13 @@ public sealed class SqliteDataStore
             RoutingRuleEvaluator.ValidatePattern(rule.InstancePattern);
             RoutingRuleEvaluator.ValidatePattern(rule.StreamPattern);
         }
+        if (settings.DeckLinkCardOverrides.GroupBy(x => x.DeviceGroupId, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+            throw new InvalidOperationException("DeckLink physical-card identities must be unique.");
+        if (settings.DeckLinkCardOverrides.Any(x => string.IsNullOrWhiteSpace(x.DeviceGroupId)))
+            throw new InvalidOperationException("Every DeckLink card name requires a persistent physical-card identity.");
+        if (settings.DeckLinkCardOverrides.Where(x => !string.IsNullOrWhiteSpace(x.FriendlyName))
+            .GroupBy(x => x.FriendlyName, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+            throw new InvalidOperationException("DeckLink card names must be unique so output choices remain unambiguous.");
         if (settings.Routing.ReservationGraceSeconds < 0 || settings.Routing.StableRestoreSeconds < 0 || settings.Routing.StallTimeoutSeconds <= 0
             || settings.Routing.FirstProgressTimeoutSeconds <= 0 || settings.Routing.GracefulStopSeconds <= 0 || settings.Routing.MaxRetryAttempts < 0)
             throw new InvalidOperationException("Routing and recovery timeouts contain an invalid value.");
@@ -407,7 +414,7 @@ public sealed class SqliteDataStore
 
     private static void NormalizeSettings(OperatorSettings settings)
     {
-        settings.SchemaVersion = Math.Max(settings.SchemaVersion, 3);
+        settings.SchemaVersion = Math.Max(settings.SchemaVersion, 4);
         settings.MediaTools.FfmpegPath = settings.MediaTools.FfmpegPath.Trim();
         settings.MediaTools.FfprobePath = settings.MediaTools.FfprobePath.Trim();
         settings.MediaTools.FfplayPath = settings.MediaTools.FfplayPath.Trim();
@@ -443,6 +450,17 @@ public sealed class SqliteDataStore
             rule.PresetId = rule.PresetId.Trim();
             rule.FixedPortId = rule.FixedPortId.Trim();
             rule.PortGroup = rule.PortGroup.Trim();
+        }
+        foreach (var card in settings.DeckLinkCardOverrides)
+        {
+            card.DeviceGroupId = card.DeviceGroupId.Trim();
+            card.FriendlyName = card.FriendlyName.Trim();
+        }
+        foreach (var port in settings.DeckLinkPortOverrides)
+        {
+            port.StableId = port.StableId.Trim();
+            port.FriendlyName = port.FriendlyName.Trim();
+            port.PortGroup = port.PortGroup.Trim();
         }
         settings.Security.BindAddress = settings.Security.BindAddress.Trim();
         settings.Security.AllowedNetworks = settings.Security.AllowedNetworks.Trim();

@@ -44,7 +44,7 @@
             <tr>
                 <td><span class="primary-text">@route.SourceName</span><span class="secondary-text">@route.SourceId</span></td>
                 <td>@FormatMedia(source?.Media)</td>
-                <td><span class="primary-text">@(route.PortName ?? "—")</span><span class="secondary-text">@route.PresetId @(route.Locked ? "· locked" : "")</span></td>
+                <td><span class="primary-text">@RoutePortName(route)</span><span class="secondary-text">@route.PresetId @(route.Locked ? "· locked" : "")</span></td>
                 <td><BroadcastRouter.Web.Components.Shared.StateBadge Value="route.State" />@if (route.FailureMessage is not null){<span class="secondary-text" title="@route.FailureMessage">@route.FailureCategory</span>}</td>
                 <td>@(route.Fps?.ToString("0.00") ?? "—")</td><td>@(route.Frame?.ToString("N0") ?? "—")</td>
                 <td>@FormatDuration(route.StartedAt is null ? null : DateTimeOffset.UtcNow - route.StartedAt)</td><td>@route.RestartCount</td>
@@ -68,6 +68,9 @@
     private string error = "";
     private bool busy;
     private int FreePorts => snapshot.Ports.Count(p => !snapshot.Routes.Any(r => r.PortId == p.StableId && r.State is not RouteState.Released));
+    private string RoutePortName(RuntimeRoute route) => route.PortId is { Length: > 0 } portId
+        && snapshot.Ports.FirstOrDefault(port => port.StableId.Equals(portId, StringComparison.OrdinalIgnoreCase)) is { } port
+        ? DeckLinkDisplayName.Full(port) : route.PortName ?? "—";
     private string FormatUptime => FormatDuration(DateTimeOffset.UtcNow - snapshot.StartedAt);
     protected override void OnInitialized() { snapshot = Coordinator.Snapshot; Coordinator.Changed += OnChanged; }
     private void OnChanged() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });

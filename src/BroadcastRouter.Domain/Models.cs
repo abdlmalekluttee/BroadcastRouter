@@ -80,7 +80,28 @@ public sealed record DeckLinkPort(
     string? DeviceGroupId = null,
     string? DeviceHandle = null,
     string? TopologicalId = null,
-    IReadOnlyList<string>? PreviousStableIds = null);
+    IReadOnlyList<string>? PreviousStableIds = null,
+    string? CardFriendlyName = null);
+
+public static class DeckLinkDisplayName
+{
+    public static string Card(DeckLinkPort port) => string.IsNullOrWhiteSpace(port.CardFriendlyName)
+        ? $"DeckLink card {port.CardIndex + 1}"
+        : port.CardFriendlyName;
+
+    public static string Connector(DeckLinkPort port) => string.IsNullOrWhiteSpace(port.FriendlyName)
+        ? port.FfmpegName
+        : port.FriendlyName;
+
+    public static string Full(DeckLinkPort port) => $"{Card(port)} / {Connector(port)}";
+
+    public static string ShortIdentity(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "unavailable";
+        var normalized = value.Trim();
+        return normalized.Length <= 8 ? normalized : $"…{normalized[^8..]}";
+    }
+}
 
 public sealed record OutputPreset(
     string Id,

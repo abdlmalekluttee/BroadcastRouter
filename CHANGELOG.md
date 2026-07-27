@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.2.9 — 2026-07-27
+
+- Added operator-defined physical-card names keyed by the stable DeckLink device-group identity.
+- Display DeckLink choices consistently as `Physical card / Connector` in routes, manual sources, and routing rules.
+- Group the Outputs page by physical card and move raw persistent/topology values into a collapsed technical-identity section.
+- Preserve unavailable saved output references in selectors instead of silently replacing them.
+
 ## 1.2.8 — 2026-07-27
 
 - Clean legacy auto-generated DeckLink labels that included FFmpeg's trailing `] (none)` status while preserving custom operator-assigned names.

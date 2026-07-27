@@ -2,16 +2,23 @@ namespace BroadcastRouter.Domain;
 
 public sealed class OperatorSettings
 {
-    public int SchemaVersion { get; set; } = 3;
+    public int SchemaVersion { get; set; } = 4;
     public bool SimulationMode { get; set; } = false;
     public MediaToolPaths MediaTools { get; set; } = new();
     public List<WowzaServerProfile> WowzaServers { get; set; } = [];
     public List<ManualSourceProfile> ManualSources { get; set; } = [];
     public List<OutputPresetProfile> Presets { get; set; } = OutputPresetProfile.CommonDefaults();
     public List<RoutingRuleProfile> Rules { get; set; } = [];
+    public List<DeckLinkCardOverride> DeckLinkCardOverrides { get; set; } = [];
     public List<DeckLinkPortOverride> DeckLinkPortOverrides { get; set; } = [];
     public RoutingPolicySettings Routing { get; set; } = new();
     public SecuritySettings Security { get; set; } = new();
+}
+
+public sealed class DeckLinkCardOverride
+{
+    public string DeviceGroupId { get; set; } = "";
+    public string FriendlyName { get; set; } = "";
 }
 
 public sealed class DeckLinkPortOverride

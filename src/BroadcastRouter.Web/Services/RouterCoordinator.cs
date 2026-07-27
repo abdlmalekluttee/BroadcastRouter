@@ -268,7 +268,7 @@ public sealed class RouterCoordinator(
         {
             _validation = new(ToolValidationState.Valid, "simulation-ffmpeg 1.0", "simulation-ffprobe 1.0", true, true, 4,
                 ["Simulation mode: no real FFmpeg or DeckLink device is opened."], DateTimeOffset.UtcNow);
-            var simulatedPorts = ApplyOverrides(BuildSimulationPorts(), settings.DeckLinkPortOverrides);
+            var simulatedPorts = ApplyOverrides(BuildSimulationPorts(), settings.DeckLinkCardOverrides, settings.DeckLinkPortOverrides);
             lock (_gate)
             {
                 _ports.Clear();
@@ -301,7 +301,7 @@ public sealed class RouterCoordinator(
         }
         if (aliases.Count > 0)
             settings = await MigrateDeckLinkIdentityReferencesAsync(settings, rawPorts, aliases, cancellationToken);
-        var ports = ApplyOverrides(rawPorts, settings.DeckLinkPortOverrides);
+        var ports = ApplyOverrides(rawPorts, settings.DeckLinkCardOverrides, settings.DeckLinkPortOverrides);
         if (aliases.Count > 0)
             await MigrateRoutePortIdsAsync(ports, aliases, cancellationToken);
         lock (_gate)
@@ -528,7 +528,7 @@ public sealed class RouterCoordinator(
         var port = assignment.Port!;
         _waiting.Remove(source.Identity);
         var now = DateTimeOffset.UtcNow;
-        var route = new RuntimeRoute(sourceId, source.FriendlyName, port.StableId, port.FriendlyName ?? port.FfmpegName, presetProfile.Id,
+        var route = new RuntimeRoute(sourceId, source.FriendlyName, port.StableId, DeckLinkDisplayName.Full(port), presetProfile.Id,
             RouteState.Reserved, manual ? AssignmentMode.Manual : assignment.Mode, decision.Locked, decision.Priority, 0,
             null, null, null, 0, 0, null, now, null, null);
         await ReplaceRouteAsync(route, previousRoute?.State, cancellationToken);
@@ -967,18 +967,33 @@ public sealed class RouterCoordinator(
         };
         return
         [
-            new("SIM-CARD-A-1", "DeckLink Quad 2 (1)", "DeckLink Quad 2", 0, 0, "PCI:01:00.0", modes, true, "PGM Return 1", "Simulation stable ID"),
-            new("SIM-CARD-A-2", "DeckLink Quad 2 (2)", "DeckLink Quad 2", 0, 1, "PCI:01:00.0", modes, true, "PGM Return 2", "Simulation stable ID"),
-            new("SIM-CARD-B-1", "DeckLink Quad 2 (5)", "DeckLink Quad 2", 1, 0, "PCI:02:00.0", modes, true, "Transmission 1", "Simulation stable ID"),
-            new("SIM-CARD-B-2", "DeckLink Quad 2 (6)", "DeckLink Quad 2", 1, 1, "PCI:02:00.0", modes, true, "Transmission 2", "Simulation stable ID")
+            new("SIM-CARD-A-1", "DeckLink Quad 2 (1)", "DeckLink Quad 2", 0, 0, "PCI:01:00.0", modes, true, "PGM Return 1", "Simulation stable ID", DeviceGroupId: "SIM-CARD-A"),
+            new("SIM-CARD-A-2", "DeckLink Quad 2 (2)", "DeckLink Quad 2", 0, 1, "PCI:01:00.0", modes, true, "PGM Return 2", "Simulation stable ID", DeviceGroupId: "SIM-CARD-A"),
+            new("SIM-CARD-B-1", "DeckLink Quad 2 (5)", "DeckLink Quad 2", 1, 0, "PCI:02:00.0", modes, true, "Transmission 1", "Simulation stable ID", DeviceGroupId: "SIM-CARD-B"),
+            new("SIM-CARD-B-2", "DeckLink Quad 2 (6)", "DeckLink Quad 2", 1, 1, "PCI:02:00.0", modes, true, "Transmission 2", "Simulation stable ID", DeviceGroupId: "SIM-CARD-B")
         ];
     }
 
-    private static IReadOnlyList<DeckLinkPort> ApplyOverrides(IReadOnlyList<DeckLinkPort> ports, IReadOnlyList<DeckLinkPortOverride> overrides)
+    internal static IReadOnlyList<DeckLinkPort> ApplyOverrides(
+        IReadOnlyList<DeckLinkPort> ports,
+        IReadOnlyList<DeckLinkCardOverride> cardOverrides,
+        IReadOnlyList<DeckLinkPortOverride> portOverrides)
     {
-        var byId = overrides.ToDictionary(x => x.StableId, StringComparer.OrdinalIgnoreCase);
-        return ports.Select(port => byId.TryGetValue(port.StableId, out var value)
-            ? port with { FriendlyName = string.IsNullOrWhiteSpace(value.FriendlyName) ? port.FriendlyName : value.FriendlyName, PortGroup = value.PortGroup, Reserved = value.Reserved }
-            : port).ToArray();
+        var cardsById = cardOverrides.ToDictionary(x => x.DeviceGroupId, StringComparer.OrdinalIgnoreCase);
+        var portsById = portOverrides.ToDictionary(x => x.StableId, StringComparer.OrdinalIgnoreCase);
+        return ports.Select(port =>
+        {
+            var cardName = port.DeviceGroupId is not null && cardsById.TryGetValue(port.DeviceGroupId, out var card)
+                && !string.IsNullOrWhiteSpace(card.FriendlyName) ? card.FriendlyName : port.CardFriendlyName;
+            return portsById.TryGetValue(port.StableId, out var value)
+                ? port with
+                {
+                    CardFriendlyName = cardName,
+                    FriendlyName = string.IsNullOrWhiteSpace(value.FriendlyName) ? port.FriendlyName : value.FriendlyName,
+                    PortGroup = value.PortGroup,
+                    Reserved = value.Reserved
+                }
+                : port with { CardFriendlyName = cardName };
+        }).ToArray();
     }
 }

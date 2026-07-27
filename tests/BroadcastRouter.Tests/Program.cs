@@ -61,6 +61,7 @@ var tests = new (string Name, Action Body)[]
     ("Atomic operator settings persistence", OperatorSettingsPersistAtomically),
     ("DeckLink sink enumeration parsing", DeckLinkSinksAreParsed),
     ("DeckLink persistent hardware identity", DeckLinkPersistentIdentityIsResolved),
+    ("DeckLink human identity labels", DeckLinkHumanIdentityLabelsAreStable),
     ("DeckLink identity reference migration", DeckLinkIdentityReferencesAreMigrated),
     ("Wowza instance discovery endpoint", WowzaInstanceEndpointIsCorrect),
     ("Common broadcast presets", CommonPresetsAreAvailable),
@@ -73,6 +74,7 @@ var tests = new (string Name, Action Body)[]
     ("SQLite settings persistence", SqliteSettingsPersist),
     ("All GUI settings round trip", AllGuiSettingsRoundTrip),
     ("Settings reject invalid GUI values", SettingsRejectInvalidGuiValues),
+    ("Settings reject ambiguous DeckLink card names", SettingsRejectAmbiguousDeckLinkCardNames),
     ("Settings reject invalid CIDR ranges", SettingsRejectInvalidCidrRanges),
     ("Network exposure and proxy trust are fail-closed", NetworkExposureIsFailClosed),
     ("Settings reject embedded credentials", SettingsRejectEmbeddedCredentials),
@@ -605,6 +607,23 @@ static void DeckLinkPersistentIdentityIsResolved()
     True(fallback.All(port => port.StableId.StartsWith("FFMPEG-NAME-", StringComparison.Ordinal)));
 }
 
+static void DeckLinkHumanIdentityLabelsAreStable()
+{
+    var ports = new[]
+    {
+        new DeckLinkPort("DECKLINK-PERSISTENT-101", "sdk:101", "DeckLink Quad 2", 1, 0, null, [],
+            FriendlyName: "Input 1", PersistentId: "0x101", DeviceGroupId: "0x100", CardFriendlyName: "Studio input card"),
+        new DeckLinkPort("DECKLINK-PERSISTENT-102", "sdk:102", "DeckLink Quad 2", 1, 1, null, [],
+            FriendlyName: "Input 2", PersistentId: "0x102", DeviceGroupId: "0x100", CardFriendlyName: "Studio input card")
+    };
+
+    Equal("Studio input card / Input 1", DeckLinkDisplayName.Full(ports[0]));
+    Equal("…TENT-101", DeckLinkDisplayName.ShortIdentity(ports[0].StableId));
+    var moved = ports[0] with { CardIndex = 0, PciLocation = "PCI:02:00.0" };
+    Equal(DeckLinkDisplayName.Full(ports[0]), DeckLinkDisplayName.Full(moved));
+    Equal("DeckLink card 3", DeckLinkDisplayName.Card(ports[0] with { CardIndex = 2, CardFriendlyName = null }));
+}
+
 static void DeckLinkIdentityReferencesAreMigrated()
 {
     // Synthetic fixture values and labels only; never copy production topology into tests.
@@ -637,7 +656,7 @@ static void DeckLinkIdentityReferencesAreMigrated()
     var migrated = DeckLinkIdentityMigration.MigrateRoute(route, aliases,
         new Dictionary<string, DeckLinkPort>(StringComparer.OrdinalIgnoreCase) { [newId] = port });
     Equal(newId, migrated.PortId);
-    Equal("Studio Output A", migrated.PortName);
+    Equal("DeckLink card 1 / Studio Output A", migrated.PortName);
 }
 
 static void WowzaInstanceEndpointIsCorrect()
@@ -747,6 +766,23 @@ static void SettingsRejectInvalidGuiValues()
     });
 }
 
+static void SettingsRejectAmbiguousDeckLinkCardNames()
+{
+    WithSqliteStore(store =>
+    {
+        store.InitializeAsync().GetAwaiter().GetResult();
+        var settings = new OperatorSettings
+        {
+            DeckLinkCardOverrides =
+            [
+                new() { DeviceGroupId = "CARD-A", FriendlyName = "Studio card" },
+                new() { DeviceGroupId = "CARD-B", FriendlyName = "studio CARD" }
+            ]
+        };
+        Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
+    });
+}
+
 static void SettingsRejectInvalidCidrRanges()
 {
     WithSqliteStore(store =>
@@ -819,13 +855,14 @@ static void AllGuiSettingsRoundTrip()
             RtspUrlTemplate = "rtsp://{wowza-host}:{rtsp-port}/{application}/{stream-name}", Enabled = false, Priority = 123
         });
         settings.ManualSources.Add(new ManualSourceProfile { StableId = "manual-qa", FriendlyName = "QA manual", RtspUrl = "rtsp://10.0.0.2/live/test", Priority = 77, FixedPortId = "PORT-2", Locked = true, Enabled = false });
+        settings.DeckLinkCardOverrides.Add(new DeckLinkCardOverride { DeviceGroupId = "CARD-PERSISTENT-2", FriendlyName = "Studio input card" });
         settings.DeckLinkPortOverrides.Add(new DeckLinkPortOverride { StableId = "PORT-2", FriendlyName = "Transmission 2", PortGroup = "TX", Reserved = true });
         settings.Presets = [new OutputPresetProfile { Id = "qa-1080p25", Name = "QA 1080p25", Width = 1920, Height = 1080, FrameRateNumerator = 25, FrameRateDenominator = 1, Interlaced = false, PixelFormat = "uyvy422", IncludeAudio = true, LowLatency = false, BufferSizeMegabytes = 512, StandbyMode = FallbackMode.TestPattern, StandbyValue = "bars" }];
         settings.Rules.Add(new RoutingRuleProfile { Id = "rule-qa", Name = "QA rule", Order = 20, Enabled = false, ServerPattern = "WOWZA-*", ApplicationPattern = "live", InstancePattern = "*", StreamPattern = "qa*", Codec = "h264", Tag = "news", PresetId = "qa-1080p25", FixedPortId = "PORT-2", LockAssignment = true });
 
         store.SaveSettingsAsync(settings).GetAwaiter().GetResult();
         var loaded = store.LoadSettingsAsync().GetAwaiter().GetResult();
-        Equal(3, loaded.SchemaVersion);
+        Equal(4, loaded.SchemaVersion);
         True(loaded.SimulationMode && !loaded.Routing.AutomaticRoutingEnabled);
         Equal(@"C:\Media\ffplay.exe", loaded.MediaTools.FfplayPath);
         Equal("WOWZA-QA", loaded.WowzaServers.Single().ServerId);
@@ -833,6 +870,7 @@ static void AllGuiSettingsRoundTrip()
         Equal(8698, loaded.WowzaServers.Single().RtspPort);
         Equal("manual-qa", loaded.ManualSources.Single().StableId);
         Equal("PORT-2", loaded.ManualSources.Single().FixedPortId);
+        Equal("Studio input card", loaded.DeckLinkCardOverrides.Single().FriendlyName);
         Equal("Transmission 2", loaded.DeckLinkPortOverrides.Single().FriendlyName);
         Equal("qa-1080p25", loaded.Presets.Single().Id);
         Equal(512, loaded.Presets.Single().BufferSizeMegabytes);
@@ -845,12 +883,14 @@ static void AllGuiSettingsRoundTrip()
 
         loaded.WowzaServers.Clear();
         loaded.ManualSources.Clear();
+        loaded.DeckLinkCardOverrides.Clear();
         loaded.DeckLinkPortOverrides.Clear();
         loaded.Rules.Clear();
         store.SaveSettingsAsync(loaded).GetAwaiter().GetResult();
         var deleted = store.LoadSettingsAsync().GetAwaiter().GetResult();
         Equal(0, deleted.WowzaServers.Count);
         Equal(0, deleted.ManualSources.Count);
+        Equal(0, deleted.DeckLinkCardOverrides.Count);
         Equal(0, deleted.DeckLinkPortOverrides.Count);
         Equal(0, deleted.Rules.Count);
     });

@@ -8,7 +8,7 @@ Before broadcast use, verify:
 
 - FFmpeg/FFprobe versions, DeckLink compilation, RTSP demuxer timeout support, `scale`/`fps`/`yadif`/`tinterlace`/`setfield`, `uyvy422`, rawvideo, and every enumerated output pass in Media Tools.
 - The Sources page plays a 720×450 embedded preview; video, muted-autoplay/unmute, stereo confidence audio, peak/dB VU overlay, browser-disconnect cleanup, and repeated source switching work without orphan processes.
-- Every supported output reports a unique `BMDDeckLinkPersistentID`; verify all detected IDs are unique, each device group contains the expected subdevices for that model, and operator names remain attached after swapping identical cards between PCIe slots.
+- Every supported output reports a unique `BMDDeckLinkPersistentID`; verify all detected IDs are unique, each device group contains the expected subdevices for that model, and both physical-card and connector operator names remain attached after swapping identical cards between PCIe slots.
 - Power-cycle and reboot twice, then confirm persistent IDs, output labels, fixed rules, desired routes, and connector pictures do not change. The topological IDs may change and must never be treated as saved identity.
 - 1080p25, 1080p50, 1080i50, and 720p50 presets play for at least 30 minutes on every compatible port with embedded audio checked. Confirm 1080i50 is top-field-first at 25 frames/50 fields per second and audio is 48 kHz stereo PCM at the DeckLink output.
 - Two concurrent route-start requests never obtain the same port; locked routes retain ownership through publisher and Wowza-API outages.
