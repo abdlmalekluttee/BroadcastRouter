@@ -52,7 +52,10 @@ public static partial class FfmpegDiagnostics
             if (!inDeckLinkList || line.StartsWith('[') || line.Contains("Cannot list", StringComparison.OrdinalIgnoreCase)) continue;
             line = line.TrimStart('*').Trim();
             var descriptionStart = line.LastIndexOf(" [", StringComparison.Ordinal);
-            var description = descriptionStart > 0 ? line[(descriptionStart + 2)..].TrimEnd(']').Trim() : line;
+            var descriptionEnd = descriptionStart > 0 ? line.IndexOf(']', descriptionStart + 2) : -1;
+            var description = descriptionStart > 0 && descriptionEnd > descriptionStart
+                ? line[(descriptionStart + 2)..descriptionEnd].Trim()
+                : line;
             var address = (descriptionStart > 0 ? line[..descriptionStart] : line).Trim().Trim('\'', '"');
             description = description.Trim('\'', '"');
             if (address.Length > 0 && !results.Any(item => item.FfmpegAddress.Equals(address, StringComparison.OrdinalIgnoreCase)))

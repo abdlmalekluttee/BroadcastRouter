@@ -23,7 +23,7 @@ The executable supports Windows Service hosting, but service/Session 0 DeckLink 
 
 - `SourceIdentity`: immutable escaped four-part identity.
 - `DiscoveredSource` / `MediaProperties`: discovery and independent media truth.
-- `DeckLinkPort`: stable ID, FFmpeg alias, topology hints, modes, group, reserved state, operator name, confidence.
+- `DeckLinkPort`: Blackmagic persistent ID when supported, opaque FFmpeg device handle for playout, physical-card group/subdevice/topology hints, modes, group, reserved state, operator name, confidence, and legacy aliases used only for one-time migration.
 - `OutputPresetProfile`: raster, rational rate, scan, pixel format, audio, latency, buffer, standby behavior.
 - `RoutingRuleProfile`: ordered source/media match and preset/group/fixed-port/priority/lock action.
 - `RuntimeRoute`: desired assignment, state, process metrics, failure, retry and lock state.
@@ -45,7 +45,7 @@ The server owns the exact FFmpeg process object, drains progress/errors, and sto
 
 ## Known production risks
 
-- Identical DeckLink cards may expose only FFmpeg aliases; PCI/SDK-quality stable identity needs hardware verification and a future DeckLink SDK adapter.
+- Older DeckLink devices may not expose `BMDDeckLinkPersistentID`. Those ports deliberately retain their legacy FFmpeg-handle ID with a visible lower-confidence warning. Supported devices migrate only during a safe host start; migration is deferred if any output ownership is active.
 - FFmpeg does not consistently expose output-mode tables for every driver/build. Known mode tables are checked before assignment; otherwise FFmpeg start is the final compatibility check and format errors become permanent.
 - Wowza REST response shapes and permissions vary by version; validate each server with the connection test.
 - Windows Service Session 0 behavior depends on Blackmagic driver/device profile and must be tested before service deployment.

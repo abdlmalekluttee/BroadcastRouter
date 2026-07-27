@@ -14,13 +14,20 @@
     <div class="card port-card @(route is null ? "" : "occupied")">
         <span class="connector"></span><div class="stat-label">Card @port.CardIndex · Subdevice @port.SubdeviceIndex</div><h2 style="margin-top:8px">@(port.FriendlyName ?? port.FfmpegName)</h2>
         <span class="secondary-text">@port.ModelName</span><div style="margin-top:16px"><BroadcastRouter.Web.Components.Shared.StateBadge Value="@(port.IsAvailable ? (route is null ? "Available" : "Running") : "Unavailable")" /></div>
-        <dl><dt>FFmpeg name</dt><dd class="mono">@port.FfmpegName</dd><dt>Stable ID</dt><dd class="mono">@port.StableId</dd><dt>Hardware path</dt><dd>@(port.PciLocation ?? "Not exposed by FFmpeg")</dd><dt>Port group</dt><dd>@(string.IsNullOrWhiteSpace(port.PortGroup) ? "Default" : port.PortGroup) @(port.Reserved ? "· reserved from automatic routing" : "")</dd><dt>Mapping confidence</dt><dd>@port.IdentityConfidence</dd><dt>Supported modes</dt><dd>@(port.SupportedModes.Count == 0 ? "Query not exposed / verified when FFmpeg starts" : string.Join(", ", port.SupportedModes.Select(Mode)))</dd></dl>
+        <dl><dt>FFmpeg address</dt><dd class="mono">@port.FfmpegName</dd><dt>Stable ID</dt><dd class="mono">@port.StableId</dd>@if(port.PersistentId is not null){<dt>Persistent hardware ID</dt><dd class="mono">@port.PersistentId</dd>}@if(port.DeviceGroupId is not null){<dt>Physical card group</dt><dd class="mono">@port.DeviceGroupId</dd>}@if(port.TopologicalId is not null){<dt>Current topology ID</dt><dd class="mono">@port.TopologicalId</dd>}<dt>Port group</dt><dd>@(string.IsNullOrWhiteSpace(port.PortGroup) ? "Default" : port.PortGroup) @(port.Reserved ? "· reserved from automatic routing" : "")</dd><dt>Mapping confidence</dt><dd>@port.IdentityConfidence</dd><dt>Supported modes</dt><dd>@(port.SupportedModes.Count == 0 ? "Query not exposed / verified when FFmpeg starts" : string.Join(", ", port.SupportedModes.Select(Mode)))</dd></dl>
         @if (route is not null) { <div class="notice success" style="margin:12px 0 0"><strong>@route.SourceName</strong><br />@route.PresetId · @(route.Locked ? "locked" : "unlocked")</div> }
     </div>
 }
 </div>
 @if (snapshot.Ports.Count == 0) { <div class="panel"><div class="empty-state">No DeckLink outputs enumerated. Configure a DeckLink-enabled FFmpeg build and install Blackmagic Desktop Video, then rescan.</div></div> }
-<div class="notice warning" style="margin-top:18px">FFmpeg names are address aliases, not guaranteed physical identities. Re-verify operator port names after Desktop Video upgrades, PCI slot changes, device-profile changes, or card replacement.</div>
+@if (snapshot.Ports.Any(port => port.PersistentId is null))
+{
+    <div class="notice warning" style="margin-top:18px">One or more outputs do not expose a unique Blackmagic persistent ID. Re-verify those fallback mappings after Desktop Video upgrades, topology changes, or card replacement.</div>
+}
+else if (snapshot.Ports.Count > 0)
+{
+    <div class="notice success" style="margin-top:18px">All outputs use Blackmagic persistent hardware IDs. Saved names and route references remain attached when identical cards move between PCIe slots.</div>
+}
 
 @code {
     private RouterSnapshot snapshot = null!;

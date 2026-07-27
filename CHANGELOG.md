@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 1.2.8 — 2026-07-27
+
+- Clean legacy auto-generated DeckLink labels that included FFmpeg's trailing `] (none)` status while preserving operator-assigned names such as `Stream-3`.
+
+## 1.2.7 — 2026-07-27
+
+- Added direct, dependency-free Windows COM access to Blackmagic Desktop Video's `IDeckLinkProfileAttributes` interface.
+- Use unique `BMDDeckLinkPersistentID` values as stable output IDs while retaining the opaque FFmpeg device handle for playout.
+- Preserve physical-card grouping, subdevice index, topology, model, and mapping-confidence metadata for identical DeckLink Quad 2 cards.
+- Atomically migrate saved output names, groups, reserved flags, manual/rule fixed-output references, and persisted route assignments from legacy FFmpeg-hash IDs.
+- Defer identity migration until a controlled restart if any output lease or owned FFmpeg process is active.
+- Correct FFmpeg sink parsing so trailing status text such as `(none)` no longer appears in DeckLink display names.
+- Added persistent-identity, duplicate-ID fallback, deferred-migration, and saved-reference migration regressions.
+
 ## 1.2.6 — 2026-07-27
 
 - Replaced the disabled, ambiguous Sources-page Route button with explicit View route, Retry route, and busy/result states.

@@ -3,7 +3,7 @@
 Review date: 2026-07-26
 Review branch: `codex/ffmpeg-startup-recovery-1.2.4`
 Reviewed baseline: `1aa62ac` (`v1.2.2`, `origin/main`)
-Resulting release version: `1.2.6`
+Resulting release version: `1.2.8`
 
 ## Executive summary
 
@@ -16,6 +16,8 @@ The repository is materially safer after these changes, but this review does **n
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. The real configured Wowza publisher, RTSP frame receipt, H.264/AAC fragmented-MP4 stream, VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified on the production host; physical DeckLink output remains unverified.
 
 The 1.2.4 production follow-up fixes a live FFmpeg startup failure reproduced against FFmpeg 8.1.2 and the configured RTSP publisher. The build rejected the generic `-rw_timeout` token before opening the input; startup reconciliation then relaunched the short-lived process before supervision could preserve its error, leaving the route indefinitely at `STARTING`. The command now uses the RTSP demuxer's supported `-timeout`, recovery is single-shot, exits are monitored before reconciliation, and 1080i50 plus DeckLink audio are generated explicitly.
+
+The 1.2.7 identity follow-up queried the live Desktop Video 16.1 COM API without stopping the route. Both installed DeckLink Quad 2 cards expose unique persistent IDs for all sixteen subdevices and distinct device-group IDs for the two physical cards. BroadcastRouter now uses those persistent values for ownership and persistence, keeps the opaque FFmpeg handle only for process arguments, migrates every saved legacy reference at a controlled restart, and falls back without identity claims on unsupported hardware.
 
 ## Architecture assessment
 
@@ -91,7 +93,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Final: 60/60 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Final: 62/62 tests.
 
 Added coverage:
 
@@ -139,12 +141,12 @@ Still requiring integration or hardware coverage:
 | Embedded preview | **Verified locally and against the configured Wowza publisher**: RTSP frames, 720×450 H.264/AAC fragmented MP4 bytes, browser `readyState=4`, advancing playback time, 720×450 decoded video, real `showvolume` overlay, explicit stop, and zero remaining FFmpeg/FFplay children. |
 | Authentication/antiforgery/diagnostics gate | **Verified locally** in isolated authenticated modes on ports 5181/5183, including operator denial and login throttling. |
 | Real Wowza REST and RTSP | **Verified on the configured server**: management authentication, application discovery, active publisher discovery, RTSP open, frame receipt, H.264 video, and AAC audio. |
-| DeckLink enumeration | **Verified on the live host**: Desktop Video detected, DeckLink-enabled FFmpeg 8.1.2 validated, and 16 outputs enumerated. |
+| DeckLink enumeration | **Verified on the live host**: Desktop Video 16.1 detected, DeckLink-enabled FFmpeg 8.1.2 validated, and 16 outputs enumerated. Direct SDK interrogation found 16 unique persistent IDs, two unique physical-card group IDs, and eight subdevices per DeckLink Quad 2 card. |
 | Physical DeckLink output | **Partially verified**: a bounded live RTSP-to-DeckLink test produced 375 frames in 15 seconds with 0 drops and 0 duplicates. The patched FFmpeg then produced 250 synthetic frames in 10 seconds, stopped with zero crash events, and left zero processes. Physical SDI picture/audio was not independently observed. |
-| Physical connector identity stability | **Requires two reboots and power cycles** plus labeled-output verification. |
+| Physical connector identity stability | **Partially verified**: simulated enumeration reordering retained every stable ID; a controlled application restart retained `Stream-3` on `DECKLINK-PERSISTENT-80CE89D6`. Swapping the two cards between PCIe slots plus two Windows reboots/power cycles still requires physical verification. |
 | Broadcast modes/audio | **Requires physical tests** for 1080p25, 1080p50, 1080i50, and 720p50 on every compatible port. |
 | Failure/recovery matrix | **Requires lab fault injection**: network pull, publisher stop, FFmpeg kill, RTSP stall, busy port, and safe card disconnect. |
-| Restart recovery | **Requires application and Windows restart testing** with desired routes. |
+| Restart recovery | **Verified for a controlled application/task restart**: the owned FFmpeg child exited with the host, no orphan remained, and the desired route recovered automatically on the same persistent output at approximately 25 fps. A full Windows reboot remains required. |
 | Soak | **Requires 8–24 hours** with multi-port frame/FPS/drop/CPU/memory/orphan monitoring. |
 | Windows Service / Session 0 | **Not verified**; do not claim production readiness until the full matrix passes there. |
 
@@ -159,6 +161,7 @@ Still requiring integration or hardware coverage:
 - 1.2.4 follow-up: RTSP timeout compatibility, single-shot startup recovery, process-error logging, explicit interlaced generation, DeckLink audio normalization, capability validation, and focused regressions/documentation.
 - 1.2.5 follow-up: fallback-audio input ordering, idempotent release of already-free leases, and Windows Job Object containment for abrupt-host orphan prevention.
 - 1.2.6 follow-up: explicit Sources-page route actions, patched-FFmpeg capability detection, and an opt-in Windows DeckLink final-release workaround validated against Desktop Video 16.1.
+- 1.2.8 follow-up: direct Blackmagic persistent-ID discovery, legacy-reference migration, physical-card grouping, safe live-migration deferral, clean FFmpeg sink labels, and focused identity/reorder/migration regressions.
 
 ## Commands and results
 
@@ -171,7 +174,7 @@ dotnet run --no-build --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.cs
 git diff --check
 ```
 
-Final results: restore passed; Release build passed with 0 warnings/errors; 60/60 tests passed; the vulnerability audit was clean; and `git diff --check` reported no whitespace errors. The self-contained `win-x64` 1.2.6 package was deployed to the live host with a rollback backup and preserved configuration/database. The scheduled task is running, health is good, the desired RTSP-to-DeckLink route recovered, and its tokenized command includes the automatically detected `-win_safe_terminate 1` option. A bounded patched-FFmpeg hardware test produced 250 frames in 10 seconds, recorded zero Application Error events, and left zero test processes. Physical SDI picture/audio remains unobserved.
+Final results: restore passed; Release build passed with 0 warnings/errors; 62/62 tests passed; the vulnerability audit was clean; and `git diff --check` reported no whitespace errors. The self-contained `win-x64` 1.2.8 package was deployed to the live host with rollback backups and preserved configuration/database. The scheduled task is running, health is good, all sixteen connectors use unique Blackmagic persistent IDs, legacy labels were cleaned, and the desired RTSP-to-DeckLink route recovered after a controlled restart on `DECKLINK-PERSISTENT-80CE89D6`; its tokenized command includes `-win_safe_terminate 1`. No FFmpeg Application Error events were recorded. Physical SDI picture/audio and actual PCI-slot swapping remain unobserved.
 
 ## Recommended follow-up
 

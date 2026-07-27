@@ -9,6 +9,7 @@
 4. Sign in as that account and run `BroadcastRouter.Server.exe` once. Open `http://127.0.0.1:5080`.
 5. In **Settings > Media Tools**, select `ffmpeg.exe` and `ffprobe.exe`, save, and require every routing validation gate to pass. Embedded preview additionally requires the H.264/AAC, fragmented MP4, and preview-filter capabilities listed above.
 6. Configure and test Wowza, name the physical outputs, assign groups/reserved ports, create presets/rules, and test one output at a time. Manual route creation and confirmed reassignment can choose any saved output preset.
+   On supported hardware, the Outputs page must report **Blackmagic persistent hardware ID**. Version 1.2.7 migrates legacy FFmpeg-hash references during the first controlled restart and preserves operator names, fixed rules, and desired routes. If ownership is active during discovery, migration is intentionally deferred until the next restart.
 7. Run `scripts\Install-InteractiveLogon.ps1` as the broadcast account. It creates a normal per-user Task Scheduler entry that starts the server when that user logs in; elevation is not required.
 8. Perform the soak plan in `PRODUCTION-VALIDATION.md` before enabling automatic routing.
 
@@ -36,3 +37,5 @@ The app refuses startup when authentication is enabled without an administrator 
 ## Upgrade and rollback
 
 Stop the scheduled task/service, copy the complete new release to a new versioned folder, copy the `data` directory, and start the new version. Keep the prior folder and a separately protected database backup made while the app is stopped. SQLite settings retain a last-valid configuration row; sanitized diagnostics intentionally contain no database backup. Roll back by stopping the new executable and starting the prior folder with the matching protected database backup.
+
+When upgrading to 1.2.7, keep the pre-upgrade database backup with the prior executable. Persistent-ID migration rewrites stored output references in the new database. A rollback must use the matching pre-migration database rather than the migrated copy.

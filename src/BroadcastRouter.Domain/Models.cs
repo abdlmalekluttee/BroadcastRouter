@@ -75,7 +75,12 @@ public sealed record DeckLinkPort(
     string? FriendlyName = null,
     string IdentityConfidence = "Unverified",
     bool Reserved = false,
-    string PortGroup = "");
+    string PortGroup = "",
+    string? PersistentId = null,
+    string? DeviceGroupId = null,
+    string? DeviceHandle = null,
+    string? TopologicalId = null,
+    IReadOnlyList<string>? PreviousStableIds = null);
 
 public sealed record OutputPreset(
     string Id,
