@@ -4,7 +4,7 @@
 
 ## 1.2.8 — 2026-07-27
 
-- Clean legacy auto-generated DeckLink labels that included FFmpeg's trailing `] (none)` status while preserving operator-assigned names such as `Stream-3`.
+- Clean legacy auto-generated DeckLink labels that included FFmpeg's trailing `] (none)` status while preserving custom operator-assigned names.
 
 ## 1.2.7 — 2026-07-27
 

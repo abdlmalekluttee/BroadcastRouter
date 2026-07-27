@@ -67,6 +67,8 @@ Create a clean self-contained release:
 .\scripts\Publish-Release.ps1 -Version 1.2.8
 ```
 
+The publisher removes build-path PDBs and runs `scripts\Test-ReleasePrivacy.ps1` before creating the archive. Packaging fails if it finds a database, diagnostics/log artifact, credential-bearing URL, user-profile path, private network address, private key, or common service token.
+
 ## Configuration and security
 
 The database is `data\broadcast-router.db` beside the deployed executable. SQLite uses WAL mode, transactions, integrity checks, and route history. Wowza passwords are encrypted with Windows DPAPI and are never placed in release or diagnostics archives. Take database backups only while the application is stopped, and protect them as production secrets.
