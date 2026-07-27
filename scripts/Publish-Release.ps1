@@ -24,12 +24,18 @@ dotnet publish (Join-Path $repositoryRoot 'src\BroadcastRouter.Web\BroadcastRout
     --property:Version=$Version --output $packageDirectory --nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
 
+# Portable PDBs can disclose local build paths and are not required at runtime.
+Get-ChildItem -LiteralPath $packageDirectory -Filter '*.pdb' -File |
+    Remove-Item -Force
+
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README.md') -Destination $packageDirectory
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination $packageDirectory
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'CHANGELOG.md') -Destination $packageDirectory
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'FFMPEG-SETUP.txt') -Destination $packageDirectory
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs') -Destination $packageDirectory -Recurse
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'scripts') -Destination $packageDirectory -Recurse
+
+& (Join-Path $PSScriptRoot 'Test-ReleasePrivacy.ps1') -PackageDirectory $packageDirectory
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory($packageDirectory, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $false)

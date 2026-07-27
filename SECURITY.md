@@ -17,6 +17,7 @@ Do not open a public issue containing credentials, internal addresses, logs, dia
 - Run under a dedicated, non-administrator Windows account.
 - Protect the `data` directory with NTFS permissions and back it up securely.
 - Never publish a production database or diagnostics package; DPAPI ciphertext and internal topology are still sensitive.
+- Never publish concrete host addresses, Windows user paths, source/output labels, device persistent IDs, group/topology IDs, or hardware inventory counts. Use synthetic fixtures in tests and generic descriptions in public validation reports.
 - Sanitized diagnostics omit the database, credentials, internal addresses, media paths, and topology names. Treat even sanitized packages as operationally sensitive.
 - Use exact, trusted FFmpeg binaries and verify their signatures/checksums according to your organization's policy.
 
