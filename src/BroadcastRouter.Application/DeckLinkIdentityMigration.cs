@@ -72,7 +72,7 @@ public static class DeckLinkIdentityMigration
         return route with
         {
             PortId = stableId,
-            PortName = port?.FriendlyName ?? port?.FfmpegName ?? route.PortName,
+            PortName = port is null ? route.PortName : DeckLinkDisplayName.Full(port),
             UpdatedAt = DateTimeOffset.UtcNow
         };
     }

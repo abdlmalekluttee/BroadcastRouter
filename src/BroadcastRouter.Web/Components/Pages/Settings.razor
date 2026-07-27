@@ -20,16 +20,25 @@
     <div class="form-group check"><InputCheckbox aria-label="Automatic routing enabled" @bind-Value="settings.Routing.AutomaticRoutingEnabled" /><label>Automatic routing enabled</label></div><div class="form-group"><label>Reservation grace (seconds)</label><InputNumber aria-label="Reservation grace seconds" @bind-Value="settings.Routing.ReservationGraceSeconds" /></div><div class="form-group"><label>Primary stable before restore (seconds)</label><InputNumber aria-label="Primary stable seconds" @bind-Value="settings.Routing.StableRestoreSeconds" /></div><div class="form-group"><label>First progress timeout (seconds)</label><InputNumber aria-label="First progress timeout seconds" @bind-Value="settings.Routing.FirstProgressTimeoutSeconds" /></div><div class="form-group"><label>Stall timeout (seconds)</label><InputNumber aria-label="Stall timeout seconds" @bind-Value="settings.Routing.StallTimeoutSeconds" /></div><div class="form-group"><label>Graceful stop timeout (seconds)</label><InputNumber aria-label="Graceful stop timeout seconds" @bind-Value="settings.Routing.GracefulStopSeconds" /></div><div class="form-group"><label>Maximum retry attempts</label><InputNumber aria-label="Maximum retry attempts" @bind-Value="settings.Routing.MaxRetryAttempts" /><span class="secondary-text">0 keeps retrying indefinitely; a positive cap releases unlocked outputs after exhaustion.</span></div><div class="form-group"><label>Retry delays</label><input aria-label="Retry delays in seconds" value="@retryDelays" @oninput="e => retryDelays = e.Value?.ToString() ?? retryDelays" /><span class="secondary-text">Comma-separated seconds, e.g. 1,2,5,10,20,30</span></div>
 </div></div></div>
 
-<div class="panel"><div class="panel-head"><h2>DeckLink port mappings</h2></div><div class="table-wrap"><table><thead><tr><th>Detected output</th><th>Stable ID</th><th>Operator name</th><th>Port group</th><th>Reserved</th></tr></thead><tbody>
+<div class="panel"><div class="panel-head"><div><h2>Physical DeckLink cards</h2><span class="secondary-text">Give each persistent physical card a name that operators recognize. The name follows the card if identical models swap PCIe slots.</span></div></div><div class="panel-body decklink-card-settings">
+@foreach (var card in PersistentCardGroups())
+{
+    var mapping = CardOverride(card.Key, card.Ports[0]);
+    <div class="card decklink-card-setting" @key="card.Key"><div><span class="stat-label">@card.Ports[0].ModelName · @card.Ports.Count connector(s)</span><strong>@(string.IsNullOrWhiteSpace(mapping.FriendlyName) ? "Unnamed physical card" : mapping.FriendlyName)</strong><span class="secondary-text">Hardware identity @DeckLinkDisplayName.ShortIdentity(card.Key)</span></div><div class="form-group"><label>Card name</label><input aria-label="@($"Card name for {DeckLinkDisplayName.ShortIdentity(card.Key)}")" @bind="mapping.FriendlyName" @bind:event="oninput" placeholder="e.g. Studio input card" /></div></div>
+}
+@if (!PersistentCardGroups().Any()) { <div class="empty-state compact">No persistent physical-card identities are available. Validate and rescan the DeckLink hardware first.</div> }
+</div></div>
+
+<div class="panel"><div class="panel-head"><div><h2>DeckLink connector mappings</h2><span class="secondary-text">Name each SDI connector and optionally place it in an automatic-routing group.</span></div></div><div class="table-wrap"><table><thead><tr><th>Detected connector</th><th>Technical ID</th><th>Connector name</th><th>Port group</th><th>Reserved</th></tr></thead><tbody>
 @foreach(var port in Coordinator.Snapshot.Ports)
 {
     var mapping = PortOverride(port);
-    <tr><td>@port.FfmpegName<span class="secondary-text">@port.ModelName</span></td><td class="mono">@port.StableId</td><td><InputText aria-label="@($"Operator name for {port.FfmpegName}")" @bind-Value="mapping.FriendlyName" /></td><td><InputText aria-label="@($"Port group for {port.FfmpegName}")" @bind-Value="mapping.PortGroup" placeholder="e.g. Transmission" /></td><td><InputCheckbox aria-label="@($"Reserve {port.FfmpegName} from automatic routing")" @bind-Value="mapping.Reserved" /></td></tr>
+    <tr><td><strong>@DeckLinkDisplayName.Connector(port)</strong><span class="secondary-text">@PendingCardName(port) · connector @(port.SubdeviceIndex + 1)</span></td><td><span class="mono">@DeckLinkDisplayName.ShortIdentity(port.StableId)</span></td><td><InputText aria-label="@($"Connector name for {port.FfmpegName}")" @bind-Value="mapping.FriendlyName" placeholder="e.g. Input 1" /></td><td><InputText aria-label="@($"Port group for {port.FfmpegName}")" @bind-Value="mapping.PortGroup" placeholder="e.g. Transmission" /></td><td><InputCheckbox aria-label="@($"Reserve {port.FfmpegName} from automatic routing")" @bind-Value="mapping.Reserved" /></td></tr>
 }
 </tbody></table></div></div>
 
 <div class="panel" id="manual"><div class="panel-head"><h2>Manual RTSP sources</h2><button class="btn small" @onclick="AddManual">Add source</button></div><div class="table-wrap"><table><thead><tr><th>On</th><th>Name</th><th>RTSP URL</th><th>Priority</th><th>Fixed output</th><th>Lock</th><th></th></tr></thead><tbody>
-@foreach(var source in settings.ManualSources){<tr><td><InputCheckbox aria-label="@($"Enable manual source {source.FriendlyName}")" @bind-Value="source.Enabled" /></td><td><InputText aria-label="Manual source name" @bind-Value="source.FriendlyName" /></td><td><InputText aria-label="@($"RTSP URL for {source.FriendlyName}")" @bind-Value="source.RtspUrl" /></td><td><InputNumber aria-label="@($"Priority for {source.FriendlyName}")" @bind-Value="source.Priority" /></td><td><select aria-label="Fixed output for @source.FriendlyName" @bind="source.FixedPortId"><option value="">Automatic</option>@foreach(var port in Coordinator.Snapshot.Ports){<option value="@port.StableId">@(port.FriendlyName ?? port.FfmpegName)</option>}</select></td><td><InputCheckbox aria-label="@($"Lock manual source {source.FriendlyName}")" @bind-Value="source.Locked" /></td><td><button class="btn small danger" @onclick="() => RemoveManual(source)">Remove</button></td></tr>}
+@foreach(var source in settings.ManualSources){<tr><td><InputCheckbox aria-label="@($"Enable manual source {source.FriendlyName}")" @bind-Value="source.Enabled" /></td><td><InputText aria-label="Manual source name" @bind-Value="source.FriendlyName" /></td><td><InputText aria-label="@($"RTSP URL for {source.FriendlyName}")" @bind-Value="source.RtspUrl" /></td><td><InputNumber aria-label="@($"Priority for {source.FriendlyName}")" @bind-Value="source.Priority" /></td><td><select aria-label="Fixed output for @source.FriendlyName" @bind="source.FixedPortId"><option value="">Automatic</option>@if(IsMissingPort(source.FixedPortId)){<option value="@source.FixedPortId">Saved output unavailable (@DeckLinkDisplayName.ShortIdentity(source.FixedPortId))</option>}@foreach(var port in OrderedPorts()){<option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option>}</select></td><td><InputCheckbox aria-label="@($"Lock manual source {source.FriendlyName}")" @bind-Value="source.Locked" /></td><td><button class="btn small danger" @onclick="() => RemoveManual(source)">Remove</button></td></tr>}
 </tbody></table></div></div>
 
 <div class="panel"><div class="panel-head"><h2>LAN access and security</h2></div><div class="panel-body"><div class="notice warning">The server binds to localhost by default. Non-loopback binding is refused unless authentication is enabled. Forwarded headers are accepted only from exact trusted proxy addresses. Restart after changes. Passwords come from <span class="mono">BROADCASTROUTER_ADMIN_PASSWORD</span> and <span class="mono">BROADCASTROUTER_OPERATOR_PASSWORD</span>.</div><div class="form-grid"><div class="form-group"><label>Bind address</label><InputText aria-label="Bind address" @bind-Value="settings.Security.BindAddress" /></div><div class="form-group"><label>Port</label><InputNumber aria-label="Listening port" @bind-Value="settings.Security.Port" /></div><div class="form-group check"><InputCheckbox aria-label="Require login" @bind-Value="settings.Security.RequireAuthentication" /><label>Require login</label></div><div class="form-group check"><InputCheckbox aria-label="Kestrel HTTPS enabled" @bind-Value="settings.Security.HttpsEnabled" /><label>Kestrel HTTPS enabled</label></div><div class="form-group wide"><label>Allowed client networks</label><InputText aria-label="Allowed client networks" @bind-Value="settings.Security.AllowedNetworks" /></div><div class="form-group wide"><label>Trusted reverse proxies</label><InputText aria-label="Trusted reverse proxy addresses" @bind-Value="settings.Security.TrustedProxies" /><span class="secondary-text">Exact IP addresses separated by semicolons; CIDR ranges are intentionally rejected.</span></div><div class="form-group"><label>Session timeout (minutes)</label><InputNumber aria-label="Session timeout minutes" @bind-Value="settings.Security.SessionTimeoutMinutes" /></div></div></div></div>
@@ -39,6 +48,20 @@
     private SecuritySettings originalSecurity = null!;
     protected override void OnInitialized() { settings = Coordinator.GetSettings(); originalSecurity = CopySecurity(settings.Security); retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); }
     private void AddManual() => settings.ManualSources.Add(new ManualSourceProfile());
+    private IReadOnlyList<CardView> PersistentCardGroups() => Coordinator.Snapshot.Ports
+        .Where(port => !string.IsNullOrWhiteSpace(port.DeviceGroupId))
+        .GroupBy(port => port.DeviceGroupId!, StringComparer.OrdinalIgnoreCase)
+        .Select(group => new CardView(group.Key, group.OrderBy(port => port.SubdeviceIndex).ToArray()))
+        .OrderBy(card => DeckLinkDisplayName.Card(card.Ports[0]), StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    private DeckLinkCardOverride CardOverride(string deviceGroupId, DeckLinkPort firstPort)
+    {
+        var value = settings.DeckLinkCardOverrides.FirstOrDefault(x => x.DeviceGroupId.Equals(deviceGroupId, StringComparison.OrdinalIgnoreCase));
+        if (value is not null) return value;
+        value = new DeckLinkCardOverride { DeviceGroupId = deviceGroupId, FriendlyName = firstPort.CardFriendlyName ?? $"{firstPort.ModelName} {DeckLinkDisplayName.ShortIdentity(deviceGroupId)}" };
+        settings.DeckLinkCardOverrides.Add(value);
+        return value;
+    }
     private DeckLinkPortOverride PortOverride(DeckLinkPort port)
     {
         var value = settings.DeckLinkPortOverrides.FirstOrDefault(x => x.StableId.Equals(port.StableId, StringComparison.OrdinalIgnoreCase));
@@ -47,6 +70,13 @@
         settings.DeckLinkPortOverrides.Add(value);
         return value;
     }
+    private string PendingCardName(DeckLinkPort port) => port.DeviceGroupId is { Length: > 0 } groupId
+        && settings.DeckLinkCardOverrides.FirstOrDefault(card => card.DeviceGroupId.Equals(groupId, StringComparison.OrdinalIgnoreCase)) is { } card
+        && !string.IsNullOrWhiteSpace(card.FriendlyName) ? card.FriendlyName : DeckLinkDisplayName.Card(port);
+    private IOrderedEnumerable<DeckLinkPort> OrderedPorts() => Coordinator.Snapshot.Ports
+        .OrderBy(DeckLinkDisplayName.Card, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(DeckLinkDisplayName.Connector, StringComparer.OrdinalIgnoreCase);
+    private bool IsMissingPort(string stableId) => !string.IsNullOrWhiteSpace(stableId) && !Coordinator.Snapshot.Ports.Any(port => port.StableId.Equals(stableId, StringComparison.OrdinalIgnoreCase));
     private async Task Save()
     {
         if (SecurityChanged() && !await JS.InvokeAsync<bool>("confirm", "Changing bind, authentication, HTTPS, allowlist, or proxy trust can interrupt or lock out remote operators after restart. Save these security changes?")) return;
@@ -62,4 +92,5 @@
     private static SecuritySettings CopySecurity(SecuritySettings value) => new() { BindAddress = value.BindAddress, Port = value.Port,
         RequireAuthentication = value.RequireAuthentication, HttpsEnabled = value.HttpsEnabled, AllowedNetworks = value.AllowedNetworks,
         TrustedProxies = value.TrustedProxies, SessionTimeoutMinutes = value.SessionTimeoutMinutes };
+    private sealed record CardView(string Key, IReadOnlyList<DeckLinkPort> Ports);
 }

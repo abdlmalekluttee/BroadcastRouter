@@ -64,6 +64,7 @@ public static class DiagnosticSanitizer
         WowzaServerCount = settings.WowzaServers.Count,
         EnabledWowzaServerCount = settings.WowzaServers.Count(server => server.Enabled),
         ManualSourceCount = settings.ManualSources.Count,
+        DeckLinkCardOverrideCount = settings.DeckLinkCardOverrides.Count,
         DeckLinkOverrideCount = settings.DeckLinkPortOverrides.Count,
         Presets = settings.Presets.Select(preset => new
         {

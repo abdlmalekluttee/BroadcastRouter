@@ -3,7 +3,7 @@
 Review date: 2026-07-27
 Review branch: `codex/release-privacy-hardening`
 Reviewed baseline: `6799789` (`origin/main`)
-Resulting release version: `1.2.8`
+Resulting release version: `1.2.9`
 
 ## Executive summary
 
@@ -74,6 +74,7 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-022 | High | FFmpeg startup / recovery | `src/BroadcastRouter.Infrastructure/FfmpegCommandBuilder.cs`; `src/BroadcastRouter.Web/Services/RouterCoordinator.cs` | Live FFmpeg 8.1.2 rejected `-rw_timeout` before opening RTSP. Reconciliation relaunched the exited child before monitoring classified it, repeatedly resetting the route to `STARTING`, zero frames, retry 0. | **Fixed.** Use the RTSP demuxer's verified `-timeout`; monitor exits before reconciliation; startup recovery is single-shot; retry details are redacted and logged. Reproduced against the configured publisher and exact DeckLink-enabled FFmpeg build. Regressions: `Startup route recovery is single shot`, timeout-token assertions. |
 | BR-023 | High | DeckLink mode/audio correctness | `src/BroadcastRouter.Domain/Models.cs`; `OperatorSettings.cs`; `src/BroadcastRouter.Infrastructure/FfmpegCommandBuilder.cs`; `MediaToolValidator.cs` | The profile stored `Interlaced`, but `ToDomain` discarded it and both FFmpeg paths always generated progressive frames. Input audio was passed through without enforcing DeckLink's 48 kHz/channel requirements. | **Fixed.** Preserve scan in the runtime preset; build explicit 50-field/s TFF output with `tinterlace`/`setfield`; deinterlace before conversion when required; normalize audio to 48 kHz stereo PCM; validate all required capabilities. Regression: `FFmpeg interlaced output is explicit`. |
 | BR-024 | High | Release privacy / version integrity | GitHub release assets; `Directory.Build.props`; `scripts/Publish-Release.ps1`; public validation documents and test fixtures | A standalone historical deployment asset disclosed an environment-specific host address; the merged persistent-identity fixtures/report contained concrete lab-derived identifiers; release metadata remained at 1.2.6 while public docs described 1.2.8. | **Fixed in current refs and release assets.** Removed the unsafe standalone asset and obsolete draft; replaced concrete identifiers/labels with synthetic fixtures; generalized lab documentation; aligned metadata to 1.2.8; removed PDBs from packages; added a fail-closed release privacy scanner, Dependabot, and CodeQL. A freshly built 1.2.8 ZIP passed an independent content/name scan and checksum verification. |
+| BR-025 | Medium | DeckLink operator identity | `Domain/OperatorSettings.cs`; `Domain/Models.cs`; `Components/Pages/Outputs.razor`; route/rule/settings selectors | Persistent connector and card-group IDs protected saved ownership, but operators still saw changing discovery-order card numbers and raw technical identifiers. This made identical cards difficult to distinguish and encouraged unsafe ID memorization. | **Fixed on `codex/decklink-human-identity`.** Physical-card aliases are keyed by stable `DeviceGroupId`; connector aliases remain keyed by persistent `StableId`; every output selector renders `Card name / Connector name`; unavailable saved references remain explicit; raw IDs moved into collapsed technical details. Regression: `DeckLink human identity labels`. |
 
 ## GUI review
 
@@ -83,11 +84,11 @@ The failed documented web start is an environmental port conflict, not an applic
 | Dashboard | Production/simulation and hardware-block status are explicit text; emergency stop confirmed and busy-guarded. |
 | Wowza Servers | Controls have accessible names; password remains blank-to-preserve; no network scanning action exists; removal now requires confirmation and explains grace-period impact. |
 | Sources | Credential/internal-address-safe RTSP display; route/reprobe actions visible only to Administrator. The preview is now a compact 720×450 in-page player with video/audio/uptime/process statistics, confidence-audio controls, a real VU overlay, busy guard, and explicit stop. |
-| DeckLink Outputs | Identity-confidence warning is prominent; rescan remains non-destructive. |
+| DeckLink Outputs | Outputs are grouped by operator-named physical card, connectors use human names, identity-confidence warnings remain prominent, and raw persistent/topology values are collapsed under Technical identity. Rescan remains non-destructive. |
 | Routes / Matrix | Responsive cards expose Output and saved Output preset drafts, applied together after a disruption warning. Emergency confirmation, locked stop refusal, busy guards, and server-side Administrator authorization remain intact. |
 | Rules & Presets | Rules and presets use responsive labeled cards. Bounded regex validation, confirmed removal, reference-aware preset deletion, and accessible names remain intact. Progressive/interlaced scan selection no longer becomes blank. |
 | Logs & Diagnostics | Package contents now accurately state there is no database copy; logged IPs/credentials are redacted. |
-| Settings | All current and generated port/manual controls named; strict validation preserves prior active settings; bind/authentication/HTTPS/allowlist/proxy changes require a disruption warning confirmation. |
+| Settings | Physical-card aliases and connector aliases are separate, accessible controls. Card aliases are bound to stable device-group identity and must be unique. Strict validation preserves prior active settings; bind/authentication/HTTPS/allowlist/proxy changes require a disruption warning confirmation. |
 | Error | Sanitized generic error content; no detailed exception exposed. |
 
 Responsive checks passed without document-level horizontal overflow at 1366×768, 1920×1080, 2560×1440, and 768×1024. The 1.2.2 preview measured exactly 720×450 at a 1920×1080 viewport and scaled to 581×362 inside the panel at 768×1024, with no document overflow. Wide tables intentionally scroll inside `.table-wrap`. The only recorded browser errors were expected SignalR disconnects during controlled production restarts; the stable final playback had no media error. A final embedded-preview screenshot was captured under `release/ui-screenshots`.
@@ -96,7 +97,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Final: 62/62 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64 tests.
 
 Added coverage:
 
@@ -120,6 +121,7 @@ Added coverage:
 18. Explicit manual preset selection, case-insensitive normalization, rule fallback behavior, missing-preset rejection, and empty-preset rejection.
 19. Single-shot persisted-route startup recovery.
 20. FFmpeg RTSP demuxer timeout tokenization, explicit 1080i50 TFF filtering, and DeckLink audio normalization.
+21. Human DeckLink card/connector labels remain independent of PCI discovery order and ambiguous physical-card names are rejected.
 
 Expanded existing credential/log redaction assertions. HTTP integration checks separately verified antiforgery and diagnostics authorization.
 
@@ -177,7 +179,7 @@ dotnet run --no-build --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.cs
 git diff --check
 ```
 
-Final results: restore passed; Release build passed with 0 warnings/errors; 62/62 tests passed; the vulnerability audit was clean; and `git diff --check` reported no whitespace errors. A self-contained `win-x64` 1.2.8 package was deployed in a controlled lab with rollback backups and preserved configuration/database. Health checks passed, detected connectors used unique Blackmagic persistent IDs, legacy labels were cleaned, and the desired RTSP-to-DeckLink route recovered after a controlled restart on the same persistent output; its tokenized command included `-win_safe_terminate 1`. Concrete network, source, output, process, and device identifiers are intentionally excluded. Physical SDI picture/audio and actual PCI-slot swapping remain unobserved.
+Current branch results: restore passed; Release build passed with 0 warnings/errors; 64/64 tests passed; the vulnerability audit was clean; and `git diff --check` reported no whitespace errors. The human-identity UI was exercised in isolated simulation: two physical-card names persisted, Outputs grouped connectors under those names, route/manual/rule selectors rendered `Card / Connector`, raw identities remained collapsed, tested pages had no document/card overflow, and no post-fix browser errors were recorded. A self-contained `win-x64` 1.2.8 package was previously deployed in a controlled lab with rollback backups and preserved configuration/database. The current identity branch has not been deployed. Concrete network, source, output, process, and device identifiers are intentionally excluded. Physical SDI picture/audio and actual PCI-slot swapping remain unobserved.
 
 ## Recommended follow-up
 

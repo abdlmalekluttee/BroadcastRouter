@@ -23,7 +23,7 @@ The executable supports Windows Service hosting, but service/Session 0 DeckLink 
 
 - `SourceIdentity`: immutable escaped four-part identity.
 - `DiscoveredSource` / `MediaProperties`: discovery and independent media truth.
-- `DeckLinkPort`: Blackmagic persistent ID when supported, opaque FFmpeg device handle for playout, physical-card group/subdevice/topology hints, modes, group, reserved state, operator name, confidence, and legacy aliases used only for one-time migration.
+- `DeckLinkPort`: Blackmagic persistent ID when supported, opaque FFmpeg device handle for playout, physical-card group/subdevice/topology hints, modes, group, reserved state, operator card/connector names, confidence, and legacy aliases used only for one-time migration. The physical-card alias is keyed by `DeviceGroupId`; connector aliases remain keyed by `StableId`.
 - `OutputPresetProfile`: raster, rational rate, scan, pixel format, audio, latency, buffer, standby behavior.
 - `RoutingRuleProfile`: ordered source/media match and preset/group/fixed-port/priority/lock action.
 - `RuntimeRoute`: desired assignment, state, process metrics, failure, retry and lock state.
