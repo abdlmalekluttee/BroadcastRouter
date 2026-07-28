@@ -27,8 +27,8 @@ public sealed class SimulationDeckLinkEnumerator : IDeckLinkEnumerator
         var modes = new[] { new VideoMode(1920, 1080, 25, 1, "uyvy422") };
         IReadOnlyList<DeckLinkPort> ports =
         [
-            new("SIM-CARD-0-PORT-0", "Simulated DeckLink (1)", "DeckLink Quad Simulator", 0, 0, "SIM:00:00.0", modes, FriendlyName: "Studio Return 1", IdentityConfidence: "Simulation"),
-            new("SIM-CARD-0-PORT-1", "Simulated DeckLink (2)", "DeckLink Quad Simulator", 0, 1, "SIM:00:00.0", modes, FriendlyName: "Studio Return 2", IdentityConfidence: "Simulation")
+            new("SIM-CARD-0-PORT-0", "Simulated DeckLink (1)", "DeckLink Quad Simulator", 0, 0, "SIM:00:00.0", modes, FriendlyName: "Studio Return 1", IdentityConfidence: "Simulation", IsOutputPort: true),
+            new("SIM-CARD-0-PORT-1", "Simulated DeckLink (2)", "DeckLink Quad Simulator", 0, 1, "SIM:00:00.0", modes, FriendlyName: "Studio Return 2", IdentityConfidence: "Simulation", IsOutputPort: true)
         ];
         return Task.FromResult(ports);
     }

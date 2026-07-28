@@ -29,13 +29,34 @@
 @if (!PersistentCardGroups().Any()) { <div class="empty-state compact">No persistent physical-card identities are available. Validate and rescan the DeckLink hardware first.</div> }
 </div></div>
 
-<div class="panel"><div class="panel-head"><div><h2>DeckLink connector mappings</h2><span class="secondary-text">Name each SDI connector and optionally place it in an automatic-routing group.</span></div></div><div class="table-wrap"><table><thead><tr><th>Detected connector</th><th>Technical ID</th><th>Connector name</th><th>Port group</th><th>Reserved</th></tr></thead><tbody>
+<div class="panel"><div class="panel-head"><div><h2>DeckLink connector mappings and standby</h2><span class="secondary-text">Only connectors marked as output ports can be used by saved, manual, or automatic routing. Each output can keep its own broadcast standby screen on air.</span></div></div><div class="panel-body port-config-list">
 @foreach(var port in Coordinator.Snapshot.Ports)
 {
     var mapping = PortOverride(port);
-    <tr><td><strong>@DeckLinkDisplayName.Connector(port)</strong><span class="secondary-text">@PendingCardName(port) · connector @(port.SubdeviceIndex + 1)</span></td><td><span class="mono">@DeckLinkDisplayName.ShortIdentity(port.StableId)</span></td><td><InputText aria-label="@($"Connector name for {port.FfmpegName}")" @bind-Value="mapping.FriendlyName" placeholder="e.g. Input 1" /></td><td><InputText aria-label="@($"Port group for {port.FfmpegName}")" @bind-Value="mapping.PortGroup" placeholder="e.g. Transmission" /></td><td><InputCheckbox aria-label="@($"Reserve {port.FfmpegName} from automatic routing")" @bind-Value="mapping.Reserved" /></td></tr>
+    <article class="port-config-card" @key="port.StableId">
+        <div class="port-config-title"><div><span class="stat-label">@PendingCardName(port) · connector @(port.SubdeviceIndex + 1)</span><h3>@DeckLinkDisplayName.Connector(port)</h3><span class="secondary-text mono">Identity @DeckLinkDisplayName.ShortIdentity(port.StableId)</span></div><label class="check output-port-toggle"><InputCheckbox aria-label="@($"Mark {port.FfmpegName} as an output port")" @bind-Value="mapping.IsOutputPort" /><strong>Output port</strong></label></div>
+        <div class="form-grid compact">
+            <div class="form-group"><label>Connector name</label><InputText aria-label="@($"Connector name for {port.FfmpegName}")" @bind-Value="mapping.FriendlyName" placeholder="e.g. Transmission 1" /></div>
+            <div class="form-group"><label>Automatic-routing group</label><InputText aria-label="@($"Port group for {port.FfmpegName}")" @bind-Value="mapping.PortGroup" placeholder="e.g. Transmission" /></div>
+            <div class="form-group check"><InputCheckbox aria-label="@($"Reserve {port.FfmpegName} from automatic routing")" @bind-Value="mapping.Reserved" /><label>Exclude from automatic assignment</label></div>
+        </div>
+        @if (mapping.IsOutputPort)
+        {
+            <div class="standby-config">
+                <div class="standby-config-head"><label class="check"><InputCheckbox aria-label="@($"Enable standby screen for {port.FfmpegName}")" @bind-Value="mapping.StandbyEnabled" /><strong>Keep standby screen on air when idle</strong></label><span class="secondary-text">The clock follows the Windows system clock; keep Windows Time synchronized to your NTP server.</span></div>
+                <div class="form-grid compact">
+                    <div class="form-group"><label>Standby output preset</label><select aria-label="@($"Standby preset for {port.FfmpegName}")" @bind="mapping.StandbyPresetId">@foreach(var preset in settings.Presets){<option value="@preset.Id">@preset.Name</option>}</select></div>
+                    <div class="form-group"><label>Color bars</label><select aria-label="@($"Standby pattern for {port.FfmpegName}")" @bind="mapping.StandbyPattern">@foreach(var pattern in Enum.GetValues<StandbyPattern>()){<option value="@pattern">@PatternName(pattern)</option>}</select></div>
+                    <div class="form-group"><label>Custom port label</label><InputText aria-label="@($"Standby label for {port.FfmpegName}")" @bind-Value="mapping.StandbyLabel" maxlength="80" placeholder="e.g. TX 1" /></div>
+                    <div class="form-group wide"><label>Logo image path (optional)</label><InputText aria-label="@($"Standby logo for {port.FfmpegName}")" @bind-Value="mapping.StandbyLogoPath" placeholder="C:\BroadcastRouter\branding\logo.png" /></div>
+                    <div class="form-group check"><InputCheckbox aria-label="@($"Show synchronized clock for {port.FfmpegName}")" @bind-Value="mapping.StandbyShowClock" /><label>Show HH:mm:ss clock</label></div>
+                </div>
+            </div>
+        }
+    </article>
 }
-</tbody></table></div></div>
+@if (Coordinator.Snapshot.Ports.Count == 0) { <div class="empty-state compact">No DeckLink connectors have been discovered. Validate and rescan the DeckLink hardware first.</div> }
+</div></div>
 
 <div class="panel" id="manual"><div class="panel-head"><h2>Manual RTSP sources</h2><button class="btn small" @onclick="AddManual">Add source</button></div><div class="table-wrap"><table><thead><tr><th>On</th><th>Name</th><th>RTSP URL</th><th>Priority</th><th>Fixed output</th><th>Lock</th><th></th></tr></thead><tbody>
 @foreach(var source in settings.ManualSources){<tr><td><InputCheckbox aria-label="@($"Enable manual source {source.FriendlyName}")" @bind-Value="source.Enabled" /></td><td><InputText aria-label="Manual source name" @bind-Value="source.FriendlyName" /></td><td><InputText aria-label="@($"RTSP URL for {source.FriendlyName}")" @bind-Value="source.RtspUrl" /></td><td><InputNumber aria-label="@($"Priority for {source.FriendlyName}")" @bind-Value="source.Priority" /></td><td><select aria-label="Fixed output for @source.FriendlyName" @bind="source.FixedPortId"><option value="">Automatic</option>@if(IsMissingPort(source.FixedPortId)){<option value="@source.FixedPortId">Saved output unavailable (@DeckLinkDisplayName.ShortIdentity(source.FixedPortId))</option>}@foreach(var port in OrderedPorts()){<option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option>}</select></td><td><InputCheckbox aria-label="@($"Lock manual source {source.FriendlyName}")" @bind-Value="source.Locked" /></td><td><button class="btn small danger" @onclick="() => RemoveManual(source)">Remove</button></td></tr>}
@@ -46,7 +67,8 @@
 @code {
     private OperatorSettings settings = null!; private string message = ""; private string messageClass = ""; private string retryDelays = "";
     private SecuritySettings originalSecurity = null!;
-    protected override void OnInitialized() { settings = Coordinator.GetSettings(); originalSecurity = CopySecurity(settings.Security); retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); }
+    private HashSet<string> originalOutputPorts = new(StringComparer.OrdinalIgnoreCase);
+    protected override void OnInitialized() { settings = Coordinator.GetSettings(); originalSecurity = CopySecurity(settings.Security); retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); originalOutputPorts = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort).Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase); }
     private void AddManual() => settings.ManualSources.Add(new ManualSourceProfile());
     private IReadOnlyList<CardView> PersistentCardGroups() => Coordinator.Snapshot.Ports
         .Where(port => !string.IsNullOrWhiteSpace(port.DeviceGroupId))
@@ -65,8 +87,14 @@
     private DeckLinkPortOverride PortOverride(DeckLinkPort port)
     {
         var value = settings.DeckLinkPortOverrides.FirstOrDefault(x => x.StableId.Equals(port.StableId, StringComparison.OrdinalIgnoreCase));
-        if (value is not null) return value;
-        value = new DeckLinkPortOverride { StableId = port.StableId, FriendlyName = port.FriendlyName ?? port.FfmpegName, PortGroup = port.PortGroup, Reserved = port.Reserved };
+        if (value is not null)
+        {
+            if (string.IsNullOrWhiteSpace(value.StandbyPresetId)) value.StandbyPresetId = settings.Presets.FirstOrDefault()?.Id ?? "";
+            return value;
+        }
+        value = new DeckLinkPortOverride { StableId = port.StableId, FriendlyName = port.FriendlyName ?? port.FfmpegName,
+            PortGroup = port.PortGroup, Reserved = port.Reserved, IsOutputPort = port.IsOutputPort,
+            StandbyPresetId = settings.Presets.FirstOrDefault()?.Id ?? "", StandbyLabel = port.FriendlyName ?? port.FfmpegName };
         settings.DeckLinkPortOverrides.Add(value);
         return value;
     }
@@ -74,13 +102,17 @@
         && settings.DeckLinkCardOverrides.FirstOrDefault(card => card.DeviceGroupId.Equals(groupId, StringComparison.OrdinalIgnoreCase)) is { } card
         && !string.IsNullOrWhiteSpace(card.FriendlyName) ? card.FriendlyName : DeckLinkDisplayName.Card(port);
     private IOrderedEnumerable<DeckLinkPort> OrderedPorts() => Coordinator.Snapshot.Ports
+        .Where(port => PortOverride(port).IsOutputPort)
         .OrderBy(DeckLinkDisplayName.Card, StringComparer.OrdinalIgnoreCase)
         .ThenBy(DeckLinkDisplayName.Connector, StringComparer.OrdinalIgnoreCase);
-    private bool IsMissingPort(string stableId) => !string.IsNullOrWhiteSpace(stableId) && !Coordinator.Snapshot.Ports.Any(port => port.StableId.Equals(stableId, StringComparison.OrdinalIgnoreCase));
+    private bool IsMissingPort(string stableId) => !string.IsNullOrWhiteSpace(stableId) && !Coordinator.Snapshot.Ports.Any(port => port.StableId.Equals(stableId, StringComparison.OrdinalIgnoreCase) && PortOverride(port).IsOutputPort);
+    private static string PatternName(StandbyPattern pattern) => pattern switch { StandbyPattern.SmpteBars => "SMPTE color bars", StandbyPattern.SmpteHdBars => "SMPTE HD color bars", StandbyPattern.TestSource => "TV test pattern", _ => "Black" };
     private async Task Save()
     {
         if (SecurityChanged() && !await JS.InvokeAsync<bool>("confirm", "Changing bind, authentication, HTTPS, allowlist, or proxy trust can interrupt or lock out remote operators after restart. Save these security changes?")) return;
-        try { settings.Routing.RetryDelaysSeconds = retryDelays.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(int.Parse).ToArray(); await Coordinator.SaveSettingsAsync(settings); originalSecurity = CopySecurity(settings.Security); message = "Settings saved to SQLite. Host/bind/security changes take effect after restart."; messageClass = "success"; }
+        var newlyEnabledStandby = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort && value.StandbyEnabled && !originalOutputPorts.Contains(value.StableId)).ToArray();
+        if (newlyEnabledStandby.Length > 0 && !await JS.InvokeAsync<bool>("confirm", $"Saving will start an FFmpeg standby screen on {newlyEnabledStandby.Length} newly enabled output port(s) after Media Tools validation. Continue?")) return;
+        try { settings.Routing.RetryDelaysSeconds = retryDelays.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(int.Parse).ToArray(); await Coordinator.SaveSettingsAsync(settings); originalSecurity = CopySecurity(settings.Security); originalOutputPorts = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort).Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase); message = "Settings saved to SQLite. Routing and standby changes are queued now; host/bind/security changes take effect after restart."; messageClass = "success"; }
         catch(Exception ex) { message = ex.Message; messageClass = "danger"; }
     }
     private async Task Validate() { await Save(); if(messageClass == "success") { await Commands.ExecuteAsync("rescan"); message = "Validation and hardware rescan requested."; } }

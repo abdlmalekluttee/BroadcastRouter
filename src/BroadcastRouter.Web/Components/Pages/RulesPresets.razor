@@ -61,9 +61,10 @@
     private void AddRule() => settings.Rules.Add(new RoutingRuleProfile { Order = settings.Rules.Select(x => x.Order).DefaultIfEmpty(0).Max() + 10, PresetId = settings.Presets.First().Id });
     private void AddPreset() => settings.Presets.Add(new OutputPresetProfile { Id = UniqueIdGenerator.Next("preset", settings.Presets.Select(x => x.Id)), Name = "New preset" });
     private IOrderedEnumerable<DeckLinkPort> OrderedPorts() => Coordinator.Snapshot.Ports
+        .Where(port => port.IsOutputPort)
         .OrderBy(DeckLinkDisplayName.Card, StringComparer.OrdinalIgnoreCase)
         .ThenBy(DeckLinkDisplayName.Connector, StringComparer.OrdinalIgnoreCase);
-    private bool IsMissingPort(string stableId) => !string.IsNullOrWhiteSpace(stableId) && !Coordinator.Snapshot.Ports.Any(port => port.StableId.Equals(stableId, StringComparison.OrdinalIgnoreCase));
+    private bool IsMissingPort(string stableId) => !string.IsNullOrWhiteSpace(stableId) && !Coordinator.Snapshot.Ports.Any(port => port.IsOutputPort && port.StableId.Equals(stableId, StringComparison.OrdinalIgnoreCase));
     private static void SetScan(OutputPresetProfile preset, string? value) { if (OutputScanSelection.TryParse(value, out var interlaced)) preset.Interlaced = interlaced; }
     private async Task RemoveRule(RoutingRuleProfile rule) { if (await JS.InvokeAsync<bool>("confirm", $"Remove routing rule '{rule.Name}'? Automatic assignments may change after save.")) settings.Rules.Remove(rule); }
     private async Task RemovePreset(OutputPresetProfile preset)

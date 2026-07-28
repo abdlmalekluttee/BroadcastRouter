@@ -7,7 +7,8 @@ public sealed class AutomaticAssignmentEngine(PortReservationManager reservation
     public AssignmentDecision Assign(DiscoveredSource source, IReadOnlyList<DeckLinkPort> ports, Func<DeckLinkPort, bool>? compatible = null)
     {
         compatible ??= static _ => true;
-        var candidates = ports.Where(p => p.IsAvailable && compatible(p) && (!p.Reserved || string.Equals(source.FixedPortId, p.StableId, StringComparison.OrdinalIgnoreCase))).ToArray();
+        var candidates = ports.Where(p => p.IsOutputPort && p.IsAvailable && compatible(p)
+            && (!p.Reserved || string.Equals(source.FixedPortId, p.StableId, StringComparison.OrdinalIgnoreCase))).ToArray();
 
         if (source.FixedPortId is not null)
         {

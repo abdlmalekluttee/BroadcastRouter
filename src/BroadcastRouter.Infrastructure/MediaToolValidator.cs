@@ -35,6 +35,8 @@ public static class MediaToolValidator
         var hasH264Encoder = ContainsTool(encoders.CombinedOutput, "libx264");
         var hasAacEncoder = ContainsTool(encoders.CombinedOutput, "aac");
         var hasMp4Muxer = ContainsTool(muxers.CombinedOutput, "mp4");
+        var standbyFilters = new[] { "color", "smptebars", "smptehdbars", "testsrc2", "overlay", "drawtext" };
+        var missingStandbyFilters = standbyFilters.Where(filter => !ContainsTool(filters.CombinedOutput, filter)).ToArray();
         var driver = environment.Findings.Any(x => x.StartsWith("PASS  Blackmagic Desktop Video", StringComparison.Ordinal));
 
         findings.Add(ffmpeg.ExecutableFound ? $"PASS: {ffmpeg.VersionLine}" : "FAIL: FFmpeg did not start.");
@@ -54,13 +56,16 @@ public static class MediaToolValidator
                 .Concat(hasH264Encoder ? [] : ["libx264 encoder"])
                 .Concat(hasAacEncoder ? [] : ["AAC encoder"])
                 .Concat(hasMp4Muxer ? [] : ["MP4 muxer"]))}.");
+        findings.Add(missingStandbyFilters.Length == 0
+            ? "PASS: Per-port color bars, logo overlay, labels, and synchronized clock filters are available."
+            : $"WARN: Per-port standby screens are unavailable. Missing filters: {string.Join(", ", missingStandbyFilters)}.");
         findings.Add(driver ? "PASS: Blackmagic Desktop Video is installed." : "FAIL: Blackmagic Desktop Video was not detected.");
 
         var valid = ffmpeg.ExecutableFound && ffprobe.Started && ffprobe.ExitCode == 0 && ffmpeg.HasDeckLinkOutput
             && ffmpeg.OutputDevices.Count > 0 && missingFilters.Length == 0 && hasPixelFormat && hasRawVideo && hasRtspTimeout && driver;
         return new(valid ? ToolValidationState.Valid : ToolValidationState.Invalid, ffmpeg.VersionLine, ffprobeVersion,
             ffmpeg.HasDeckLinkOutput, driver, ffmpeg.OutputDevices.Count, findings, DateTimeOffset.UtcNow,
-            hasWindowsDeckLinkSafeTerminate);
+            hasWindowsDeckLinkSafeTerminate, missingStandbyFilters.Length == 0);
     }
 
     private static bool ContainsTool(string report, string token) =>

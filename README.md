@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Production Wowza-to-Blackmagic DeckLink routing control for Windows.</strong></p>
 
-BroadcastRouter is a self-contained .NET 8 Blazor Server application that discovers active Wowza publishers, validates RTSP media with FFprobe, atomically reserves DeckLink outputs, and supervises FFmpeg playout. The browser is only a control surface: closing or refreshing it does not stop the routing host.
+BroadcastRouter is a self-contained .NET 8 Blazor Server application that inventories active and offline Wowza publishers, validates active RTSP media with FFprobe, atomically reserves operator-designated DeckLink output ports, and supervises FFmpeg playout and standby screens. The browser is only a control surface: closing or refreshing it does not stop the routing host.
 
 ## What it provides
 
@@ -15,6 +15,9 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that discov
 - RTSP video-frame/audio-packet validation and media-property detection before routing;
 - audio-led and sparse-video routing with continuous preset-matched black output and live audio;
 - atomic DeckLink port reservations, priorities, locks, queues, retries, standby, and recovery;
+- persistent preconfigured/manual routing for offline streams, with deterministic preconfigured → manual → automatic priority;
+- explicit output-port designation so input connectors can never be selected by routing;
+- per-port SMPTE/HD color bars with optional logo, operator label, card/connector name, and NTP-synchronized Windows clock;
 - Blackmagic SDK persistent hardware identities that keep operator-defined physical-card names, connector names, and assignments attached when identical supported cards move between PCIe slots;
 - production-safe defaults: loopback binding, simulation disabled, and hardware starts blocked until validation passes;
 - SQLite persistence, DPAPI-protected Wowza credentials, structured redacted logs, minimal health checks, and sanitized diagnostics that never embed the production database;
@@ -39,13 +42,14 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.2.11`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.3.0`.
 3. Run `BroadcastRouter.Server.exe` as the dedicated Windows broadcast account.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
 6. Under **Wowza Servers**, configure the REST URL, credentials, RTSP host/port, applications, and instances. Test the connection and save.
-7. Verify sources and output mappings, then create routes manually before enabling automatic routing.
-8. Install startup with:
+7. Mark only the intended SDI connectors as **Output ports**, configure each standby screen, and verify the Windows clock is synchronized to NTP.
+8. Prepare preconfigured/manual routes for active or offline streams, then enable automatic routing for unassigned active streams.
+9. Install startup with:
 
 ```powershell
 .\scripts\Install-InteractiveLogon.ps1 -ExecutablePath .\BroadcastRouter.Server.exe
@@ -56,6 +60,12 @@ Use the same Windows account for configuration and runtime because DPAPI credent
 ### Human-friendly DeckLink identity
 
 Under **Settings > Physical DeckLink cards**, name each card for its real operational role, such as `Studio input card` or `Transmission card`. Under **DeckLink connector mappings**, name its connectors `Input 1`, `Input 2`, and so on. Output selectors then show `Studio input card / Input 1`; operators never need to memorize a persistent ID. Card names are stored against the Blackmagic physical-card group identity, while connector names are stored against each persistent connector ID. Raw IDs remain available under **Outputs > Technical identity** for troubleshooting.
+
+### Saved routing priority and standby
+
+Incoming streams remain in the inventory when their publisher is offline. A preconfigured or manual routing entry can therefore be saved in advance and activates when FFprobe marks the stream ready. Preconfigured entries outrank manual entries, and both outrank automatic assignment. A saved output remains reserved while offline unless **Allow automatic streams to use it temporarily** is enabled; the saved entry itself is never deleted or reassigned.
+
+Every connector marked as an output port can run an independent standby screen whenever it is not carrying live playout. Configure SMPTE/HD bars, a logo path, a custom port label, and the clock under **Settings > DeckLink connector mappings and standby**. The FFmpeg clock reads the Windows system clock, so configure and monitor Windows Time/NTP on the host.
 
 ## Build and test
 
@@ -69,7 +79,7 @@ dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --conf
 Create a clean self-contained release:
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Version 1.2.11
+.\scripts\Publish-Release.ps1 -Version 1.3.0
 ```
 
 The publisher removes build-path PDBs and runs `scripts\Test-ReleasePrivacy.ps1` before creating the archive. Packaging fails if it finds a database, diagnostics/log artifact, credential-bearing URL, user-profile path, private network address, private key, or common service token.
