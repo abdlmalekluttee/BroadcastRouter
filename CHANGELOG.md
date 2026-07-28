@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.2.11 — 2026-07-28
+
+- Require approximately one second of the advertised video cadence before sparse frames can override verified continuous audio.
+- Retain audio-led mode for the lifetime of a publisher observation so isolated still/black bursts cannot destabilize preview or SDI playout.
+- Added regressions for isolated-frame classification and sticky audio-led readiness.
+
 ## 1.2.10 — 2026-07-28
 
 - Accept audio-led RTSP inputs only after FFprobe counts real audio packets or frames, even when no video frame arrives during the bounded probe window.

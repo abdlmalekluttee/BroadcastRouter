@@ -101,6 +101,7 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
 
         var frameCount = Integer64(video.Value, "nb_read_frames") ?? 0;
         var fps = Rational(Text(video.Value, "avg_frame_rate")) ?? Rational(Text(video.Value, "r_frame_rate"));
+        var sustainedVideo = frameCount > 0 && (!audioReceived || HasSustainedVideo(frameCount, fps));
         var bitRate = Integer64(video.Value, "bit_rate");
         var fieldOrder = Text(video.Value, "field_order");
         var interlaced = fieldOrder switch
@@ -119,13 +120,22 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
             bitRate,
             audio is null ? null : Integer(audio.Value, "sample_rate"),
             audio is null ? null : Integer(audio.Value, "channels"),
-            frameCount > 0,
+            sustainedVideo,
             interlaced);
-        return frameCount > 0
+        return sustainedVideo
             ? new(true, true, media, null, $"Received {frameCount} video frame(s) during validation.")
             : audioReceived
-                ? new(true, false, media, null, $"Received {audioCount} audio packet(s)/frame(s) while video was sparse; continuous black video will be generated for routing.", true)
+                ? new(true, false, media, null, $"Received {audioCount} audio packet(s)/frame(s) while video delivered only {frameCount} frame(s); continuous black video will be generated for routing.", true)
             : new(true, false, media, "NoVideoFrames", "Video metadata was detected but no decoded/read frames were reported.");
+    }
+
+    private static bool HasSustainedVideo(long frameCount, double? framesPerSecond)
+    {
+        // The probe samples two seconds. Require roughly one second of the advertised cadence
+        // before video can override verified continuous audio; an isolated still must not do so.
+        var cadence = Math.Clamp(framesPerSecond.GetValueOrDefault(2), 1, 60);
+        var minimumFrames = Math.Max(2L, (long)Math.Ceiling(cadence));
+        return frameCount >= minimumFrames;
     }
 
     private static long ReadCount(JsonElement stream) => Math.Max(
