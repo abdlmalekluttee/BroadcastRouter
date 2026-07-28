@@ -52,9 +52,11 @@ var tests = new (string Name, Action Body)[]
     ("FFprobe media parsing", FfprobeMediaIsParsed),
     ("FFprobe scan type parsing", FfprobeScanTypeIsParsed),
     ("FFprobe accepts audio-led sparse video", FfprobeAcceptsAudioLedSparseVideo),
+    ("FFprobe ignores isolated video frames over live audio", FfprobeIgnoresIsolatedVideoFrames),
     ("FFprobe accepts audio-only input with packets", FfprobeAcceptsAudioOnlyInput),
     ("FFprobe rejects metadata-only video", FfprobeRequiresReadFrames),
     ("Probe readiness accepts audio and remains fail-closed", ProbeReadinessAcceptsAudioAndRejectsMetadataOnly),
+    ("Probe readiness retains audio-led mode", ProbeReadinessRetainsAudioLedMode),
     ("FFprobe rejects malformed output", FfprobeRejectsMalformedOutput),
     ("Wowza incoming stream parsing", WowzaIncomingStreamsAreParsed),
     ("Renamed Wowza source is pruned", RenamedWowzaSourceIsPruned),
@@ -510,6 +512,20 @@ static void FfprobeAcceptsAudioLedSparseVideo()
     Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(result));
 }
 
+static void FfprobeIgnoresIsolatedVideoFrames()
+{
+    const string json = """
+    {"streams":[
+      {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"30/1","nb_read_frames":"1","field_order":"progressive"},
+      {"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_packets":"96"}
+    ]}
+    """;
+    var result = FfprobeStreamProbe.Parse(json);
+    True(result.Opened && result.AudioReceived && !result.FramesReceived);
+    True(!result.Media!.HasUsableVideo);
+    Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(result));
+}
+
 static void FfprobeAcceptsAudioOnlyInput()
 {
     const string json = """{"streams":[{"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_packets":"80"}]}""";
@@ -535,6 +551,16 @@ static void ProbeReadinessAcceptsAudioAndRejectsMetadataOnly()
     Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(new(true, false, media, null, null, true)));
     Equal(SourceState.UnsupportedMedia, SourceProbeReadinessPolicy.Resolve(new(true, false, media, "NoVideoFrames", null)));
     Equal(SourceState.RtspUnavailable, SourceProbeReadinessPolicy.Resolve(new(false, false, null, "Network", null)));
+}
+
+static void ProbeReadinessRetainsAudioLedMode()
+{
+    var media = new MediaProperties("h264", "aac", 1920, 1080, 30, null, 48_000, 2, true);
+    var current = new StreamProbeResult(true, true, media, null, "Received sustained video.", true);
+    var retained = SourceProbeReadinessPolicy.RetainAudioLedMode(current, previouslyAudioLed: true);
+    True(retained.Opened && retained.AudioReceived && !retained.FramesReceived);
+    True(!retained.Media!.HasUsableVideo);
+    Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(retained));
 }
 
 static void FfprobeRejectsMalformedOutput()

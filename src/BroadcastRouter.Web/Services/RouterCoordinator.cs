@@ -434,9 +434,10 @@ public sealed class RouterCoordinator(
                     wasAudioLedReady = _sources.TryGetValue(source.Identity.Value, out var previous)
                         && previous.State == SourceState.Ready
                         && previous.Media is { HasUsableVideo: false, AudioCodec: not null };
-                var probe = settings.SimulationMode
+                var rawProbe = settings.SimulationMode
                     ? await new SimulationStreamProbe().ProbeAsync(source.RtspUri, cancellationToken)
                     : await new FfprobeStreamProbe(settings.MediaTools.FfprobePath, TimeSpan.FromSeconds(8)).ProbeAsync(source.RtspUri, cancellationToken);
+                var probe = SourceProbeReadinessPolicy.RetainAudioLedMode(rawProbe, wasAudioLedReady);
                 probed = source with
                 {
                     State = SourceProbeReadinessPolicy.Resolve(probe),
