@@ -923,6 +923,7 @@ static void PortStandbyCommandIsBroadcastSafe()
     var graph = start.ArgumentList[start.ArgumentList.IndexOf("-filter_complex") + 1];
     True(graph.Contains("Transmission card", StringComparison.Ordinal));
     True(graph.Contains("TX 1", StringComparison.Ordinal));
+    True(graph.Contains("fontfile='C\\:/Windows/Fonts/arial.ttf'", StringComparison.Ordinal));
     True(graph.Contains("%{localtime\\:%T}", StringComparison.Ordinal));
     True(!graph.Contains("%H", StringComparison.Ordinal));
     True(!start.ArgumentList.Contains("-b:v"));

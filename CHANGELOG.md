@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.3.2 — 2026-07-29
+
+- Use the explicit Windows Arial font file for standby labels and clock rendering, avoiding reliance on a host-level Fontconfig configuration.
+- Extend the standby command regression to require the escaped Windows font path.
+
 ## 1.3.1 — 2026-07-29
 
 - Corrected the standby clock filter expression to use the portable `%T` `HH:MM:SS` format without over-escaped delimiters.
