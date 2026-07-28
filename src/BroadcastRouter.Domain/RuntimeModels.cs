@@ -76,6 +76,20 @@ public sealed record StructuredLogEntry(
     string? SourceId,
     string? CorrelationId);
 
+public sealed record ConfigurationAuditEntry(
+    long Id,
+    DateTimeOffset Timestamp,
+    string EventType,
+    string EntityId,
+    string CardName,
+    string PortName,
+    string PreviousState,
+    string NewState,
+    string Actor,
+    string Reason,
+    string BackendStatus,
+    string? SourceId = null);
+
 public sealed record RouterSnapshot(
     IReadOnlyList<DiscoveredSource> Sources,
     IReadOnlyList<DeckLinkPort> Ports,

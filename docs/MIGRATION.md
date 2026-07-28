@@ -8,4 +8,6 @@
    For an audio-led batch input with absent or sparse pictures, select an audio-enabled preset. BroadcastRouter generates continuous black video and maps the live audio; verify that loss of the audio publisher causes normal route recovery rather than indefinite black output.
 6. After all ports pass soak testing, disable batch-file startup tasks. Retain them offline for rollback until the new system completes the agreed acceptance period.
 
+Version 1.3.3 advances operator settings to schema 6 and adds a monotonic configuration revision plus last-applied metadata. The SQLite audit table is created automatically. Existing settings, output-port selections, identities, aliases, routes, and source inventory remain compatible; no manual migration or restart is required beyond the normal version deployment itself.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

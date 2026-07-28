@@ -83,7 +83,9 @@ public sealed record DeckLinkPort(
     string? TopologicalId = null,
     IReadOnlyList<string>? PreviousStableIds = null,
     string? CardFriendlyName = null,
-    bool IsOutputPort = false);
+    bool IsOutputPort = false,
+    bool? HasReferenceInput = null,
+    bool? ReferenceSignalLocked = null);
 
 public static class DeckLinkDisplayName
 {

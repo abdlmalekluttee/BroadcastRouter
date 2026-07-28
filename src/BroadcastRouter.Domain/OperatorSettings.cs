@@ -2,7 +2,10 @@ namespace BroadcastRouter.Domain;
 
 public sealed class OperatorSettings
 {
-    public int SchemaVersion { get; set; } = 5;
+    public int SchemaVersion { get; set; } = 6;
+    public long ConfigurationRevision { get; set; }
+    public DateTimeOffset? LastAppliedAt { get; set; }
+    public string LastAppliedBy { get; set; } = "";
     public bool SimulationMode { get; set; } = false;
     public MediaToolPaths MediaTools { get; set; } = new();
     public List<WowzaServerProfile> WowzaServers { get; set; } = [];
@@ -14,6 +17,12 @@ public sealed class OperatorSettings
     public RoutingPolicySettings Routing { get; set; } = new();
     public SecuritySettings Security { get; set; } = new();
 }
+
+public sealed record SettingsApplyResult(
+    OperatorSettings Settings,
+    long ConfigurationRevision,
+    DateTimeOffset AppliedAt,
+    string AppliedBy);
 
 public sealed class DeckLinkCardOverride
 {

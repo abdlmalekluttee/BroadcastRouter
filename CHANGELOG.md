@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 1.3.3 — 2026-07-29
+
+- Made output-port designation deterministic across DeckLink rediscovery by retaining owned connectors and deferring identity migration only when unresolved legacy references actually exist.
+- Added optimistic configuration revisions, persist-before-apply semantics, backend-confirmed save timestamps, stale-editor warnings, and a durable configuration audit trail.
+- Apply output-port, routing, preset, label, and standby changes immediately without restarting the application; changed standby settings now replace the running standby process under the existing per-port gate.
+- Run bounded FFprobe checks concurrently and supervise routes before discovery, preventing slow or interrupted publishers from blocking process monitoring and reconciliation.
+- Keep saved preconfigured and manual assignments retrying through temporary stream or DeckLink failures without deleting intent or disabling the output port.
+- Restore sparse/audio-led publishers to decoded video only after two consecutive healthy video probes, avoiding both permanent generated-black output and one-frame mode flapping.
+- Separate DeckLink reference/genlock status from stream availability, expose it per connector, and classify DeckLink initialization, reference, and header failures explicitly in diagnostics.
+- Preserve active connector records through transient hardware enumeration gaps and add regressions for settings concurrency, audit persistence, identity deferral, delayed video, audio-led recovery, and DeckLink failure classification.
+
 ## 1.3.2 — 2026-07-29
 
 - Use the explicit Windows Arial font file for standby labels and clock rendering, avoiding reliance on a host-level Fontconfig configuration.

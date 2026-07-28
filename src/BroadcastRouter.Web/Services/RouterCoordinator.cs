@@ -29,8 +29,12 @@ public sealed class RouterCoordinator(
     private readonly ConcurrentDictionary<string, string> _simulationFaults = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _routeGates = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _portGates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _settingsMutationGate = new(1, 1);
     private readonly Dictionary<string, PortStandbyStatus> _standbys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _standbyRetryAt = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _standbyConfigurationSignatures = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _processDiagnosticSignatures = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _sustainedVideoProbeCounts = new(StringComparer.Ordinal);
     private readonly StartupRouteRecoveryTracker _startupRecovery = new();
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private FfmpegProcessSupervisor? _supervisor;
@@ -43,6 +47,7 @@ public sealed class RouterCoordinator(
     private volatile bool _forceToolValidation = true;
     private DateTimeOffset _lastDiscovery = DateTimeOffset.MinValue;
     private DateTimeOffset _lastToolValidation = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastDeckLinkStatusCheck = DateTimeOffset.MinValue;
     private TimeSpan _lastCpu;
     private DateTimeOffset _lastCpuAt = DateTimeOffset.UtcNow;
 
@@ -56,33 +61,64 @@ public sealed class RouterCoordinator(
         lock (_gate) return Clone(_settings);
     }
 
-    public async Task SaveSettingsAsync(OperatorSettings settings, CancellationToken cancellationToken = default)
+    public async Task<SettingsApplyResult> SaveSettingsAsync(OperatorSettings settings, string actor = "system",
+        CancellationToken cancellationToken = default)
     {
-        foreach (var rule in settings.Rules)
+        var submitted = Clone(settings);
+        await _settingsMutationGate.WaitAsync(cancellationToken);
+        try
         {
-            RoutingRuleEvaluator.ValidatePattern(rule.ServerPattern);
-            RoutingRuleEvaluator.ValidatePattern(rule.ApplicationPattern);
-            RoutingRuleEvaluator.ValidatePattern(rule.InstancePattern);
-            RoutingRuleEvaluator.ValidatePattern(rule.StreamPattern);
+            OperatorSettings current;
+            RuntimeRoute[] dependentRoutes;
+            DeckLinkPort[] currentPorts;
+            lock (_gate)
+            {
+                current = Clone(_settings);
+                dependentRoutes = _routes.Values.Where(route => route.State is not RouteState.Released and not RouteState.Disabled).ToArray();
+                currentPorts = _ports.Values.ToArray();
+            }
+            SettingsConcurrencyPolicy.EnsureCurrent(submitted.ConfigurationRevision, current.ConfigurationRevision);
+            foreach (var rule in submitted.Rules)
+            {
+                RoutingRuleEvaluator.ValidatePattern(rule.ServerPattern);
+                RoutingRuleEvaluator.ValidatePattern(rule.ApplicationPattern);
+                RoutingRuleEvaluator.ValidatePattern(rule.InstancePattern);
+                RoutingRuleEvaluator.ValidatePattern(rule.StreamPattern);
+            }
+            OutputPresetSelection.EnsureReferencesAvailable(submitted.Presets, dependentRoutes.Select(route => route.PresetId));
+            var requestedOutputs = submitted.DeckLinkPortOverrides.Where(value => value.IsOutputPort)
+                .Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var activePorts = dependentRoutes.Where(route => route.PortId is not null)
+                .Select(route => route.PortId!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (activePorts.Any(portId => !requestedOutputs.Contains(portId)))
+                throw new InvalidOperationException("Stop routes on a connector before removing its output-port designation.");
+
+            var appliedAt = DateTimeOffset.UtcNow;
+            SettingsConcurrencyPolicy.MarkApplied(submitted, current.ConfigurationRevision, appliedAt, actor);
+            await store.SaveSettingsAsync(submitted, cancellationToken);
+            var requiresToolValidation = current.SimulationMode != submitted.SimulationMode
+                || !string.Equals(current.MediaTools.FfmpegPath, submitted.MediaTools.FfmpegPath, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(current.MediaTools.FfprobePath, submitted.MediaTools.FfprobePath, StringComparison.OrdinalIgnoreCase);
+            var appliedPorts = ApplyOverrides(currentPorts, submitted.DeckLinkCardOverrides, submitted.DeckLinkPortOverrides);
+            lock (_gate)
+            {
+                _settings = Clone(submitted);
+                _ports.Clear();
+                foreach (var port in appliedPorts) _ports[port.StableId] = port;
+                _forceDiscovery = true;
+                _forceToolValidation |= requiresToolValidation;
+            }
+            await AuditPortConfigurationChangesAsync(current, submitted, currentPorts, actor,
+                "Operator settings save", "Persisted and applied", cancellationToken);
+            await LogAsync("Information", "Settings",
+                $"Configuration revision {submitted.ConfigurationRevision} was saved and applied immediately by {actor} at {appliedAt:O}.",
+                cancellationToken: cancellationToken);
+            if (!requiresToolValidation)
+                await ReconcilePortStandbysAsync(cancellationToken);
+            Publish($"Configuration {submitted.ConfigurationRevision} applied");
+            return new(Clone(submitted), submitted.ConfigurationRevision, appliedAt, submitted.LastAppliedBy);
         }
-        RuntimeRoute[] dependentRoutes;
-        lock (_gate) dependentRoutes = _routes.Values.Where(route => route.State is not RouteState.Released and not RouteState.Disabled).ToArray();
-        OutputPresetSelection.EnsureReferencesAvailable(settings.Presets, dependentRoutes.Select(route => route.PresetId));
-        var requestedOutputs = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort)
-            .Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var activePorts = dependentRoutes.Where(route => route.PortId is not null)
-            .Select(route => route.PortId!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        if (activePorts.Any(portId => !requestedOutputs.Contains(portId)))
-            throw new InvalidOperationException("Stop routes on a connector before removing its output-port designation.");
-        await store.SaveSettingsAsync(settings, cancellationToken);
-        lock (_gate)
-        {
-            _settings = Clone(settings);
-            _forceDiscovery = true;
-            _forceToolValidation = true;
-        }
-        await LogAsync("Information", "Settings", "Operator settings saved and queued for reconciliation.", cancellationToken: cancellationToken);
-        Publish("Settings updated");
+        finally { _settingsMutationGate.Release(); }
     }
 
     public async Task SetWowzaPasswordAsync(WowzaServerProfile server, string plaintext, CancellationToken cancellationToken = default)
@@ -107,9 +143,12 @@ public sealed class RouterCoordinator(
     public async Task<IReadOnlyList<StructuredLogEntry>> ReadLogsAsync(string? search, int limit = 500, CancellationToken cancellationToken = default) =>
         await store.ReadLogsAsync(search, limit, cancellationToken);
 
+    public async Task<IReadOnlyList<ConfigurationAuditEntry>> ReadConfigurationAuditAsync(int limit = 1000,
+        CancellationToken cancellationToken = default) => await store.ReadConfigurationAuditAsync(limit, cancellationToken);
+
     internal async Task CommandAsync(string action, string? sourceId = null, string? portId = null, string? presetId = null,
         AssignmentMode requestedMode = AssignmentMode.Manual, bool reserveWhileOffline = true, bool allowTemporaryUse = false,
-        CancellationToken cancellationToken = default)
+        string actor = "system", CancellationToken cancellationToken = default)
     {
         action = action.Trim().ToLowerInvariant();
         if (action == "emergency-stop")
@@ -154,12 +193,12 @@ public sealed class RouterCoordinator(
         {
             case "start":
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
-                await SaveDesiredRouteAsync(sourceId, portId, presetId, requestedMode, reserveWhileOffline, allowTemporaryUse, cancellationToken);
+                await SaveDesiredRouteAsync(sourceId, portId, presetId, requestedMode, reserveWhileOffline, allowTemporaryUse, actor, cancellationToken);
                 break;
             case "preconfigure":
             case "save-assignment":
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
-                await SaveDesiredRouteAsync(sourceId, portId, presetId, requestedMode, reserveWhileOffline, allowTemporaryUse, cancellationToken);
+                await SaveDesiredRouteAsync(sourceId, portId, presetId, requestedMode, reserveWhileOffline, allowTemporaryUse, actor, cancellationToken);
                 break;
             case "restore":
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
@@ -171,7 +210,7 @@ public sealed class RouterCoordinator(
                 await StopRouteAsync(sourceId, forceRelease: false, cancellationToken);
                 break;
             case "remove-assignment":
-                await RemoveDesiredRouteAsync(sourceId, cancellationToken);
+                await RemoveDesiredRouteAsync(sourceId, actor, cancellationToken);
                 break;
             case "restart":
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
@@ -183,7 +222,7 @@ public sealed class RouterCoordinator(
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
                 ValidateRequestedPreset(presetId);
                 await SaveDesiredRouteAsync(sourceId, portId, presetId, AssignmentMode.Manual,
-                    reserveWhileOffline: true, allowTemporaryUse: false, cancellationToken);
+                    reserveWhileOffline: true, allowTemporaryUse: false, actor, cancellationToken);
                 break;
             case "reprobe":
                 lock (_gate)
@@ -266,16 +305,18 @@ public sealed class RouterCoordinator(
                 _startupRecovery.Track(migrated.SourceId);
         }
         await LogAsync("Information", "Host", "BroadcastRouter server started; persisted routes will be reconciled.", cancellationToken: stoppingToken);
+        await store.WriteConfigurationAuditAsync(new(0, DateTimeOffset.UtcNow, "ServiceRestart", "HOST", "", "",
+            "Stopped", "Running", "system", "BroadcastRouter host startup", "Configuration loaded from SQLite"), stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 await RefreshToolsAndPortsAsync(stoppingToken);
-                await DiscoverAndProbeAsync(stoppingToken);
                 await MonitorProcessesAsync(stoppingToken);
                 await ReconcileRoutesAsync(stoppingToken);
                 await ReconcilePortStandbysAsync(stoppingToken);
+                await DiscoverAndProbeAsync(stoppingToken);
                 Publish("Running");
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
@@ -298,6 +339,8 @@ public sealed class RouterCoordinator(
     private async Task RefreshToolsAndPortsAsync(CancellationToken cancellationToken)
     {
         var settings = GetSettings();
+        DeckLinkPort[] previousPorts;
+        lock (_gate) previousPorts = _ports.Values.ToArray();
         if (settings.SimulationMode)
         {
             _validation = new(ToolValidationState.Valid, "simulation-ffmpeg 1.0", "simulation-ffprobe 1.0", true, true, 4,
@@ -326,12 +369,29 @@ public sealed class RouterCoordinator(
         var aliases = DeckLinkIdentityMigration.BuildAliasMap(rawPorts);
         var liveOwnershipExists = _reservations.Snapshot().Count > 0
             || (_supervisor?.Snapshot().Any(process => process.Running) ?? false);
-        if (aliases.Count > 0 && liveOwnershipExists)
+        var legacyReferencesExist = DeckLinkIdentityMigration.HasLegacyReferences(settings, RoutesCopy(), aliases);
+        if (aliases.Count > 0 && liveOwnershipExists && legacyReferencesExist)
         {
             rawPorts = DeckLinkIdentityMigration.DeferUntilRestart(rawPorts);
             aliases = DeckLinkIdentityMigration.BuildAliasMap(rawPorts);
             await LogAsync("Warning", "DeckLinkIdentity",
                 "Persistent DeckLink IDs were detected while output ownership was active; migration is deferred until the next controlled host restart.",
+                cancellationToken: cancellationToken);
+        }
+        string[] standbyOwnedPortIds;
+        lock (_gate) standbyOwnedPortIds = _standbys
+            .Where(value => value.Value.State is PortStandbyState.Starting or PortStandbyState.Running or PortStandbyState.Live)
+            .Select(value => value.Key).ToArray();
+        var ownedPortIds = _reservations.Snapshot().Select(value => value.PortId)
+            .Concat(standbyOwnedPortIds)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var discoveredIds = rawPorts.Select(port => port.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var retainedOwnedPorts = previousPorts.Where(port => ownedPortIds.Contains(port.StableId) && !discoveredIds.Contains(port.StableId)).ToArray();
+        if (retainedOwnedPorts.Length > 0)
+        {
+            rawPorts = rawPorts.Concat(retainedOwnedPorts).ToArray();
+            await LogAsync("Warning", "DeckLinkDiscovery",
+                $"A transient rescan omitted {retainedOwnedPorts.Length} connector(s) with active ownership; their prior identities were retained and no route or standby was released.",
                 cancellationToken: cancellationToken);
         }
         if (aliases.Count > 0)
@@ -345,6 +405,7 @@ public sealed class RouterCoordinator(
             foreach (var port in ports) _ports[port.StableId] = port;
         }
         foreach (var port in ports) await store.UpsertPortAsync(port, cancellationToken);
+        await AuditDeviceRediscoveryAsync(previousPorts, ports, cancellationToken);
         await LogAsync(_validation.CanStartHardwareRoutes ? "Information" : "Error", "MediaTools",
             _validation.CanStartHardwareRoutes ? $"Validation passed; {ports.Count} DeckLink output(s) available." : "Validation failed; hardware routes are blocked.", cancellationToken: cancellationToken);
     }
@@ -355,13 +416,32 @@ public sealed class RouterCoordinator(
         IReadOnlyDictionary<string, string> aliases,
         CancellationToken cancellationToken)
     {
-        if (!DeckLinkIdentityMigration.MigrateSettings(settings, aliases, ports)) return settings;
-        await store.SaveSettingsAsync(settings, cancellationToken);
-        lock (_gate) _settings = Clone(settings);
-        await LogAsync("Information", "DeckLinkIdentity",
-            $"Migrated saved DeckLink references to {ports.Count(port => port.PersistentId is not null)} persistent hardware ID(s).",
-            cancellationToken: cancellationToken);
-        return settings;
+        await _settingsMutationGate.WaitAsync(cancellationToken);
+        try
+        {
+            var current = GetSettings();
+            var previous = Clone(current);
+            if (!DeckLinkIdentityMigration.MigrateSettings(current, aliases, ports)) return current;
+            var appliedAt = DateTimeOffset.UtcNow;
+            SettingsConcurrencyPolicy.MarkApplied(current, previous.ConfigurationRevision, appliedAt, "system:DeckLinkIdentity");
+            await store.SaveSettingsAsync(current, cancellationToken);
+            lock (_gate) _settings = Clone(current);
+            foreach (var alias in aliases.Where(alias => previous.DeckLinkPortOverrides.Any(value =>
+                         value.StableId.Equals(alias.Key, StringComparison.OrdinalIgnoreCase))))
+            {
+                var migratedPort = ports.FirstOrDefault(port => port.StableId.Equals(alias.Value, StringComparison.OrdinalIgnoreCase));
+                await store.WriteConfigurationAuditAsync(new(0, appliedAt, "IdentityMigration", alias.Value,
+                    migratedPort is null ? "" : DeckLinkDisplayName.Card(migratedPort),
+                    migratedPort is null ? "" : DeckLinkDisplayName.Connector(migratedPort),
+                    alias.Key, alias.Value, "system", "Persistent DeckLink identity migration",
+                    $"Persisted in configuration revision {current.ConfigurationRevision}"), cancellationToken);
+            }
+            await LogAsync("Information", "DeckLinkIdentity",
+                $"Migrated saved DeckLink references to {ports.Count(port => port.PersistentId is not null)} persistent hardware ID(s) in configuration revision {current.ConfigurationRevision}.",
+                cancellationToken: cancellationToken);
+            return current;
+        }
+        finally { _settingsMutationGate.Release(); }
     }
 
     private async Task MigrateRoutePortIdsAsync(
@@ -493,33 +573,30 @@ public sealed class RouterCoordinator(
                 _servers.Remove(staleServerId);
         }
 
-        foreach (var source in observations)
+        using var probeConcurrency = new SemaphoreSlim(8, 8);
+        var probeTasks = observations.Select(async source =>
         {
-            if (source.State is SourceState.PublisherDisconnected or SourceState.RtspUnavailable or SourceState.Disabled)
-                lock (_gate) _sourceMissingSince.TryAdd(source.Identity.Value, DateTimeOffset.UtcNow);
+            await probeConcurrency.WaitAsync(cancellationToken);
+            try { return await ProbeObservationAsync(source, settings, cancellationToken); }
+            finally { probeConcurrency.Release(); }
+        }).ToArray();
+        var probeOutcomes = await Task.WhenAll(probeTasks);
+        foreach (var outcome in probeOutcomes)
+        {
+            var probed = outcome.Source;
+            if (probed.State is SourceState.PublisherDisconnected or SourceState.RtspUnavailable or SourceState.Disabled)
+                lock (_gate) _sourceMissingSince.TryAdd(probed.Identity.Value, DateTimeOffset.UtcNow);
             else
-                lock (_gate) _sourceMissingSince.Remove(source.Identity.Value);
-            var probed = source;
-            if (source.Media is null && source.State is not SourceState.PublisherDisconnected and not SourceState.Disabled)
+                lock (_gate) _sourceMissingSince.Remove(probed.Identity.Value);
+            if (outcome.Probe is { } probe)
             {
-                bool wasAudioLedReady;
-                lock (_gate)
-                    wasAudioLedReady = _sources.TryGetValue(source.Identity.Value, out var previous)
-                        && previous.State == SourceState.Ready
-                        && previous.Media is { HasUsableVideo: false, AudioCodec: not null };
-                var rawProbe = settings.SimulationMode
-                    ? await new SimulationStreamProbe().ProbeAsync(source.RtspUri, cancellationToken)
-                    : await new FfprobeStreamProbe(settings.MediaTools.FfprobePath, TimeSpan.FromSeconds(8)).ProbeAsync(source.RtspUri, cancellationToken);
-                var probe = SourceProbeReadinessPolicy.RetainAudioLedMode(rawProbe, wasAudioLedReady);
-                probed = source with
-                {
-                    State = SourceProbeReadinessPolicy.Resolve(probe),
-                    Media = probe.Media
-                };
                 if (probed.State != SourceState.Ready)
-                    await LogAsync("Warning", "Probe", $"Probe failed: {probe.FailureCategory}: {probe.Detail}", source.Identity.Value, cancellationToken: cancellationToken);
-                else if (probe.AudioReceived && !probe.FramesReceived && !wasAudioLedReady)
-                    await LogAsync("Information", "Probe", $"Audio-led source accepted: {probe.Detail}", source.Identity.Value, cancellationToken: cancellationToken);
+                    await LogAsync("Warning", "Probe", $"Probe failed: {probe.FailureCategory}: {probe.Detail}", probed.Identity.Value, cancellationToken: cancellationToken);
+                else if (probe.AudioReceived && !probe.FramesReceived && !outcome.WasAudioLedReady)
+                    await LogAsync("Information", "Probe", $"Audio-led source accepted: {probe.Detail}", probed.Identity.Value, cancellationToken: cancellationToken);
+                else if (probe.FramesReceived && outcome.WasAudioLedReady)
+                    await LogAsync("Information", "Probe", "Sustained decoded video was confirmed twice; live video playout is restored from audio-led black mode.",
+                        probed.Identity.Value, cancellationToken: cancellationToken);
             }
             lock (_gate)
             {
@@ -544,6 +621,43 @@ public sealed class RouterCoordinator(
             lock (_gate) _servers["SIM-WOWZA"] = new("SIM-WOWZA", "Simulated Wowza", true, true, observations.Count, "Simulation API healthy.", DateTimeOffset.UtcNow);
     }
 
+    private async Task<ProbeOutcome> ProbeObservationAsync(DiscoveredSource source, OperatorSettings settings,
+        CancellationToken cancellationToken)
+    {
+        if (source.Media is not null || source.State is SourceState.PublisherDisconnected or SourceState.Disabled)
+            return new(source, null, false);
+        bool wasAudioLedReady;
+        lock (_gate)
+            wasAudioLedReady = _sources.TryGetValue(source.Identity.Value, out var previous)
+                && previous.State == SourceState.Ready
+                && previous.Media is { HasUsableVideo: false, AudioCodec: not null };
+        var rawProbe = settings.SimulationMode
+            ? await new SimulationStreamProbe().ProbeAsync(source.RtspUri, cancellationToken)
+            : await new FfprobeStreamProbe(settings.MediaTools.FfprobePath, TimeSpan.FromSeconds(8)).ProbeAsync(source.RtspUri, cancellationToken);
+        var probe = rawProbe;
+        if (wasAudioLedReady)
+        {
+            lock (_gate)
+            {
+                if (rawProbe.FramesReceived)
+                {
+                    var count = _sustainedVideoProbeCounts.GetValueOrDefault(source.Identity.Value) + 1;
+                    _sustainedVideoProbeCounts[source.Identity.Value] = count;
+                    if (!SourceProbeReadinessPolicy.ShouldRestoreVideo(count))
+                        probe = SourceProbeReadinessPolicy.RetainAudioLedMode(rawProbe, true);
+                    else _sustainedVideoProbeCounts.Remove(source.Identity.Value);
+                }
+                else
+                {
+                    _sustainedVideoProbeCounts.Remove(source.Identity.Value);
+                    probe = SourceProbeReadinessPolicy.RetainAudioLedMode(rawProbe, true);
+                }
+            }
+        }
+        else lock (_gate) _sustainedVideoProbeCounts.Remove(source.Identity.Value);
+        return new(source with { State = SourceProbeReadinessPolicy.Resolve(probe), Media = probe.Media }, probe, wasAudioLedReady);
+    }
+
     private async Task ReconcileRoutesAsync(CancellationToken cancellationToken)
     {
         if (_emergencyStopped) return;
@@ -566,7 +680,8 @@ public sealed class RouterCoordinator(
             var decision = RoutingRuleEvaluator.Evaluate(source, settings.Rules, defaultPreset);
             if (!string.IsNullOrWhiteSpace(decision.FixedPortId))
                 await SaveDesiredRouteAsync(source.Identity.Value, decision.FixedPortId, decision.PresetId,
-                    AssignmentMode.Preconfigured, reserveWhileOffline: true, allowTemporaryUse: false, cancellationToken);
+                    AssignmentMode.Preconfigured, reserveWhileOffline: true, allowTemporaryUse: false,
+                    "system:routing-rule", cancellationToken);
         }
 
         if (!settings.Routing.AutomaticRoutingEnabled) return;
@@ -592,7 +707,7 @@ public sealed class RouterCoordinator(
     }
 
     private async Task SaveDesiredRouteAsync(string sourceId, string? portId, string? presetId, AssignmentMode mode,
-        bool reserveWhileOffline, bool allowTemporaryUse, CancellationToken cancellationToken)
+        bool reserveWhileOffline, bool allowTemporaryUse, string actor, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(portId))
             throw new InvalidOperationException("Select a port marked as an output port before saving the routing entry.");
@@ -631,6 +746,9 @@ public sealed class RouterCoordinator(
             ReserveWhileOffline: reserveWhileOffline, AllowTemporaryUse: allowTemporaryUse);
         await ReplaceRouteAsync(route, previous?.State, cancellationToken);
         await ReconcileSavedRouteAsync(sourceId, cancellationToken);
+        await store.WriteConfigurationAuditAsync(new(0, DateTimeOffset.UtcNow, "RoutingAssignment", port.StableId,
+            DeckLinkDisplayName.Card(port), DeckLinkDisplayName.Connector(port), DescribeRouteAssignment(previous),
+            DescribeRouteAssignment(route), actor, $"{mode} routing assignment saved", "Persisted and applied", sourceId), cancellationToken);
     }
 
     private async Task ReconcileSavedRouteAsync(string sourceId, CancellationToken cancellationToken)
@@ -754,13 +872,13 @@ public sealed class RouterCoordinator(
         finally { routeGate.Release(); }
     }
 
-    private async Task RemoveDesiredRouteAsync(string sourceId, CancellationToken cancellationToken)
+    private async Task RemoveDesiredRouteAsync(string sourceId, string actor, CancellationToken cancellationToken)
     {
         await StopRouteAsync(sourceId, forceRelease: true, cancellationToken, preserveDesiredAssignment: false);
         RuntimeRoute? route;
         lock (_gate) _routes.TryGetValue(sourceId, out route);
         if (route is null) return;
-        await ReplaceRouteAsync(route with
+        var removed = route with
         {
             AssignmentMode = AssignmentMode.None,
             DesiredPortId = null,
@@ -768,7 +886,11 @@ public sealed class RouterCoordinator(
             ReserveWhileOffline = false,
             AllowTemporaryUse = false,
             UpdatedAt = DateTimeOffset.UtcNow
-        }, route.State, cancellationToken);
+        };
+        await ReplaceRouteAsync(removed, route.State, cancellationToken);
+        await store.WriteConfigurationAuditAsync(new(0, DateTimeOffset.UtcNow, "RoutingAssignment", route.DesiredPortId ?? "",
+            "", route.DesiredPortName ?? "", DescribeRouteAssignment(route), DescribeRouteAssignment(removed), actor,
+            "Saved routing assignment removed", "Persisted and applied", sourceId), cancellationToken);
     }
 
     private async Task YieldSavedRouteAsync(RuntimeRoute route, CancellationToken cancellationToken)
@@ -936,6 +1058,7 @@ public sealed class RouterCoordinator(
                     "Select a valid standby output preset.");
                 continue;
             }
+            var desiredSignature = StandbyConfigurationSignature(port, preset, configuration);
             if (settings.SimulationMode)
             {
                 SetStandbyStatus(port.StableId, PortStandbyState.Running, null, "Simulated standby screen", null);
@@ -954,8 +1077,17 @@ public sealed class RouterCoordinator(
             var process = _supervisor?.Snapshot().FirstOrDefault(value => value.Source == owner && value.Running);
             if (process is not null)
             {
-                SetStandbyStatus(port.StableId, PortStandbyState.Running, process.ProcessId, "Standby screen on air", null);
-                continue;
+                string? appliedSignature;
+                lock (_gate) _standbyConfigurationSignatures.TryGetValue(port.StableId, out appliedSignature);
+                if (string.Equals(appliedSignature, desiredSignature, StringComparison.Ordinal))
+                {
+                    SetStandbyStatus(port.StableId, PortStandbyState.Running, process.ProcessId, "Standby screen on air", null);
+                    continue;
+                }
+                await StopPortStandbyAsync(port.StableId, cancellationToken);
+                await LogAsync("Information", "PortStandby",
+                    $"Standby configuration changed for {DeckLinkDisplayName.Full(port)}; the standby process is being replaced immediately.",
+                    cancellationToken: cancellationToken);
             }
 
             var portGate = _portGates.GetOrAdd(port.StableId, static _ => new SemaphoreSlim(1, 1));
@@ -976,6 +1108,7 @@ public sealed class RouterCoordinator(
                         cancellationToken);
                     var started = _supervisor.Snapshot().FirstOrDefault(value => value.Source == owner && value.Running);
                     _standbyRetryAt.Remove(port.StableId);
+                    lock (_gate) _standbyConfigurationSignatures[port.StableId] = desiredSignature;
                     SetStandbyStatus(port.StableId, PortStandbyState.Running, started?.ProcessId, "Standby screen on air", null);
                 }
                 catch (Exception ex)
@@ -996,7 +1129,11 @@ public sealed class RouterCoordinator(
     {
         if (_supervisor is not null)
             await _supervisor.StopAsync(StandbyIdentity(portId), cancellationToken);
-        lock (_gate) _standbys.Remove(portId);
+        lock (_gate)
+        {
+            _standbys.Remove(portId);
+            _standbyConfigurationSignatures.Remove(portId);
+        }
     }
 
     private async Task StopAllPortStandbysAsync(CancellationToken cancellationToken)
@@ -1018,8 +1155,28 @@ public sealed class RouterCoordinator(
         return new SourceIdentity("SYSTEM", "port-standby", "_definst_", hash);
     }
 
+    private static string StandbyConfigurationSignature(DeckLinkPort port, OutputPresetProfile preset,
+        DeckLinkPortOverride configuration)
+    {
+        var value = JsonSerializer.Serialize(new
+        {
+            port.StableId,
+            port.FfmpegName,
+            port.FriendlyName,
+            port.CardFriendlyName,
+            Preset = preset,
+            configuration.StandbyEnabled,
+            configuration.StandbyPattern,
+            configuration.StandbyLogoPath,
+            configuration.StandbyLabel,
+            configuration.StandbyShowClock
+        });
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
     private async Task MonitorProcessesAsync(CancellationToken cancellationToken)
     {
+        await RefreshDeckLinkReferenceStatusAsync(cancellationToken);
         if (_settings.SimulationMode)
         {
             foreach (var route in RoutesCopy().Where(x => x.State == RouteState.Running))
@@ -1068,6 +1225,29 @@ public sealed class RouterCoordinator(
             else if (process.Running)
             {
                 var state = route.State == RouteState.Fallback ? RouteState.Fallback : progress?.Frame > 0 ? RouteState.Running : RouteState.Starting;
+                var processDetail = string.Join(" | ", process.RecentErrors.TakeLast(5));
+                var outputCategory = FfmpegErrorClassifier.Classify(null, processDetail);
+                var outputDiagnostic = outputCategory is FfmpegFailureCategory.DeckLinkInitialization
+                    or FfmpegFailureCategory.DeckLinkReference or FfmpegFailureCategory.DeckLinkBusy
+                    or FfmpegFailureCategory.DeckLinkUnavailable or FfmpegFailureCategory.DeckLinkFormat;
+                if (outputDiagnostic)
+                {
+                    var signature = $"{process.ProcessId}:{outputCategory}:{processDetail}";
+                    var shouldLog = false;
+                    lock (_gate)
+                    {
+                        if (!_processDiagnosticSignatures.TryGetValue(route.SourceId, out var previousSignature)
+                            || !previousSignature.Equals(signature, StringComparison.Ordinal))
+                        {
+                            _processDiagnosticSignatures[route.SourceId] = signature;
+                            shouldLog = true;
+                        }
+                    }
+                    if (shouldLog)
+                        await LogAsync("Warning", "DeckLinkOutput",
+                            $"{outputCategory}: FFmpeg process {process.ProcessId} reported an output-path warning while processing frames. {processDetail}",
+                            route.SourceId, cancellationToken: cancellationToken);
+                }
                 await ReplaceRouteAsync(route with
                 {
                     State = state,
@@ -1078,6 +1258,10 @@ public sealed class RouterCoordinator(
                     DuplicatedFrames = progress?.DuplicatedFrames ?? 0,
                     RestartCount = state == RouteState.Running ? 0 : route.RestartCount,
                     StartedAt = process.StartedAt,
+                    FailureCategory = outputDiagnostic ? outputCategory.ToString() :
+                        route.FailureCategory?.StartsWith("DeckLink", StringComparison.Ordinal) == true ? null : route.FailureCategory,
+                    FailureMessage = outputDiagnostic ? processDetail :
+                        route.FailureCategory?.StartsWith("DeckLink", StringComparison.Ordinal) == true ? null : route.FailureMessage,
                     UpdatedAt = DateTimeOffset.UtcNow
                 }, route.State, cancellationToken, persistHistory: state != route.State);
             }
@@ -1095,7 +1279,8 @@ public sealed class RouterCoordinator(
     private async Task ScheduleRetryAsync(RuntimeRoute route, string category, string detail, CancellationToken cancellationToken)
     {
         var count = route.RestartCount + 1;
-        if (RetryLimitPolicy.IsExhausted(count, _settings.Routing.MaxRetryAttempts))
+        if (!DesiredRoutePolicy.HasSavedAssignment(route)
+            && RetryLimitPolicy.IsExhausted(count, _settings.Routing.MaxRetryAttempts))
         {
             var terminal = route with
             {
@@ -1363,6 +1548,109 @@ public sealed class RouterCoordinator(
         _ = hub.Clients.All.SendAsync("SnapshotChanged", snapshot.UpdatedAt);
     }
 
+    private async Task AuditPortConfigurationChangesAsync(OperatorSettings previous, OperatorSettings current,
+        IReadOnlyList<DeckLinkPort> knownPorts, string actor, string reason, string backendStatus,
+        CancellationToken cancellationToken)
+    {
+        var previousById = previous.DeckLinkPortOverrides.ToDictionary(value => value.StableId, StringComparer.OrdinalIgnoreCase);
+        var currentById = current.DeckLinkPortOverrides.ToDictionary(value => value.StableId, StringComparer.OrdinalIgnoreCase);
+        var portsById = knownPorts.ToDictionary(value => value.StableId, StringComparer.OrdinalIgnoreCase);
+        foreach (var portId in previousById.Keys.Union(currentById.Keys, StringComparer.OrdinalIgnoreCase))
+        {
+            previousById.TryGetValue(portId, out var oldValue);
+            currentById.TryGetValue(portId, out var newValue);
+            var oldState = DescribePortOverride(oldValue);
+            var newState = DescribePortOverride(newValue);
+            if (oldState.Equals(newState, StringComparison.Ordinal)) continue;
+            portsById.TryGetValue(portId, out var port);
+            var cardName = port is null ? "" : DeckLinkDisplayName.Card(port);
+            var portName = newValue?.FriendlyName ?? oldValue?.FriendlyName ?? (port is null ? "" : DeckLinkDisplayName.Connector(port));
+            await store.WriteConfigurationAuditAsync(new(0, DateTimeOffset.UtcNow, "OutputPortConfiguration", portId,
+                cardName, portName, oldState, newState, actor, reason, backendStatus), cancellationToken);
+            await LogAsync("Information", "ConfigurationAudit",
+                $"Output connector {DeckLinkDisplayName.ShortIdentity(portId)} changed by {actor}: {oldState} -> {newState}. {backendStatus}.",
+                cancellationToken: cancellationToken);
+        }
+    }
+
+    private async Task RefreshDeckLinkReferenceStatusAsync(CancellationToken cancellationToken)
+    {
+        if (_settings.SimulationMode || DateTimeOffset.UtcNow - _lastDeckLinkStatusCheck < TimeSpan.FromSeconds(2)) return;
+        _lastDeckLinkStatusCheck = DateTimeOffset.UtcNow;
+        IReadOnlyList<DeckLinkHardwareIdentity> hardware;
+        try { hardware = DeckLinkSdkIdentityEnumerator.Enumerate(); }
+        catch (Exception ex)
+        {
+            await LogAsync("Warning", "DeckLinkReference", $"DeckLink reference-status query failed: {ex.Message}",
+                cancellationToken: cancellationToken);
+            return;
+        }
+        var byHandle = hardware.Where(value => !string.IsNullOrWhiteSpace(value.DeviceHandle))
+            .GroupBy(value => value.DeviceHandle, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(group => group.Key, group => group.Single(), StringComparer.OrdinalIgnoreCase);
+        var changes = new List<(DeckLinkPort Previous, DeckLinkPort Current)>();
+        lock (_gate)
+        {
+            foreach (var pair in _ports.ToArray())
+            {
+                var port = pair.Value;
+                if (port.DeviceHandle is null || !byHandle.TryGetValue(port.DeviceHandle, out var status)) continue;
+                var updated = port with
+                {
+                    HasReferenceInput = status.HasReferenceInput,
+                    ReferenceSignalLocked = status.ReferenceSignalLocked
+                };
+                _ports[pair.Key] = updated;
+                if (port.ReferenceSignalLocked != updated.ReferenceSignalLocked
+                    || port.HasReferenceInput != updated.HasReferenceInput)
+                    changes.Add((port, updated));
+            }
+        }
+        foreach (var change in changes)
+        {
+            var level = change.Current.HasReferenceInput == true && change.Current.ReferenceSignalLocked == false
+                ? "Warning" : "Information";
+            var state = change.Current.HasReferenceInput switch
+            {
+                false => "not supported by this hardware",
+                true when change.Current.ReferenceSignalLocked == true => "locked",
+                true when change.Current.ReferenceSignalLocked == false => "unlocked; output remains in free-run and routing will keep retrying independently",
+                _ => "status unavailable"
+            };
+            await LogAsync(level, "DeckLinkReference",
+                $"Reference status for {DeckLinkDisplayName.Full(change.Current)} is {state}.", cancellationToken: cancellationToken);
+        }
+    }
+
+    private async Task AuditDeviceRediscoveryAsync(IReadOnlyList<DeckLinkPort> previous,
+        IReadOnlyList<DeckLinkPort> current, CancellationToken cancellationToken)
+    {
+        if (previous.Count == 0) return;
+        var previousIds = previous.Select(port => port.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var currentIds = current.Select(port => port.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var added = currentIds.Except(previousIds, StringComparer.OrdinalIgnoreCase).Count();
+        var removed = previousIds.Except(currentIds, StringComparer.OrdinalIgnoreCase).Count();
+        await store.WriteConfigurationAuditAsync(new(0, DateTimeOffset.UtcNow, "DeviceRediscovery", "DECKLINK",
+            "DeckLink", "", $"{previous.Count} connector(s)", $"{current.Count} connector(s)", "system",
+            "Scheduled or operator-requested hardware enumeration",
+            added == 0 && removed == 0 ? "Identity set unchanged" : $"Added {added}; removed {removed}"), cancellationToken);
+        if (added > 0 || removed > 0)
+            await LogAsync("Warning", "DeckLinkDiscovery",
+                $"DeckLink identity set changed during rediscovery: {added} added, {removed} removed. Persisted output-port configuration was not modified.",
+                cancellationToken: cancellationToken);
+    }
+
+    private static string DescribePortOverride(DeckLinkPortOverride? value) => value is null
+        ? "not configured"
+        : $"output={value.IsOutputPort}; excluded={value.Reserved}; group={value.PortGroup}; standby={value.StandbyEnabled}; " +
+          $"preset={value.StandbyPresetId}; pattern={value.StandbyPattern}; label={value.StandbyLabel}; clock={value.StandbyShowClock}";
+
+    private static string DescribeRouteAssignment(RuntimeRoute? route) => route is null
+        ? "not assigned"
+        : $"mode={route.AssignmentMode}; desiredPort={route.DesiredPortId ?? "none"}; preset={route.PresetId}; " +
+          $"reserveOffline={route.ReserveWhileOffline}; temporaryUse={route.AllowTemporaryUse}; locked={route.Locked}";
+
     private async Task LogAsync(string level, string category, string message, string? sourceId = null, string? correlationId = null, CancellationToken cancellationToken = default)
     {
         await store.WriteLogAsync(level, category, message, sourceId, correlationId, cancellationToken);
@@ -1463,4 +1751,6 @@ public sealed class RouterCoordinator(
                 : port with { CardFriendlyName = cardName, IsOutputPort = port.IsOutputPort };
         }).ToArray();
     }
+
+    private sealed record ProbeOutcome(DiscoveredSource Source, StreamProbeResult? Probe, bool WasAudioLedReady);
 }

@@ -123,7 +123,7 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
             sustainedVideo,
             interlaced);
         return sustainedVideo
-            ? new(true, true, media, null, $"Received {frameCount} video frame(s) during validation.")
+            ? new(true, true, media, null, $"Received {frameCount} video frame(s) during validation.", audioReceived)
             : audioReceived
                 ? new(true, false, media, null, $"Received {audioCount} audio packet(s)/frame(s) while video delivered only {frameCount} frame(s); continuous black video will be generated for routing.", true)
             : new(true, false, media, "NoVideoFrames", "Video metadata was detected but no decoded/read frames were reported.");
@@ -131,10 +131,12 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
 
     private static bool HasSustainedVideo(long frameCount, double? framesPerSecond)
     {
-        // The probe samples two seconds. Require roughly one second of the advertised cadence
-        // before video can override verified continuous audio; an isolated still must not do so.
+        // Decoder startup and RTSP keyframe acquisition consume part of the two-second sample.
+        // Five frames (or 20% of the advertised cadence) distinguishes continuous video from
+        // the isolated 0-1 frame keepalives used by audio-led services without misclassifying
+        // a healthy feed merely because its first keyframe arrived late.
         var cadence = Math.Clamp(framesPerSecond.GetValueOrDefault(2), 1, 60);
-        var minimumFrames = Math.Max(2L, (long)Math.Ceiling(cadence));
+        var minimumFrames = Math.Max(2L, (long)Math.Ceiling(cadence * .2));
         return frameCount >= minimumFrames;
     }
 

@@ -196,6 +196,8 @@ var diagnosticsEndpoint = app.MapGet("/diagnostics/package", async (SqliteDataSt
             WriteJson(archive, "runtime-snapshot.json", DiagnosticSanitizer.SanitizeSnapshot(coordinator.Snapshot));
             WriteJson(archive, "sanitized-settings.json", DiagnosticSanitizer.SanitizeSettings(coordinator.GetSettings()));
             WriteJson(archive, "recent-logs.json", DiagnosticSanitizer.SanitizeLogs(await store.ReadLogsAsync(limit: 1000, cancellationToken: cancellationToken)));
+            WriteJson(archive, "configuration-audit.json", DiagnosticSanitizer.SanitizeConfigurationAudit(
+                await store.ReadConfigurationAuditAsync(limit: 1000, cancellationToken: cancellationToken)));
             WriteText(archive, "database-integrity.txt", await store.IntegrityCheckAsync(cancellationToken));
         }
         file.Position = 0;

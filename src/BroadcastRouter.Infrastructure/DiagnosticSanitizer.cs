@@ -22,6 +22,8 @@ public static class DiagnosticSanitizer
             port.IsAvailable,
             port.IsOutputPort,
             port.Reserved,
+            port.HasReferenceInput,
+            port.ReferenceSignalLocked,
             port.IdentityConfidence,
             SupportedModeCount = port.SupportedModes.Count
         }),
@@ -73,6 +75,8 @@ public static class DiagnosticSanitizer
     public static object SanitizeSettings(OperatorSettings settings) => new
     {
         settings.SchemaVersion,
+        settings.ConfigurationRevision,
+        settings.LastAppliedAt,
         settings.SimulationMode,
         WowzaServerCount = settings.WowzaServers.Count,
         EnabledWowzaServerCount = settings.WowzaServers.Count(server => server.Enabled),
@@ -110,6 +114,24 @@ public static class DiagnosticSanitizer
         {
             Message = LogRedactor.RedactForDiagnostics(log.Message),
             SourceId = Opaque(log.SourceId)
+        })
+        .ToArray();
+
+    public static IReadOnlyList<object> SanitizeConfigurationAudit(IEnumerable<ConfigurationAuditEntry> entries) => entries
+        .Select(entry => (object)new
+        {
+            entry.Id,
+            entry.Timestamp,
+            entry.EventType,
+            EntityId = Opaque(entry.EntityId),
+            CardName = Opaque(entry.CardName),
+            PortName = Opaque(entry.PortName),
+            PreviousState = LogRedactor.RedactForDiagnostics(entry.PreviousState),
+            NewState = LogRedactor.RedactForDiagnostics(entry.NewState),
+            entry.Actor,
+            entry.Reason,
+            entry.BackendStatus,
+            SourceId = Opaque(entry.SourceId)
         })
         .ToArray();
 

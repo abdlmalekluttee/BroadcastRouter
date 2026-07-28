@@ -51,14 +51,17 @@ var tests = new (string Name, Action Body)[]
     ("FFmpeg first-progress timeout", FfmpegFirstProgressTimeoutIsDetected),
     ("Windows job kills orphaned media process", WindowsJobKillsOrphanedProcess),
     ("FFmpeg failure classification", FfmpegFailureIsClassified),
+    ("DeckLink output failures are not mislabeled as network", DeckLinkOutputFailureIsClassified),
     ("FFprobe media parsing", FfprobeMediaIsParsed),
     ("FFprobe scan type parsing", FfprobeScanTypeIsParsed),
     ("FFprobe accepts audio-led sparse video", FfprobeAcceptsAudioLedSparseVideo),
+    ("FFprobe accepts delayed but continuous video", FfprobeAcceptsDelayedContinuousVideo),
     ("FFprobe ignores isolated video frames over live audio", FfprobeIgnoresIsolatedVideoFrames),
     ("FFprobe accepts audio-only input with packets", FfprobeAcceptsAudioOnlyInput),
     ("FFprobe rejects metadata-only video", FfprobeRequiresReadFrames),
     ("Probe readiness accepts audio and remains fail-closed", ProbeReadinessAcceptsAudioAndRejectsMetadataOnly),
     ("Probe readiness retains audio-led mode", ProbeReadinessRetainsAudioLedMode),
+    ("Audio-led mode restores after stable video confirmation", ProbeReadinessRestoresStableVideo),
     ("FFprobe rejects malformed output", FfprobeRejectsMalformedOutput),
     ("Wowza incoming stream parsing", WowzaIncomingStreamsAreParsed),
     ("Wowza discovery retains disconnected streams", WowzaDiscoveryRetainsDisconnectedStreams),
@@ -72,6 +75,7 @@ var tests = new (string Name, Action Body)[]
     ("DeckLink persistent hardware identity", DeckLinkPersistentIdentityIsResolved),
     ("DeckLink human identity labels", DeckLinkHumanIdentityLabelsAreStable),
     ("DeckLink identity reference migration", DeckLinkIdentityReferencesAreMigrated),
+    ("DeckLink migration deferral requires legacy references", DeckLinkMigrationDefersOnlyLegacyReferences),
     ("Wowza instance discovery endpoint", WowzaInstanceEndpointIsCorrect),
     ("Common broadcast presets", CommonPresetsAreAvailable),
     ("Output scan selection round trip", OutputScanSelectionRoundTrips),
@@ -82,6 +86,7 @@ var tests = new (string Name, Action Body)[]
     ("Fallback command is uncompressed", FallbackCommandIsSafeAndUncompressed),
     ("Per-port standby command is broadcast safe", PortStandbyCommandIsBroadcastSafe),
     ("SQLite settings persistence", SqliteSettingsPersist),
+    ("Stale settings revisions are rejected", StaleSettingsRevisionIsRejected),
     ("All GUI settings round trip", AllGuiSettingsRoundTrip),
     ("Settings reject invalid GUI values", SettingsRejectInvalidGuiValues),
     ("Settings reject ambiguous DeckLink card names", SettingsRejectAmbiguousDeckLinkCardNames),
@@ -92,6 +97,7 @@ var tests = new (string Name, Action Body)[]
     ("SQLite route restart recovery", SqliteRoutesRestore),
     ("SQLite source inventory survives offline", SqliteSourcesRestore),
     ("SQLite structured log redaction", SqliteLogsAreRedacted),
+    ("SQLite configuration audit persistence", SqliteConfigurationAuditPersists),
     ("SQLite integrity check", SqliteIntegrityIsOk),
     ("Default configuration is production safe", DefaultConfigurationIsProductionSafe)
 };
@@ -519,6 +525,17 @@ static void FfmpegFailureIsClassified()
     Equal(FfmpegFailureCategory.None, FfmpegErrorClassifier.Classify(0, ""));
 }
 
+static void DeckLinkOutputFailureIsClassified()
+{
+    const string headerFailure = "[out#0/decklink] Could not write header: I/O error";
+    Equal(FfmpegFailureCategory.DeckLinkInitialization, FfmpegErrorClassifier.Classify(1, headerFailure));
+    Equal(FfmpegFailureCategory.DeckLinkInitialization,
+        FfmpegErrorClassifier.Classify(0, "[decklink] There are not enough buffered video frames. Video may misbehave!"));
+    Equal(FfmpegFailureCategory.DeckLinkReference,
+        FfmpegErrorClassifier.Classify(null, "[decklink] Genlock reference signal is not locked"));
+    Equal(FfmpegFailureCategory.Network, FfmpegErrorClassifier.Classify(1, "RTSP connection timed out: I/O error"));
+}
+
 static void FfprobeMediaIsParsed()
 {
     const string json = """
@@ -556,6 +573,19 @@ static void FfprobeAcceptsAudioLedSparseVideo()
     Equal(null, result.FailureCategory);
     True(!result.Media!.HasUsableVideo);
     Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(result));
+}
+
+static void FfprobeAcceptsDelayedContinuousVideo()
+{
+    const string json = """
+    {"streams":[
+      {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"25/1","nb_read_frames":"5","field_order":"progressive"},
+      {"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_packets":"90"}
+    ]}
+    """;
+    var result = FfprobeStreamProbe.Parse(json);
+    True(result.Opened && result.FramesReceived && result.AudioReceived);
+    True(result.Media!.HasUsableVideo);
 }
 
 static void FfprobeIgnoresIsolatedVideoFrames()
@@ -607,6 +637,12 @@ static void ProbeReadinessRetainsAudioLedMode()
     True(retained.Opened && retained.AudioReceived && !retained.FramesReceived);
     True(!retained.Media!.HasUsableVideo);
     Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(retained));
+}
+
+static void ProbeReadinessRestoresStableVideo()
+{
+    True(!SourceProbeReadinessPolicy.ShouldRestoreVideo(1));
+    True(SourceProbeReadinessPolicy.ShouldRestoreVideo(2));
 }
 
 static void FfprobeRejectsMalformedOutput()
@@ -738,7 +774,7 @@ static void DeckLinkPersistentIdentityIsResolved()
     };
     var hardware = new[]
     {
-        new DeckLinkHardwareIdentity(sinks[0].FfmpegAddress, sinks[0].DisplayName, "DeckLink Quad 2", 0xa1b2c3d0, 0xa1b2c3d0, 0x00502000, 0),
+        new DeckLinkHardwareIdentity(sinks[0].FfmpegAddress, sinks[0].DisplayName, "DeckLink Quad 2", 0xa1b2c3d0, 0xa1b2c3d0, 0x00502000, 0, true, false),
         new DeckLinkHardwareIdentity(sinks[1].FfmpegAddress, sinks[1].DisplayName, "DeckLink Quad 2", 0xa1b2c3d1, 0xa1b2c3d0, 0x00502002, 1)
     };
 
@@ -747,6 +783,8 @@ static void DeckLinkPersistentIdentityIsResolved()
     Equal("DECKLINK-PERSISTENT-A1B2C3D1", ports[1].StableId);
     Equal("0xA1B2C3D0", ports[0].DeviceGroupId);
     Equal(1, ports[1].SubdeviceIndex);
+    Equal(true, ports[0].HasReferenceInput!.Value);
+    Equal(false, ports[0].ReferenceSignalLocked!.Value);
     Equal(DeckLinkIdentityResolver.LegacyStableId(sinks[0].FfmpegAddress), ports[0].PreviousStableIds!.Single());
     True(ports.All(port => port.IdentityConfidence.Contains("stable across PCIe slots", StringComparison.Ordinal)));
     var reordered = DeckLinkIdentityResolver.Resolve(sinks.Reverse().ToArray(), hardware.Reverse().ToArray());
@@ -815,6 +853,25 @@ static void DeckLinkIdentityReferencesAreMigrated()
         new Dictionary<string, DeckLinkPort>(StringComparer.OrdinalIgnoreCase) { [newId] = port });
     Equal(newId, migrated.PortId);
     Equal("DeckLink card 1 / Studio Output A", migrated.PortName);
+}
+
+static void DeckLinkMigrationDefersOnlyLegacyReferences()
+{
+    var oldId = DeckLinkIdentityResolver.LegacyStableId("80:synthetic:00000000");
+    var newId = "DECKLINK-PERSISTENT-SYNTHETIC";
+    var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [oldId] = newId };
+    var settings = new OperatorSettings
+    {
+        DeckLinkPortOverrides = [new() { StableId = newId, FriendlyName = "Output A", IsOutputPort = true }]
+    };
+    True(!DeckLinkIdentityMigration.HasLegacyReferences(settings, [], aliases));
+    settings.DeckLinkPortOverrides[0].StableId = oldId;
+    True(DeckLinkIdentityMigration.HasLegacyReferences(settings, [], aliases));
+    settings.DeckLinkPortOverrides[0].StableId = newId;
+    var now = DateTimeOffset.UtcNow;
+    var legacyRoute = new RuntimeRoute("S/live/_definst_/one", "One", oldId, "Output A", "1080p25",
+        RouteState.Running, AssignmentMode.Manual, false, 0, 0, 1, 25, 1, 0, 0, now, now, null, null);
+    True(DeckLinkIdentityMigration.HasLegacyReferences(settings, [legacyRoute], aliases));
 }
 
 static void WowzaInstanceEndpointIsCorrect()
@@ -1059,7 +1116,7 @@ static void AllGuiSettingsRoundTrip()
 
         store.SaveSettingsAsync(settings).GetAwaiter().GetResult();
         var loaded = store.LoadSettingsAsync().GetAwaiter().GetResult();
-        Equal(5, loaded.SchemaVersion);
+        Equal(6, loaded.SchemaVersion);
         True(loaded.SimulationMode && !loaded.Routing.AutomaticRoutingEnabled);
         Equal(@"C:\Media\ffplay.exe", loaded.MediaTools.FfplayPath);
         Equal("WOWZA-QA", loaded.WowzaServers.Single().ServerId);
@@ -1109,6 +1166,18 @@ static void SqliteSettingsPersist()
     });
 }
 
+static void StaleSettingsRevisionIsRejected()
+{
+    var settings = new OperatorSettings { ConfigurationRevision = 4 };
+    SettingsConcurrencyPolicy.EnsureCurrent(settings.ConfigurationRevision, 4);
+    Throws<InvalidOperationException>(() => SettingsConcurrencyPolicy.EnsureCurrent(settings.ConfigurationRevision, 5));
+    var appliedAt = DateTimeOffset.UtcNow;
+    SettingsConcurrencyPolicy.MarkApplied(settings, 4, appliedAt, "admin");
+    Equal(5L, settings.ConfigurationRevision);
+    Equal(appliedAt, settings.LastAppliedAt!.Value);
+    Equal("admin", settings.LastAppliedBy);
+}
+
 static void SqliteRoutesRestore()
 {
     WithSqliteStore(store =>
@@ -1154,6 +1223,24 @@ static void SqliteLogsAreRedacted()
         True(!entry.Message.Contains("secret", StringComparison.Ordinal));
         True(!entry.Message.Contains("127.0.0.1", StringComparison.Ordinal));
         True(entry.Message.Contains("***", StringComparison.Ordinal));
+    });
+}
+
+static void SqliteConfigurationAuditPersists()
+{
+    WithSqliteStore(store =>
+    {
+        store.InitializeAsync().GetAwaiter().GetResult();
+        var timestamp = DateTimeOffset.UtcNow;
+        store.WriteConfigurationAuditAsync(new(0, timestamp, "OutputPortConfiguration", "PORT-SYNTHETIC",
+            "Transmission card", "Output 1", "output=False", "output=True", "admin", "Operator settings save",
+            "Persisted and applied", "SOURCE-SYNTHETIC")).GetAwaiter().GetResult();
+        var entry = store.ReadConfigurationAuditAsync().GetAwaiter().GetResult().Single();
+        Equal("OutputPortConfiguration", entry.EventType);
+        Equal("output=False", entry.PreviousState);
+        Equal("output=True", entry.NewState);
+        Equal("admin", entry.Actor);
+        Equal("SOURCE-SYNTHETIC", entry.SourceId);
     });
 }
 
