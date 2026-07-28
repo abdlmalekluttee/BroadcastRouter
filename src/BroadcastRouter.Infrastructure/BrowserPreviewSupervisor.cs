@@ -54,8 +54,13 @@ public static class BrowserPreviewCommandBuilder
             "-analyzeduration", "1000000", "-probesize", "1000000",
             "-i", source.RtspUri.AbsoluteUri);
 
+        var audioLed = hasAudio && source.Media?.HasUsableVideo == false;
+        if (audioLed)
+            Add(producer, "-re", "-f", "lavfi", "-i", "color=c=0x060b12:size=720x404:rate=25");
+
+        var videoInput = audioLed ? "[1:v:0]" : "[0:v:0]";
         var filter = hasAudio
-            ? "[0:v:0]scale=720:404:force_original_aspect_ratio=decrease,pad=720:404:(ow-iw)/2:(oh-ih)/2:color=0x060b12,pad=720:450:0:0:color=0x060b12[canvas];" +
+            ? $"{videoInput}scale=720:404:force_original_aspect_ratio=decrease,pad=720:404:(ow-iw)/2:(oh-ih)/2:color=0x060b12,pad=720:450:0:0:color=0x060b12[canvas];" +
               "[0:a:0]asplit=2[previewaudio][meter];" +
               "[meter]showvolume=w=700:h=36:r=25:b=2:f=0.25:t=1:v=1:dm=1:dmc=orange:o=h:p=0.25:m=p:ds=log[vu];" +
               "[canvas][vu]overlay=10:414:shortest=1[outv];[previewaudio]anull[outa]"
@@ -66,6 +71,7 @@ public static class BrowserPreviewCommandBuilder
             Add(producer, "-map", "[outa]", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2");
         else
             producer.ArgumentList.Add("-an");
+        if (audioLed) producer.ArgumentList.Add("-shortest");
 
         Add(producer,
             "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
@@ -333,9 +339,12 @@ public sealed class BrowserPreviewSupervisor : IAsyncDisposable
             active ? SafeProcessId(session.Producer) : null, active ? session.StreamToken : null, statistics, error);
     }
 
-    private static string VideoSummary(DiscoveredSource source) => source.Media is null
-        ? "Video properties not probed"
-        : $"{source.Media.VideoCodec} · {source.Media.Width}×{source.Media.Height} · {source.Media.FramesPerSecond:0.##} fps";
+    private static string VideoSummary(DiscoveredSource source) => source.Media switch
+    {
+        null => "Video properties not probed",
+        { HasUsableVideo: false, AudioCodec: not null } => "Generated black video · audio-led input",
+        var media => $"{media.VideoCodec} · {media.Width}×{media.Height} · {media.FramesPerSecond:0.##} fps"
+    };
 
     private static string AudioSummary(DiscoveredSource source) => HasAudio(source)
         ? $"{source.Media!.AudioCodec} · {source.Media.AudioSampleRate} Hz · {source.Media.AudioChannels} ch"

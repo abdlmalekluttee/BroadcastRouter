@@ -40,14 +40,33 @@ public static class FfmpegCommandBuilder
         if (preset.LowLatency) Add(start, "-flags", "low_delay");
         Add(start, "-i", source.RtspUri.AbsoluteUri);
 
-        var videoFilter = BuildVideoFilter(preset, source.Media?.Interlaced == true);
-        Add(start,
-            "-map", "0:v:0",
-            "-vf", videoFilter,
-            "-pix_fmt", preset.Mode.PixelFormat);
-        if (preset.IncludeAudio)
-            Add(start, "-map", "0:a:0?", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
-        else Add(start, "-an");
+        var audioLed = source.Media is { HasUsableVideo: false } media
+            && !string.IsNullOrWhiteSpace(media.AudioCodec);
+        if (audioLed)
+        {
+            if (!preset.IncludeAudio)
+                throw new InvalidOperationException("Audio-led sources require an audio-enabled output preset.");
+
+            Add(start, "-re", "-f", "lavfi", "-i", BlackVideoInput(preset));
+            Add(start,
+                "-map", "1:v:0",
+                "-vf", BuildVideoFilter(preset, sourceIsInterlaced: false),
+                "-pix_fmt", preset.Mode.PixelFormat,
+                "-map", "0:a:0",
+                "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le",
+                "-shortest");
+        }
+        else
+        {
+            var videoFilter = BuildVideoFilter(preset, source.Media?.Interlaced == true);
+            Add(start,
+                "-map", "0:v:0",
+                "-vf", videoFilter,
+                "-pix_fmt", preset.Mode.PixelFormat);
+            if (preset.IncludeAudio)
+                Add(start, "-map", "0:a:0?", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
+            else Add(start, "-an");
+        }
         AddDeckLinkOutput(start, options, port.FfmpegName);
         return start;
     }
@@ -135,6 +154,14 @@ public static class FfmpegCommandBuilder
 
         var progressive = sourceIsInterlaced ? "yadif=mode=send_frame:parity=auto:deint=interlaced," : "";
         return $"{progressive}{scale},fps={outputRate}";
+    }
+
+    private static string BlackVideoInput(OutputPreset preset)
+    {
+        var rate = preset.Interlaced
+            ? $"{checked(preset.Mode.FrameRateNumerator * 2)}/{preset.Mode.FrameRateDenominator}"
+            : $"{preset.Mode.FrameRateNumerator}/{preset.Mode.FrameRateDenominator}";
+        return $"color=c=black:size={preset.Mode.Width}x{preset.Mode.Height}:rate={rate}";
     }
 
     private static void ValidateToken(string value, string name)

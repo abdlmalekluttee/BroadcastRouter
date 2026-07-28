@@ -51,7 +51,7 @@
     <tr><td><span class="primary-text">@source.FriendlyName</span><span class="secondary-text">@source.Identity.Value</span></td>
         <td>@source.Identity.ServerId<span class="secondary-text">@source.Identity.Application / @source.Identity.ApplicationInstance</span></td>
         <td class="mono" title="@Sanitize(source.RtspUri)">@Sanitize(source.RtspUri)</td>
-        <td>@(source.Media is null ? "—" : $"{source.Media.VideoCodec} · {source.Media.Width}×{source.Media.Height} · {FormatRate(source.Media)}")</td>
+        <td>@FormatVideo(source.Media)</td>
         <td>@(source.Media?.AudioCodec is null ? "None" : $"{source.Media.AudioCodec} · {source.Media.AudioSampleRate} Hz · {source.Media.AudioChannels} ch")</td>
         <td><BroadcastRouter.Web.Components.Shared.StateBadge Value="source.State" /></td><td>@source.Priority</td><td>@source.LastObservedAt?.ToLocalTime().ToString("HH:mm:ss")</td>
         <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions">
@@ -120,4 +120,10 @@
     private static string FormatRate(MediaProperties media) => media.Interlaced is null
         ? $"{media.FramesPerSecond:0.##} fps"
         : $"{media.FramesPerSecond:0.##}{(media.Interlaced.Value ? "i" : "p")}";
+    private static string FormatVideo(MediaProperties? media) => media switch
+    {
+        null => "—",
+        { HasUsableVideo: false, AudioCodec: not null } => "Generated black · audio-led input",
+        _ => $"{media.VideoCodec} · {media.Width}×{media.Height} · {FormatRate(media)}"
+    };
 }

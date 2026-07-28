@@ -12,7 +12,13 @@ public interface IStreamProbe
     Task<StreamProbeResult> ProbeAsync(Uri rtspUri, CancellationToken cancellationToken);
 }
 
-public sealed record StreamProbeResult(bool Opened, bool FramesReceived, MediaProperties? Media, string? FailureCategory, string? Detail);
+public sealed record StreamProbeResult(
+    bool Opened,
+    bool FramesReceived,
+    MediaProperties? Media,
+    string? FailureCategory,
+    string? Detail,
+    bool AudioReceived = false);
 
 public interface IDeckLinkEnumerator
 {

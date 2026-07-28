@@ -12,7 +12,8 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that discov
 
 - authenticated Wowza REST discovery across configured applications and instances;
 - deterministic source identities with stale-source reconciliation after server-ID changes;
-- RTSP frame validation and media-property detection before routing;
+- RTSP video-frame/audio-packet validation and media-property detection before routing;
+- audio-led and sparse-video routing with continuous preset-matched black output and live audio;
 - atomic DeckLink port reservations, priorities, locks, queues, retries, standby, and recovery;
 - Blackmagic SDK persistent hardware identities that keep operator-defined physical-card names, connector names, and assignments attached when identical supported cards move between PCIe slots;
 - production-safe defaults: loopback binding, simulation disabled, and hardware starts blocked until validation passes;
@@ -38,7 +39,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.2.9`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.2.10`.
 3. Run `BroadcastRouter.Server.exe` as the dedicated Windows broadcast account.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
@@ -68,7 +69,7 @@ dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --conf
 Create a clean self-contained release:
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Version 1.2.9
+.\scripts\Publish-Release.ps1 -Version 1.2.10
 ```
 
 The publisher removes build-path PDBs and runs `scripts\Test-ReleasePrivacy.ps1` before creating the archive. Packaging fails if it finds a database, diagnostics/log artifact, credential-bearing URL, user-profile path, private network address, private key, or common service token.

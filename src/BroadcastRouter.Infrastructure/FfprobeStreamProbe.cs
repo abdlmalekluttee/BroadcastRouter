@@ -22,7 +22,8 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
         };
         Add(start, "-v", "error", "-rtsp_transport", "tcp", "-rw_timeout",
             ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture),
-            "-read_intervals", "%+2", "-count_frames", "-show_streams", "-show_format", "-of", "json", rtspUri.AbsoluteUri);
+            "-read_intervals", "%+2", "-count_frames", "-count_packets",
+            "-show_streams", "-show_format", "-of", "json", rtspUri.AbsoluteUri);
 
         using var process = Process.Start(start);
         if (process is null) return new(false, false, null, "ProcessStart", "FFprobe could not be started.");
@@ -87,11 +88,15 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
             if (codecType == "audio" && audio is null) audio = stream.Clone();
         }
 
+        var audioCount = audio is null ? 0 : ReadCount(audio.Value);
+        var audioReceived = audioCount > 0;
         if (video is null)
         {
             var audioMedia = new MediaProperties(null, audio is null ? null : Text(audio.Value, "codec_name"), null, null, null, null,
                 audio is null ? null : Integer(audio.Value, "sample_rate"), audio is null ? null : Integer(audio.Value, "channels"), false);
-            return new(true, false, audioMedia, "AudioOnly", "No video stream was detected.");
+            return audioReceived
+                ? new(true, false, audioMedia, null, $"Received {audioCount} audio packet(s)/frame(s); continuous black video will be generated for routing.", true)
+                : new(true, false, audioMedia, "AudioOnly", "Audio metadata was detected, but no audio packets or frames were received.");
         }
 
         var frameCount = Integer64(video.Value, "nb_read_frames") ?? 0;
@@ -118,8 +123,14 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
             interlaced);
         return frameCount > 0
             ? new(true, true, media, null, $"Received {frameCount} video frame(s) during validation.")
+            : audioReceived
+                ? new(true, false, media, null, $"Received {audioCount} audio packet(s)/frame(s) while video was sparse; continuous black video will be generated for routing.", true)
             : new(true, false, media, "NoVideoFrames", "Video metadata was detected but no decoded/read frames were reported.");
     }
+
+    private static long ReadCount(JsonElement stream) => Math.Max(
+        Integer64(stream, "nb_read_frames") ?? 0,
+        Integer64(stream, "nb_read_packets") ?? 0);
 
     private static string? Text(JsonElement element, string name) => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     private static int? Integer(JsonElement element, string name) => int.TryParse(Text(element, name) ?? (element.TryGetProperty(name, out var value) ? value.ToString() : null), NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) ? result : null;

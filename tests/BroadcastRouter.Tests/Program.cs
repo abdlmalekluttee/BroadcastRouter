@@ -40,6 +40,7 @@ var tests = new (string Name, Action Body)[]
     ("Retry attempt cap is opt-in", RetryAttemptCapIsOptIn),
     ("Startup route recovery is single shot", StartupRouteRecoveryIsSingleShot),
     ("FFmpeg command uses argument list", FfmpegCommandUsesArgumentList),
+    ("FFmpeg audio-led route generates continuous black video", FfmpegAudioLedRouteGeneratesBlackVideo),
     ("FFmpeg interlaced output is explicit", FfmpegInterlacedOutputIsExplicit),
     ("FFmpeg display redacts credentials", FfmpegDisplayRedactsCredentials),
     ("Browser preview is tokenized with VU overlay", BrowserPreviewIsTokenizedWithVuOverlay),
@@ -50,7 +51,10 @@ var tests = new (string Name, Action Body)[]
     ("FFmpeg failure classification", FfmpegFailureIsClassified),
     ("FFprobe media parsing", FfprobeMediaIsParsed),
     ("FFprobe scan type parsing", FfprobeScanTypeIsParsed),
+    ("FFprobe accepts audio-led sparse video", FfprobeAcceptsAudioLedSparseVideo),
+    ("FFprobe accepts audio-only input with packets", FfprobeAcceptsAudioOnlyInput),
     ("FFprobe rejects metadata-only video", FfprobeRequiresReadFrames),
+    ("Probe readiness accepts audio and remains fail-closed", ProbeReadinessAcceptsAudioAndRejectsMetadataOnly),
     ("FFprobe rejects malformed output", FfprobeRejectsMalformedOutput),
     ("Wowza incoming stream parsing", WowzaIncomingStreamsAreParsed),
     ("Renamed Wowza source is pruned", RenamedWowzaSourceIsPruned),
@@ -313,6 +317,32 @@ static void FfmpegCommandUsesArgumentList()
     True(safeIndex < safeStart.ArgumentList.IndexOf("-f"));
 }
 
+static void FfmpegAudioLedRouteGeneratesBlackVideo()
+{
+    var source = new DiscoveredSource(
+        new SourceIdentity("AUDIO", "live", "_definst_", "audio-led.stream"),
+        "Audio-led source",
+        new Uri("rtsp://127.0.0.1:8698/live/audio-led.stream"),
+        SourceState.Ready,
+        100,
+        new MediaProperties("h264", "aac", 1920, 1080, 30, 1_000_000, 48_000, 2, false, false));
+    var port = new SimulationDeckLinkEnumerator().EnumerateAsync(default).Result[0];
+    var preset = new OutputPreset("HD25", "1080p25", new VideoMode(1920, 1080, 25, 1, "uyvy422"), true, 256);
+    var start = FfmpegCommandBuilder.Build(new FfmpegRouteOptions("ffmpeg.exe", ReadTimeout: TimeSpan.FromSeconds(10)), source, port, preset);
+
+    True(start.ArgumentList.Any(argument => argument == "color=c=black:size=1920x1080:rate=25/1"));
+    True(start.ArgumentList.Contains("1:v:0"));
+    True(start.ArgumentList.Contains("0:a:0"));
+    True(!start.ArgumentList.Contains("0:v:0"));
+    True(start.ArgumentList.Contains("-shortest"));
+    True(start.ArgumentList.Contains("pcm_s16le"));
+    True(!start.ArgumentList.Contains("-b:v"));
+
+    var noAudioPreset = preset with { IncludeAudio = false };
+    Throws<InvalidOperationException>(() => FfmpegCommandBuilder.Build(
+        new FfmpegRouteOptions("ffmpeg.exe"), source, port, noAudioPreset));
+}
+
 static void FfmpegInterlacedOutputIsExplicit()
 {
     var source = new SimulationDiscoveryProvider().DiscoverAsync(default).Result.Single();
@@ -369,6 +399,15 @@ static void BrowserPreviewIsTokenizedWithVuOverlay()
     }, videoOnly);
     True(!videoOnlyPlan.Producer.ArgumentList.Any(argument => argument.Contains("showvolume", StringComparison.Ordinal)));
     True(videoOnlyPlan.Producer.ArgumentList.Contains("-an"));
+
+    var audioLed = source with { Media = source.Media! with { HasUsableVideo = false } };
+    var audioLedPlan = BrowserPreviewCommandBuilder.Build(new MediaToolPaths
+    {
+        FfmpegPath = @"C:\Media\ffmpeg.exe"
+    }, audioLed);
+    True(audioLedPlan.Producer.ArgumentList.Any(argument => argument.Contains("color=c=0x060b12", StringComparison.Ordinal)));
+    True(audioLedPlan.Producer.ArgumentList.Any(argument => argument.Contains("[1:v:0]scale=720:404", StringComparison.Ordinal)));
+    True(audioLedPlan.Producer.ArgumentList.Contains("-shortest"));
 }
 
 static void FfmpegProgressIsParsed()
@@ -454,6 +493,33 @@ static void FfprobeScanTypeIsParsed()
     Equal(true, FfprobeStreamProbe.Parse(json).Media!.Interlaced!.Value);
 }
 
+static void FfprobeAcceptsAudioLedSparseVideo()
+{
+    const string json = """
+    {"streams":[
+      {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"30/1","nb_read_frames":"N/A","nb_read_packets":"0","field_order":"progressive"},
+      {"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_frames":"N/A","nb_read_packets":"94"}
+    ]}
+    """;
+    var result = FfprobeStreamProbe.Parse(json);
+    True(result.Opened);
+    True(!result.FramesReceived);
+    True(result.AudioReceived);
+    Equal(null, result.FailureCategory);
+    True(!result.Media!.HasUsableVideo);
+    Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(result));
+}
+
+static void FfprobeAcceptsAudioOnlyInput()
+{
+    const string json = """{"streams":[{"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_packets":"80"}]}""";
+    var result = FfprobeStreamProbe.Parse(json);
+    True(result.Opened && result.AudioReceived && !result.FramesReceived);
+    Equal(null, result.Media!.VideoCodec);
+    Equal("aac", result.Media.AudioCodec);
+    Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(result));
+}
+
 static void FfprobeRequiresReadFrames()
 {
     const string json = """{"streams":[{"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"nb_read_frames":"N/A"}]}""";
@@ -461,6 +527,14 @@ static void FfprobeRequiresReadFrames()
     True(result.Opened);
     True(!result.FramesReceived);
     Equal("NoVideoFrames", result.FailureCategory);
+}
+
+static void ProbeReadinessAcceptsAudioAndRejectsMetadataOnly()
+{
+    var media = new MediaProperties("h264", "aac", 1920, 1080, 30, null, 48_000, 2, false);
+    Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(new(true, false, media, null, null, true)));
+    Equal(SourceState.UnsupportedMedia, SourceProbeReadinessPolicy.Resolve(new(true, false, media, "NoVideoFrames", null)));
+    Equal(SourceState.RtspUnavailable, SourceProbeReadinessPolicy.Resolve(new(false, false, null, "Network", null)));
 }
 
 static void FfprobeRejectsMalformedOutput()

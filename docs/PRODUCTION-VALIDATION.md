@@ -13,6 +13,7 @@ Before broadcast use, verify:
 - 1080p25, 1080p50, 1080i50, and 720p50 presets play for at least 30 minutes on every compatible port with embedded audio checked. Confirm 1080i50 is top-field-first at 25 frames/50 fields per second and audio is 48 kHz stereo PCM at the DeckLink output.
 - Two concurrent route-start requests never obtain the same port; locked routes retain ownership through publisher and Wowza-API outages.
 - Wowza connection tests report authentication, applications, active streams, and successful RTSP frame receipt for each monitored application/instance.
+- Validate one audio-only input and one audio-led input whose video frames are sparse. Confirm metadata alone is rejected, counted live audio becomes Ready, generated black remains continuous at the selected preset, embedded audio is 48 kHz stereo, and stopping the audio publisher terminates/retries the owned route rather than leaving black output running indefinitely.
 - Pull network, stop the publisher, kill FFmpeg, create an RTSP stall, mark a port busy, disconnect a card if safe, and verify classification, queueing, standby, backoff and recovery.
 - Restart the application and Windows while routes are desired; confirm leases rebuild before FFmpeg and all primary routes recover.
 - Run an 8–24 hour multi-port soak while watching frames, FPS, speed, drops, CPU, memory and orphan processes.

@@ -37,5 +37,5 @@ public sealed class SimulationDeckLinkEnumerator : IDeckLinkEnumerator
 public sealed class SimulationStreamProbe : IStreamProbe
 {
     public Task<StreamProbeResult> ProbeAsync(Uri rtspUri, CancellationToken cancellationToken) =>
-        Task.FromResult(new StreamProbeResult(true, true, new MediaProperties("h264", "aac", 1920, 1080, 25, 3_000_000, 48_000, 2, true), null, "Simulation probe succeeded."));
+        Task.FromResult(new StreamProbeResult(true, true, new MediaProperties("h264", "aac", 1920, 1080, 25, 3_000_000, 48_000, 2, true), null, "Simulation probe succeeded.", true));
 }
