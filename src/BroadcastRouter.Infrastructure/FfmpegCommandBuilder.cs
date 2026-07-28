@@ -167,11 +167,12 @@ public static class FfmpegCommandBuilder
         var outputLabel = SafeOverlayText($"{DeckLinkDisplayName.Full(port)}  {configuration.PortLabel}".Trim());
         var fontSize = Math.Clamp(preset.Mode.Height / 24, 24, 72);
         var margin = Math.Clamp(preset.Mode.Height / 36, 16, 48);
+        const string windowsFont = "fontfile='C\\:/Windows/Fonts/arial.ttf':";
         var textFilters = new List<string>();
         if (!string.IsNullOrWhiteSpace(outputLabel))
-            textFilters.Add($"drawtext=text='{outputLabel}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x={margin}:y={margin}");
+            textFilters.Add($"drawtext={windowsFont}text='{outputLabel}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x={margin}:y={margin}");
         if (configuration.ShowClock)
-            textFilters.Add($"drawtext=text='%{{localtime\\:%T}}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x=w-tw-{margin}:y=h-th-{margin}");
+            textFilters.Add($"drawtext={windowsFont}text='%{{localtime\\:%T}}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x=w-tw-{margin}:y=h-th-{margin}");
 
         var baseFilter = BuildVideoFilter(preset, sourceIsInterlaced: false);
         string filterGraph;
