@@ -4,11 +4,12 @@ param(
     [ValidatePattern('^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$')]
     [string] $Version,
     [string] $Runtime = 'win-x64',
-    [string] $OutputRoot = (Join-Path $PSScriptRoot '..\release')
+    [string] $OutputRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+if ([string]::IsNullOrWhiteSpace($OutputRoot)) { $OutputRoot = Join-Path $repositoryRoot 'release' }
 $resolvedOutput = [IO.Path]::GetFullPath($OutputRoot)
 $packageName = "BroadcastRouter-production-$Runtime-$Version"
 $packageDirectory = Join-Path $resolvedOutput "$packageName-package"

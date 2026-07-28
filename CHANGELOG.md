@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.3.0 — 2026-07-28
+
+- Added an explicit, fail-closed output-port designation for every DeckLink connector; input-only connectors are excluded from manual, rule-based, and automatic routing.
+- Persist configured and discovered incoming streams while they are offline, including clean source-inventory recovery after a host restart.
+- Added durable preconfigured and manual routing entries that can be prepared before a publisher is active.
+- Enforce deterministic assignment priority: preconfigured, then manual, then automatic; lower-priority saved entries remain visible as routing conflicts and are never silently deleted.
+- Reserve saved output ports while their streams are offline unless the operator explicitly enables temporary automatic use.
+- Added per-port SMPTE/HD color bars or TV test patterns with optional logo, card/connector name, custom label, synchronized clock, and silent 48 kHz stereo audio.
+- Automatically switch each marked output between its standby screen and live playout under a per-port process gate.
+- Reset transient FFmpeg/lease state at startup while preserving saved intent, preventing duplicate restored ownership after an interrupted host.
+- Added media-tool capability checks and regressions for output-only assignment, saved-route policy, standby command generation, tagged-source restart persistence, and transient route recovery.
+
 ## 1.2.11 — 2026-07-28
 
 - Require approximately one second of the advertised video cadence before sparse frames can override verified continuous audio.

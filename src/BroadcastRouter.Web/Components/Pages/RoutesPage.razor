@@ -1,5 +1,6 @@
 @page "/routes"
 @rendermode InteractiveServer
+@using BroadcastRouter.Application
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject IJSRuntime JS
@@ -18,7 +19,7 @@
     <article class="route-editor" @key="route.SourceId">
         <header class="route-editor-head">
             <div><strong>@route.SourceName</strong><span class="secondary-text mono">@route.SourceId</span></div>
-            <div class="route-state"><BroadcastRouter.Web.Components.Shared.StateBadge Value="route.State" />@if (route.Locked) { <span class="badge warning">locked</span> }</div>
+            <div class="route-state"><BroadcastRouter.Web.Components.Shared.StateBadge Value="RouteStatus(route)" /><span class="badge">@AssignmentStatus(route)</span>@if (route.Locked) { <span class="badge warning">reserved</span> }</div>
         </header>
         <div class="route-summary-grid">
             <div><span class="field-label">Priority</span><strong>@route.Priority</strong></div>
@@ -27,17 +28,19 @@
             <AuthorizeView Roles="Administrator">
                 <Authorized>
                     <div class="route-assignment-fields">
-                        <div class="form-group"><label>DeckLink output</label><select aria-label="Output for @route.SourceName" disabled="@busy" value="@SelectedPort(route)" @onchange="eventArgs => SelectPort(route.SourceId, eventArgs.Value?.ToString())"><option value="">Automatic / unassigned</option>@foreach (var port in OrderedPorts()) { <option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option> }</select></div>
+                        <div class="form-group"><label>DeckLink output</label><select aria-label="Output for @route.SourceName" disabled="@busy" value="@SelectedPort(route)" @onchange="eventArgs => SelectPort(route.SourceId, eventArgs.Value?.ToString())"><option value="">Automatic / unassigned</option>@if(IsUnavailableOutput(SelectedPort(route))){<option value="@SelectedPort(route)">Saved output unavailable or excluded (@DeckLinkDisplayName.ShortIdentity(SelectedPort(route)))</option>}@foreach (var port in OrderedPorts()) { <option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option> }</select></div>
                         <div class="form-group"><label>Output preset</label><select aria-label="Preset for @route.SourceName" disabled="@busy" value="@SelectedPreset(route)" @onchange="eventArgs => SelectPreset(route.SourceId, eventArgs.Value?.ToString())">@foreach (var preset in presets) { <option value="@preset.Id">@preset.Name</option> }</select></div>
-                        <div class="form-group route-apply"><label>Assignment change</label><button class="btn primary" disabled="@(busy || presets.Count == 0)" @onclick="() => ApplyAssignment(route)">Apply assignment</button></div>
+                        <div class="form-group"><label>Saved routing priority</label><select aria-label="Assignment type for @route.SourceName" value="@SelectedMode(route)" @onchange="eventArgs => SelectMode(route.SourceId, eventArgs.Value?.ToString())"><option value="@AssignmentMode.Preconfigured">Preconfigured (highest)</option><option value="@AssignmentMode.Manual">Manual</option></select></div>
+                        <div class="form-group route-apply"><label>Assignment change</label><button class="btn primary" disabled="@(busy || presets.Count == 0 || string.IsNullOrWhiteSpace(SelectedPort(route)))" @onclick="() => ApplyAssignment(route)">Save assignment</button></div>
                     </div>
+                    <div class="route-policy-options"><label class="check"><input type="checkbox" checked="@ReserveOffline(route)" @onchange="eventArgs => SetReserveOffline(route.SourceId, eventArgs.Value)" />Reserve output while stream is offline</label><label class="check"><input type="checkbox" checked="@AllowTemporary(route)" @onchange="eventArgs => SetAllowTemporary(route.SourceId, eventArgs.Value)" />Allow automatic streams to use it temporarily</label></div>
                 </Authorized>
                 <NotAuthorized>
                     <div><span class="field-label">DeckLink output</span><strong>@RoutePortName(route)</strong><span class="secondary-text">Preset @route.PresetId</span></div>
                 </NotAuthorized>
             </AuthorizeView>
         </div>
-        <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls"><button class="btn small primary" disabled="@busy" @onclick='() => Run("restore", route.SourceId)'>Restore</button><button class="btn small" disabled="@busy" @onclick='() => Run("restart", route.SourceId)'>Restart</button><button class="btn small" disabled="@busy" @onclick='() => Run(route.Locked ? "unlock" : "lock", route.SourceId)'>@(route.Locked ? "Unlock" : "Lock")</button><button class="btn small warning" disabled="@busy" @onclick='() => Run("standby", route.SourceId)'>Standby</button><button class="btn small danger" disabled="@busy" @onclick='() => Run("stop", route.SourceId)'>Stop</button></footer></Authorized></AuthorizeView>
+        <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls"><button class="btn small primary" disabled="@busy" @onclick='() => Run("restore", route.SourceId)'>Activate / restore</button><button class="btn small" disabled="@busy" @onclick='() => Run("restart", route.SourceId)'>Restart live output</button>@if(DesiredRoutePolicy.HasSavedAssignment(route)){<button class="btn small danger" disabled="@busy" @onclick='() => Run("remove-assignment", route.SourceId)'>Remove saved assignment</button>}else{<button class="btn small danger" disabled="@busy" @onclick='() => Run("stop", route.SourceId)'>Release automatic route</button>}</footer></Authorized></AuthorizeView>
         @if (snapshot.SimulationMode) { <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls simulation-controls"><span class="secondary-text">Simulation:</span><button class="btn small" disabled="@busy" @onclick='() => Run("simulate-failure", route.SourceId)'>Crash</button><button class="btn small" disabled="@busy" @onclick='() => Run("simulate-stall", route.SourceId)'>Stall</button><button class="btn small" disabled="@busy" @onclick='() => Run("clear-failure", route.SourceId)'>Recover</button></footer></Authorized></AuthorizeView> }
     </article>
 }
@@ -45,11 +48,12 @@
 </div>
 
 <AuthorizeView Roles="Administrator"><Authorized>
-    <div class="panel"><div class="panel-head"><h2>Create manual route</h2></div><div class="panel-body"><div class="manual-route-grid">
+    <div class="panel"><div class="panel-head"><div><h2>Prepare a routing entry</h2><span class="secondary-text">Offline streams are accepted. The entry activates automatically as soon as the stream becomes ready.</span></div></div><div class="panel-body"><div class="manual-route-grid">
         <div class="form-group"><label>Source</label><select aria-label="Manual route source" @bind="selectedSource"><option value="">Select source…</option>@foreach (var source in snapshot.Sources) { <option value="@source.Identity.Value">@source.FriendlyName</option> }</select></div>
-        <div class="form-group"><label>Output</label><select aria-label="Manual route output" @bind="selectedPort"><option value="">Automatic</option>@foreach (var port in OrderedPorts()) { <option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option> }</select></div>
+        <div class="form-group"><label>Output port</label><select aria-label="Manual route output" @bind="selectedPort"><option value="">Select an output…</option>@foreach (var port in OrderedPorts()) { <option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option> }</select></div>
         <div class="form-group"><label>Output preset</label><select aria-label="Manual route preset" @bind="selectedPreset">@foreach (var preset in presets) { <option value="@preset.Id">@preset.Name</option> }</select></div>
-        <div class="form-group route-apply"><label>Route control</label><button class="btn primary" disabled="@(busy || string.IsNullOrWhiteSpace(selectedSource) || string.IsNullOrWhiteSpace(selectedPreset))" @onclick="CreateRoute">Start route</button></div>
+        <div class="form-group"><label>Routing priority</label><select aria-label="New route assignment type" @bind="selectedMode"><option value="@AssignmentMode.Preconfigured">Preconfigured (highest)</option><option value="@AssignmentMode.Manual">Manual</option></select></div>
+        <div class="form-group route-apply"><label>Routing entry</label><button class="btn primary" disabled="@(busy || string.IsNullOrWhiteSpace(selectedSource) || string.IsNullOrWhiteSpace(selectedPort) || string.IsNullOrWhiteSpace(selectedPreset))" @onclick="CreateRoute">Save routing entry</button></div>
     </div></div></div>
 </Authorized></AuthorizeView>
 
@@ -58,9 +62,13 @@
     private IReadOnlyList<OutputPresetProfile> presets = [];
     private readonly Dictionary<string, string> selectedPorts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> selectedPresets = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, AssignmentMode> selectedModes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> reserveOffline = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> allowTemporary = new(StringComparer.Ordinal);
     private string selectedSource = "";
     private string selectedPort = "";
     private string selectedPreset = "";
+    private AssignmentMode selectedMode = AssignmentMode.Manual;
     private string error = "";
     private bool busy;
 
@@ -79,23 +87,32 @@
         if (presets.Count > 0 && !presets.Any(preset => preset.Id.Equals(selectedPreset, StringComparison.OrdinalIgnoreCase))) selectedPreset = presets[0].Id;
     }
 
-    private string SelectedPort(RuntimeRoute route) => selectedPorts.TryGetValue(route.SourceId, out var value) ? value : route.PortId ?? "";
+    private string SelectedPort(RuntimeRoute route) => selectedPorts.TryGetValue(route.SourceId, out var value) ? value : route.DesiredPortId ?? route.PortId ?? "";
     private string SelectedPreset(RuntimeRoute route) => selectedPresets.TryGetValue(route.SourceId, out var value) ? value : route.PresetId;
-    private string RoutePortName(RuntimeRoute route) => route.PortId is { Length: > 0 } portId
+    private AssignmentMode SelectedMode(RuntimeRoute route) => selectedModes.TryGetValue(route.SourceId, out var value) ? value : route.AssignmentMode == AssignmentMode.Preconfigured ? AssignmentMode.Preconfigured : AssignmentMode.Manual;
+    private bool ReserveOffline(RuntimeRoute route) => reserveOffline.TryGetValue(route.SourceId, out var value) ? value : route.ReserveWhileOffline;
+    private bool AllowTemporary(RuntimeRoute route) => allowTemporary.TryGetValue(route.SourceId, out var value) ? value : route.AllowTemporaryUse;
+    private string RoutePortName(RuntimeRoute route) => (route.DesiredPortId ?? route.PortId) is { Length: > 0 } portId
         && snapshot.Ports.FirstOrDefault(port => port.StableId.Equals(portId, StringComparison.OrdinalIgnoreCase)) is { } port
         ? DeckLinkDisplayName.Full(port) : route.PortName ?? "Unassigned";
     private void SelectPort(string sourceId, string? value) => selectedPorts[sourceId] = value?.Trim() ?? "";
     private void SelectPreset(string sourceId, string? value) => selectedPresets[sourceId] = value?.Trim() ?? "";
+    private void SelectMode(string sourceId, string? value) => selectedModes[sourceId] = Enum.TryParse<AssignmentMode>(value, out var mode) ? mode : AssignmentMode.Manual;
+    private void SetReserveOffline(string sourceId, object? value) => reserveOffline[sourceId] = value is bool selected && selected;
+    private void SetAllowTemporary(string sourceId, object? value) => allowTemporary[sourceId] = value is bool selected && selected;
     private IOrderedEnumerable<DeckLinkPort> OrderedPorts() => snapshot.Ports
+        .Where(port => port.IsOutputPort)
         .OrderBy(DeckLinkDisplayName.Card, StringComparer.OrdinalIgnoreCase)
         .ThenBy(DeckLinkDisplayName.Connector, StringComparer.OrdinalIgnoreCase);
+    private bool IsUnavailableOutput(string stableId) => !string.IsNullOrWhiteSpace(stableId)
+        && !snapshot.Ports.Any(port => port.IsOutputPort && port.StableId.Equals(stableId, StringComparison.OrdinalIgnoreCase));
 
     private async Task Run(string action, string source)
     {
         if (busy) return;
         if (action == "emergency-stop" && !await JS.InvokeAsync<bool>("confirm", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes. Continue?")) return;
         var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source);
-        if (action == "stop" && route?.Locked == true) { error = "This route is locked. Unlock it first, or use the confirmed emergency stop for a forced release."; return; }
+        if (action == "remove-assignment" && !await JS.InvokeAsync<bool>("confirm", "Remove this saved routing entry and release its output?")) return;
         try { busy = true; error = ""; await Commands.ExecuteAsync(action, string.IsNullOrWhiteSpace(source) ? null : source); }
         catch (Exception ex) { error = ex.Message; }
         finally { busy = false; }
@@ -113,7 +130,8 @@
         {
             busy = true;
             error = "";
-            await Commands.ExecuteAsync("reassign", route.SourceId, string.IsNullOrWhiteSpace(port) ? null : port, preset);
+            await Commands.ExecuteAsync("save-assignment", route.SourceId, port, preset, SelectedMode(route),
+                ReserveOffline(route), AllowTemporary(route));
             selectedPorts.Remove(route.SourceId);
             selectedPresets.Remove(route.SourceId);
         }
@@ -124,10 +142,26 @@
     private async Task CreateRoute()
     {
         if (busy) return;
-        try { busy = true; error = ""; await Commands.ExecuteAsync("start", selectedSource, string.IsNullOrWhiteSpace(selectedPort) ? null : selectedPort, selectedPreset); }
+        try { busy = true; error = ""; await Commands.ExecuteAsync("save-assignment", selectedSource, selectedPort, selectedPreset,
+            selectedMode, reserveWhileOffline: true, allowTemporaryUse: false); }
         catch (Exception ex) { error = ex.Message; }
         finally { busy = false; }
     }
 
     public void Dispose() => Coordinator.Changed -= Changed;
+    private string RouteStatus(RuntimeRoute route)
+    {
+        var source = snapshot.Sources.FirstOrDefault(value => value.Identity.Value == route.SourceId);
+        if (route.FailureCategory == "RoutingConflict") return "Routing conflict";
+        if (route.State == RouteState.WaitingForStream) return "Waiting for stream";
+        if (source is null || source.State is SourceState.PublisherDisconnected or SourceState.RtspUnavailable or SourceState.Disabled) return "Offline";
+        return route.State.ToString();
+    }
+    private static string AssignmentStatus(RuntimeRoute route) => route.AssignmentMode switch
+    {
+        AssignmentMode.Preconfigured or AssignmentMode.Fixed or AssignmentMode.Rule => "Preconfigured",
+        AssignmentMode.Manual => "Manually assigned",
+        AssignmentMode.Automatic => "Automatically assigned",
+        _ => "Unassigned"
+    };
 }

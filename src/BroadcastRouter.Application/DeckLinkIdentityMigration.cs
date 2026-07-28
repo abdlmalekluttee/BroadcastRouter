@@ -67,12 +67,19 @@ public static class DeckLinkIdentityMigration
     public static RuntimeRoute MigrateRoute(RuntimeRoute route, IReadOnlyDictionary<string, string> aliases,
         IReadOnlyDictionary<string, DeckLinkPort> ports)
     {
-        if (route.PortId is null || !aliases.TryGetValue(route.PortId, out var stableId)) return route;
-        ports.TryGetValue(stableId, out var port);
+        var portId = route.PortId is not null && aliases.TryGetValue(route.PortId, out var migratedPortId)
+            ? migratedPortId : route.PortId;
+        var desiredPortId = route.DesiredPortId is not null && aliases.TryGetValue(route.DesiredPortId, out var migratedDesiredId)
+            ? migratedDesiredId : route.DesiredPortId;
+        if (string.Equals(route.PortId, portId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(route.DesiredPortId, desiredPortId, StringComparison.OrdinalIgnoreCase)) return route;
+        ports.TryGetValue(portId ?? desiredPortId ?? "", out var port);
         return route with
         {
-            PortId = stableId,
+            PortId = portId,
             PortName = port is null ? route.PortName : DeckLinkDisplayName.Full(port),
+            DesiredPortId = desiredPortId,
+            DesiredPortName = port is null ? route.DesiredPortName : DeckLinkDisplayName.Full(port),
             UpdatedAt = DateTimeOffset.UtcNow
         };
     }
@@ -96,7 +103,14 @@ public static class DeckLinkIdentityMigration
                 ?? preferred.FriendlyName,
             PortGroup = values.Select(value => value.PortGroup).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
                 ?? preferred.PortGroup,
-            Reserved = values.Any(value => value.Reserved)
+            Reserved = values.Any(value => value.Reserved),
+            IsOutputPort = values.Any(value => value.IsOutputPort),
+            StandbyEnabled = preferred.StandbyEnabled,
+            StandbyPresetId = preferred.StandbyPresetId,
+            StandbyPattern = preferred.StandbyPattern,
+            StandbyLogoPath = preferred.StandbyLogoPath,
+            StandbyLabel = preferred.StandbyLabel,
+            StandbyShowClock = preferred.StandbyShowClock
         };
     }
 

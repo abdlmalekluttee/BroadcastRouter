@@ -9,29 +9,32 @@ The executable supports Windows Service hosting, but service/Session 0 DeckLink 
 ## Routing flow
 
 1. Poll each enabled Wowza v2 management endpoint; manual RTSP sources are explicit and no network scanning occurs.
-2. Canonicalize the source as `server/application/instance/stream` and retain healthy routes during management-API outages.
+2. Canonicalize the source as `server/application/instance/stream`, persist the source inventory, and retain active and offline sources plus healthy routes during management-API outages.
 3. Render a validated RTSP template and run bounded FFprobe validation. Normal video requires a decoded/read video frame. An audio-led input is eligible only when FFprobe counts real audio packets or frames; codec metadata alone remains insufficient.
 4. Evaluate ordered wildcard or `regex:` rules; regex execution has a 100 ms timeout. An administrator may explicitly choose any saved preset for manual creation or confirmed reassignment; stale preset IDs are rejected before the current route is stopped.
-5. Select a preset and compatible port group, excluding reserved ports from automatic assignment.
-6. Acquire the only atomic port lease. A second source cannot own the same stable port ID.
-7. Refuse real start unless Media Tools validation passes; launch FFmpeg using `ProcessStartInfo.ArgumentList`. RTSP socket I/O uses the demuxer-specific bounded `-timeout` option. DeckLink audio is normalized to 48 kHz stereo PCM; interlaced presets explicitly produce 50 fields/s with top-field-first metadata. Audio-led inputs receive continuous preset-matched black video, and `-shortest` ends playout if the verified live audio ends.
-8. Parse `-progress pipe:1`, drain stderr, enforce a first-progress deadline, detect later stalls, classify exits, and retry with capped backoff plus jitter and an optional attempt limit. Process exits are observed before reconciliation so a failed start cannot be hidden by immediate recovery.
-9. Retain the reservation through recovery. Preset standby can output black, SMPTE bars, an image, a looping media file, or a standby RTSP source.
-10. Validate and persist every route transition. At restart, rebuild leases before starting any process and reconcile persisted routes. Failed process starts release their lease, while missing unlocked sources retain leases only for the configured grace period. Waiting routes retry in priority/FIFO sequence.
+5. Reconcile saved entries first in preconfigured → manual priority order. Saved entries remain valid while offline and reserve their desired connector unless temporary use is explicitly enabled.
+6. Select a preset and compatible port group for remaining automatic sources, considering only connectors explicitly marked as output ports and excluding reserved/protected ports.
+7. Acquire the only atomic port lease. A second source cannot own the same stable port ID.
+8. Refuse real start unless Media Tools validation passes; launch FFmpeg using `ProcessStartInfo.ArgumentList`. RTSP socket I/O uses the demuxer-specific bounded `-timeout` option. DeckLink audio is normalized to 48 kHz stereo PCM; interlaced presets explicitly produce 50 fields/s with top-field-first metadata. Audio-led inputs receive continuous preset-matched black video, and `-shortest` ends playout if the verified live audio ends.
+9. Parse `-progress pipe:1`, drain stderr, enforce a first-progress deadline, detect later stalls, classify exits, and retry with capped backoff plus jitter and an optional attempt limit. Process exits are observed before reconciliation so a failed start cannot be hidden by immediate recovery.
+10. Under a per-port process gate, stop that connector's standby owner immediately before live FFmpeg starts. When no live route owns a marked output, run its configured bars/logo/label/clock screen with 48 kHz silent PCM.
+11. Validate and persist every route transition. At restart, discard transient process/lease fields, rebuild leases from saved intent in priority order, and only then start playout. Failed process starts release their live lease; saved desired assignments remain visible for correction.
 
 ## Main models
 
 - `SourceIdentity`: immutable escaped four-part identity.
 - `DiscoveredSource` / `MediaProperties`: discovery and independent media truth.
-- `DeckLinkPort`: Blackmagic persistent ID when supported, opaque FFmpeg device handle for playout, physical-card group/subdevice/topology hints, modes, group, reserved state, operator card/connector names, confidence, and legacy aliases used only for one-time migration. The physical-card alias is keyed by `DeviceGroupId`; connector aliases remain keyed by `StableId`.
+- `DeckLinkPort`: Blackmagic persistent ID when supported, opaque FFmpeg device handle for playout, explicit output-port designation, physical-card group/subdevice/topology hints, modes, group, reserved state, operator card/connector names, confidence, and legacy aliases used only for one-time migration. The physical-card alias is keyed by `DeviceGroupId`; connector aliases remain keyed by `StableId`.
 - `OutputPresetProfile`: raster, rational rate, scan, pixel format, audio, latency, buffer, standby behavior.
 - `RoutingRuleProfile`: ordered source/media match and preset/group/fixed-port/priority/lock action.
-- `RuntimeRoute`: desired assignment, state, process metrics, failure, retry and lock state.
+- `RuntimeRoute`: persistent desired port/preset/mode and offline-reservation policy plus transient lease, state, process metrics, failure, and retry state.
 - `OperatorSettings`: versioned complete configuration; credential values remain DPAPI ciphertext.
 
 ## Reservation and restart design
 
-`PortReservationManager` is the sole mutable owner map and serializes reserve/release operations. Fixed and manual routes use the same API as automatic rules. Locked leases require explicit unlock or forced emergency release. A process-start exception atomically releases its lease and records a failed route instead of leaving a ghost reservation. On startup, persisted active routes are sorted locked-first and priority-first, leases are rebuilt, duplicates are moved to the waiting queue, and only then are FFmpeg processes restored. Each persisted route receives at most one startup-recovery launch; later exits belong exclusively to normal supervision and retry policy.
+`PortReservationManager` is the sole mutable owner map and serializes reserve/release operations. Preconfigured, manual, rule, and automatic routes use the same API. The coordinator reconciles saved assignments first by mode and stream priority; conflicts never mutate the lower-priority saved intent. On startup, saved intent is separated from stale runtime state, leases are rebuilt, conflicts are exposed, and only then are FFmpeg processes restored. A process-start exception atomically releases its live lease instead of leaving ghost ownership.
+
+Per-port standby uses a synthetic, non-reversible owner identity and the same process supervisor/job containment as live routes. A connector-specific semaphore serializes standby stop and live start. Emergency stop and host shutdown stop both route and standby owners without enumerating or terminating unrelated FFmpeg processes.
 
 ## Supervision
 

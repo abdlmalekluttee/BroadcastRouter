@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Net;
 using BroadcastRouter.Application;
 using BroadcastRouter.Domain;
@@ -8,7 +9,7 @@ namespace BroadcastRouter.Infrastructure;
 
 public sealed class SqliteDataStore
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
@@ -141,6 +142,25 @@ public sealed class SqliteDataStore
 
     public async Task UpsertSourceAsync(DiscoveredSource source, CancellationToken cancellationToken = default) =>
         await UpsertJsonAsync("sources", "source_id", source.Identity.Value, "last_seen_utc", source, cancellationToken);
+
+    public async Task<IReadOnlyList<DiscoveredSource>> LoadSourcesAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT json FROM sources ORDER BY last_seen_utc, source_id";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var sources = new List<DiscoveredSource>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            try
+            {
+                var source = JsonSerializer.Deserialize<DiscoveredSource>(reader.GetString(0), JsonOptions);
+                if (source is not null) sources.Add(source);
+            }
+            catch (Exception exception) when (exception is JsonException or NotSupportedException) { }
+        }
+        return sources;
+    }
 
     public async Task DeleteSourceAsync(string sourceId, CancellationToken cancellationToken = default)
     {
@@ -400,6 +420,25 @@ public sealed class SqliteDataStore
         if (settings.DeckLinkCardOverrides.Where(x => !string.IsNullOrWhiteSpace(x.FriendlyName))
             .GroupBy(x => x.FriendlyName, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
             throw new InvalidOperationException("DeckLink card names must be unique so output choices remain unambiguous.");
+        if (settings.DeckLinkPortOverrides.GroupBy(x => x.StableId, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+            throw new InvalidOperationException("DeckLink connector mappings must have unique stable IDs.");
+        if (settings.DeckLinkPortOverrides.Any(x => string.IsNullOrWhiteSpace(x.StableId)))
+            throw new InvalidOperationException("Every DeckLink connector mapping requires a stable ID.");
+        foreach (var port in settings.DeckLinkPortOverrides)
+        {
+            if (port.IsOutputPort && port.StandbyEnabled && !presetIds.Contains(port.StandbyPresetId))
+                throw new InvalidOperationException($"Output connector {port.FriendlyName} requires a valid standby preset.");
+            ValidateOptionalPath(port.StandbyLogoPath, $"Output connector {port.FriendlyName} standby logo");
+            if (port.StandbyLabel.Length > 80 || port.StandbyLabel.Any(character => char.IsControl(character)
+                    || character is ':' or ';' or ',' or '[' or ']' or '\\' or '\'' or '"' or '%'))
+                throw new InvalidOperationException($"Output connector {port.FriendlyName} standby label contains unsupported filter characters or exceeds 80 characters.");
+        }
+        var outputPortIds = settings.DeckLinkPortOverrides.Where(x => x.IsOutputPort)
+            .Select(x => x.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (settings.ManualSources.Any(source => !string.IsNullOrWhiteSpace(source.FixedPortId) && !outputPortIds.Contains(source.FixedPortId)))
+            throw new InvalidOperationException("A manual source references a connector that is not marked as an output port.");
+        if (settings.Rules.Any(rule => !string.IsNullOrWhiteSpace(rule.FixedPortId) && !outputPortIds.Contains(rule.FixedPortId)))
+            throw new InvalidOperationException("A routing rule references a connector that is not marked as an output port.");
         if (settings.Routing.ReservationGraceSeconds < 0 || settings.Routing.StableRestoreSeconds < 0 || settings.Routing.StallTimeoutSeconds <= 0
             || settings.Routing.FirstProgressTimeoutSeconds <= 0 || settings.Routing.GracefulStopSeconds <= 0 || settings.Routing.MaxRetryAttempts < 0)
             throw new InvalidOperationException("Routing and recovery timeouts contain an invalid value.");
@@ -414,7 +453,7 @@ public sealed class SqliteDataStore
 
     private static void NormalizeSettings(OperatorSettings settings)
     {
-        settings.SchemaVersion = Math.Max(settings.SchemaVersion, 4);
+        settings.SchemaVersion = Math.Max(settings.SchemaVersion, 5);
         settings.MediaTools.FfmpegPath = settings.MediaTools.FfmpegPath.Trim();
         settings.MediaTools.FfprobePath = settings.MediaTools.FfprobePath.Trim();
         settings.MediaTools.FfplayPath = settings.MediaTools.FfplayPath.Trim();
@@ -461,6 +500,9 @@ public sealed class SqliteDataStore
             port.StableId = port.StableId.Trim();
             port.FriendlyName = port.FriendlyName.Trim();
             port.PortGroup = port.PortGroup.Trim();
+            port.StandbyPresetId = port.StandbyPresetId.Trim();
+            port.StandbyLogoPath = port.StandbyLogoPath.Trim();
+            port.StandbyLabel = port.StandbyLabel.Trim();
         }
         settings.Security.BindAddress = settings.Security.BindAddress.Trim();
         settings.Security.AllowedNetworks = settings.Security.AllowedNetworks.Trim();
@@ -475,5 +517,25 @@ public sealed class SqliteDataStore
         {
             throw new InvalidOperationException($"{label} path is invalid.", ex);
         }
+    }
+
+    private static JsonSerializerOptions CreateJsonOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true };
+        options.Converters.Add(new ReadOnlyStringSetConverter());
+        return options;
+    }
+
+    private sealed class ReadOnlyStringSetConverter : JsonConverter<IReadOnlySet<string>>
+    {
+        public override IReadOnlySet<string>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.Null) return null;
+            var values = JsonSerializer.Deserialize<string[]>(ref reader, options) ?? [];
+            return new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        }
+
+        public override void Write(Utf8JsonWriter writer, IReadOnlySet<string> value, JsonSerializerOptions options) =>
+            JsonSerializer.Serialize(writer, value.OrderBy(item => item, StringComparer.OrdinalIgnoreCase).ToArray(), options);
     }
 }

@@ -35,6 +35,8 @@ var tests = new (string Name, Action Body)[]
     ("Priority waiting queue", HigherPriorityDequeuesFirst),
     ("Route transition validation", InvalidStateJumpIsRejected),
     ("Automatic assignment", AutomaticAssignmentUsesOnePort),
+    ("Automatic assignment ignores input-only ports", AutomaticAssignmentIgnoresInputOnlyPorts),
+    ("Saved routing priority and protection", SavedRoutingPriorityAndProtection),
     ("Simulation discovery", SimulationReturnsUsableVideo),
     ("Retry policy caps delay", RetryPolicyCapsAtMaximum),
     ("Retry attempt cap is opt-in", RetryAttemptCapIsOptIn),
@@ -59,6 +61,7 @@ var tests = new (string Name, Action Body)[]
     ("Probe readiness retains audio-led mode", ProbeReadinessRetainsAudioLedMode),
     ("FFprobe rejects malformed output", FfprobeRejectsMalformedOutput),
     ("Wowza incoming stream parsing", WowzaIncomingStreamsAreParsed),
+    ("Wowza discovery retains disconnected streams", WowzaDiscoveryRetainsDisconnectedStreams),
     ("Renamed Wowza source is pruned", RenamedWowzaSourceIsPruned),
     ("Failed Wowza poll retains source", FailedWowzaPollRetainsSource),
     ("Log credential redaction", AuthenticatedUrisAreRedacted),
@@ -77,6 +80,7 @@ var tests = new (string Name, Action Body)[]
     ("Routing rule wildcard evaluation", RoutingRuleWildcardMatches),
     ("Routing regex validation", InvalidRoutingRegexIsRejected),
     ("Fallback command is uncompressed", FallbackCommandIsSafeAndUncompressed),
+    ("Per-port standby command is broadcast safe", PortStandbyCommandIsBroadcastSafe),
     ("SQLite settings persistence", SqliteSettingsPersist),
     ("All GUI settings round trip", AllGuiSettingsRoundTrip),
     ("Settings reject invalid GUI values", SettingsRejectInvalidGuiValues),
@@ -86,6 +90,7 @@ var tests = new (string Name, Action Body)[]
     ("Settings reject embedded credentials", SettingsRejectEmbeddedCredentials),
     ("Failed validation preserves active settings", FailedValidationPreservesActiveSettings),
     ("SQLite route restart recovery", SqliteRoutesRestore),
+    ("SQLite source inventory survives offline", SqliteSourcesRestore),
     ("SQLite structured log redaction", SqliteLogsAreRedacted),
     ("SQLite integrity check", SqliteIntegrityIsOk),
     ("Default configuration is production safe", DefaultConfigurationIsProductionSafe)
@@ -263,6 +268,47 @@ static void AutomaticAssignmentUsesOnePort()
     var result = new AutomaticAssignmentEngine(manager, new PriorityWaitingQueue()).Assign(source, ports);
     True(result.Assigned);
     Equal(1, manager.Snapshot().Count);
+}
+
+static void AutomaticAssignmentIgnoresInputOnlyPorts()
+{
+    var source = new SimulationDiscoveryProvider().DiscoverAsync(default).Result[0];
+    var discovered = new SimulationDeckLinkEnumerator().EnumerateAsync(default).Result;
+    var inputOnly = discovered[0] with { IsOutputPort = false };
+    var output = discovered[1] with { IsOutputPort = true };
+    var manager = new PortReservationManager();
+    var result = new AutomaticAssignmentEngine(manager, new PriorityWaitingQueue()).Assign(source, [inputOnly, output]);
+    True(result.Assigned);
+    Equal(output.StableId, result.Port!.StableId);
+    Equal(output.StableId, manager.Snapshot().Single().PortId);
+
+    var none = new AutomaticAssignmentEngine(new PortReservationManager(), new PriorityWaitingQueue())
+        .Assign(source, [inputOnly]);
+    True(!none.Assigned);
+}
+
+static void SavedRoutingPriorityAndProtection()
+{
+    var now = DateTimeOffset.UtcNow;
+    var manual = new RuntimeRoute("A/live/_definst_/manual", "Manual", null, null, "1080p25",
+        RouteState.WaitingForStream, AssignmentMode.Manual, true, 10, 0, null, null, null, 0, 0, null, now,
+        null, null, DesiredPortId: "PORT-1", ReserveWhileOffline: true, AllowTemporaryUse: false);
+    var preconfigured = manual with { SourceId = "A/live/_definst_/preconfigured", AssignmentMode = AssignmentMode.Preconfigured };
+    var temporary = manual with { AllowTemporaryUse = true };
+    True(DesiredRoutePolicy.HasSavedAssignment(manual));
+    True(DesiredRoutePolicy.ProtectsPortWhileOffline(manual));
+    True(!DesiredRoutePolicy.ProtectsPortWhileOffline(temporary));
+    True(DesiredRoutePolicy.PriorityRank(preconfigured.AssignmentMode) > DesiredRoutePolicy.PriorityRank(manual.AssignmentMode));
+    True(DesiredRoutePolicy.PriorityRank(manual.AssignmentMode) > DesiredRoutePolicy.PriorityRank(AssignmentMode.Automatic));
+
+    var legacy = manual with { PortId = "PORT-2", DesiredPortId = null, DesiredPortName = null };
+    Equal("PORT-2", DesiredRoutePolicy.MigrateLegacy(legacy).DesiredPortId);
+    var staleRunning = preconfigured with { PortId = "PORT-1", State = RouteState.Running, StartedAt = now.AddMinutes(-2), Frame = 3000 };
+    var recovered = DesiredRoutePolicy.ResetTransientStateForStartup(staleRunning, now.AddSeconds(1));
+    Equal(RouteState.WaitingForStream, recovered.State);
+    Equal(null, recovered.PortId);
+    Equal(null, recovered.Frame);
+    Equal("PORT-1", recovered.DesiredPortId);
 }
 
 static void SimulationReturnsUsableVideo()
@@ -585,6 +631,18 @@ static void WowzaIncomingStreamsAreParsed()
     True(!streams[1].PublisherConnected);
 }
 
+static void WowzaDiscoveryRetainsDisconnectedStreams()
+{
+    const string json = """{"incomingStreams":[{"name":"active.stream","isConnected":true},{"name":"offline.stream","isConnected":false}]}""";
+    using var client = new HttpClient(new StaticJsonHandler(json));
+    var provider = new WowzaDiscoveryProvider(client, Server("rtsp://{wowza-host}:{rtsp-port}/{application}/{stream-name}"),
+        new StaticCredentialResolver(new CredentialValue("operator", "temporary")));
+    var sources = provider.DiscoverAsync(default).GetAwaiter().GetResult();
+    Equal(2, sources.Count);
+    Equal(SourceState.PublisherActive, sources.Single(source => source.Identity.StreamName == "active.stream").State);
+    Equal(SourceState.PublisherDisconnected, sources.Single(source => source.Identity.StreamName == "offline.stream").State);
+}
+
 static void AuthenticatedUrisAreRedacted()
 {
     var result = LogRedactor.Redact("opening rtsp://operator:secret@10.0.0.1/live/feed and https://admin:password@example.test failed");
@@ -807,6 +865,7 @@ static void SourceRouteActionReflectsCurrentRoute()
         RouteState.Running, AssignmentMode.Manual, false, 0, 0, 1, 25, 1, 0, 0, now, now, null, null);
     Equal(SourceRouteActionKind.View, SourceRouteActionPolicy.Resolve(route));
     Equal(SourceRouteActionKind.View, SourceRouteActionPolicy.Resolve(route with { State = RouteState.WaitingForPort }));
+    Equal(SourceRouteActionKind.View, SourceRouteActionPolicy.Resolve(route with { State = RouteState.WaitingForStream }));
     Equal(SourceRouteActionKind.Retry, SourceRouteActionPolicy.Resolve(route with { State = RouteState.Failed }));
     Equal(SourceRouteActionKind.Start, SourceRouteActionPolicy.Resolve(route with { State = RouteState.Released }));
 }
@@ -848,6 +907,27 @@ static void FallbackCommandIsSafeAndUncompressed()
     True(interlacedStart.ArgumentList.Any(argument => argument.Contains("tinterlace=interleave_top", StringComparison.Ordinal)));
 }
 
+static void PortStandbyCommandIsBroadcastSafe()
+{
+    var port = new SimulationDeckLinkEnumerator().EnumerateAsync(default).Result[0] with
+    {
+        CardFriendlyName = "Transmission card",
+        FriendlyName = "Output 1"
+    };
+    var preset = OutputPresetProfile.CommonDefaults()[0].ToDomain();
+    var start = FfmpegCommandBuilder.BuildPortStandby(new FfmpegRouteOptions("ffmpeg.exe"), port, preset,
+        new PortStandbyConfiguration(StandbyPattern.SmpteBars, null, "TX 1", true));
+    True(start.ArgumentList.Contains("smptebars=size=1920x1080:rate=25/1"));
+    True(start.ArgumentList.Contains("anullsrc=r=48000:cl=stereo"));
+    True(start.ArgumentList.Contains("pcm_s16le"));
+    var graph = start.ArgumentList[start.ArgumentList.IndexOf("-filter_complex") + 1];
+    True(graph.Contains("Transmission card", StringComparison.Ordinal));
+    True(graph.Contains("TX 1", StringComparison.Ordinal));
+    True(graph.Contains("localtime", StringComparison.Ordinal));
+    True(!start.ArgumentList.Contains("-b:v"));
+    Equal(port.FfmpegName, start.ArgumentList[^1]);
+}
+
 static void SettingsRejectInvalidGuiValues()
 {
     WithSqliteStore(store =>
@@ -862,6 +942,16 @@ static void SettingsRejectInvalidGuiValues()
         settings.Security.Port = 5080;
         settings.Presets[0].StandbyMode = FallbackMode.StandbySource;
         settings.Presets[0].StandbyValue = "not-an-rtsp-url";
+        Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
+        settings.Presets[0].StandbyMode = FallbackMode.Black;
+        settings.Presets[0].StandbyValue = "";
+        settings.ManualSources.Add(new ManualSourceProfile { FriendlyName = "Wrong connector", RtspUrl = "rtsp://127.0.0.1/live/test", FixedPortId = "INPUT-1" });
+        settings.DeckLinkPortOverrides.Add(new DeckLinkPortOverride { StableId = "INPUT-1", FriendlyName = "Input 1", IsOutputPort = false });
+        Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
+        settings.ManualSources.Clear();
+        settings.DeckLinkPortOverrides[0].IsOutputPort = true;
+        settings.DeckLinkPortOverrides[0].StandbyPresetId = settings.Presets[0].Id;
+        settings.DeckLinkPortOverrides[0].StandbyLabel = "unsafe:label";
         Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
     });
 }
@@ -956,13 +1046,18 @@ static void AllGuiSettingsRoundTrip()
         });
         settings.ManualSources.Add(new ManualSourceProfile { StableId = "manual-qa", FriendlyName = "QA manual", RtspUrl = "rtsp://10.0.0.2/live/test", Priority = 77, FixedPortId = "PORT-2", Locked = true, Enabled = false });
         settings.DeckLinkCardOverrides.Add(new DeckLinkCardOverride { DeviceGroupId = "CARD-PERSISTENT-2", FriendlyName = "Studio input card" });
-        settings.DeckLinkPortOverrides.Add(new DeckLinkPortOverride { StableId = "PORT-2", FriendlyName = "Transmission 2", PortGroup = "TX", Reserved = true });
+        settings.DeckLinkPortOverrides.Add(new DeckLinkPortOverride
+        {
+            StableId = "PORT-2", FriendlyName = "Transmission 2", PortGroup = "TX", Reserved = true,
+            IsOutputPort = true, StandbyEnabled = true, StandbyPresetId = "qa-1080p25",
+            StandbyPattern = StandbyPattern.SmpteHdBars, StandbyLabel = "TX 2", StandbyShowClock = true
+        });
         settings.Presets = [new OutputPresetProfile { Id = "qa-1080p25", Name = "QA 1080p25", Width = 1920, Height = 1080, FrameRateNumerator = 25, FrameRateDenominator = 1, Interlaced = false, PixelFormat = "uyvy422", IncludeAudio = true, LowLatency = false, BufferSizeMegabytes = 512, StandbyMode = FallbackMode.TestPattern, StandbyValue = "bars" }];
         settings.Rules.Add(new RoutingRuleProfile { Id = "rule-qa", Name = "QA rule", Order = 20, Enabled = false, ServerPattern = "WOWZA-*", ApplicationPattern = "live", InstancePattern = "*", StreamPattern = "qa*", Codec = "h264", Tag = "news", PresetId = "qa-1080p25", FixedPortId = "PORT-2", LockAssignment = true });
 
         store.SaveSettingsAsync(settings).GetAwaiter().GetResult();
         var loaded = store.LoadSettingsAsync().GetAwaiter().GetResult();
-        Equal(4, loaded.SchemaVersion);
+        Equal(5, loaded.SchemaVersion);
         True(loaded.SimulationMode && !loaded.Routing.AutomaticRoutingEnabled);
         Equal(@"C:\Media\ffplay.exe", loaded.MediaTools.FfplayPath);
         Equal("WOWZA-QA", loaded.WowzaServers.Single().ServerId);
@@ -972,6 +1067,9 @@ static void AllGuiSettingsRoundTrip()
         Equal("PORT-2", loaded.ManualSources.Single().FixedPortId);
         Equal("Studio input card", loaded.DeckLinkCardOverrides.Single().FriendlyName);
         Equal("Transmission 2", loaded.DeckLinkPortOverrides.Single().FriendlyName);
+        True(loaded.DeckLinkPortOverrides.Single().IsOutputPort);
+        Equal(StandbyPattern.SmpteHdBars, loaded.DeckLinkPortOverrides.Single().StandbyPattern);
+        Equal("TX 2", loaded.DeckLinkPortOverrides.Single().StandbyLabel);
         Equal("qa-1080p25", loaded.Presets.Single().Id);
         Equal(512, loaded.Presets.Single().BufferSizeMegabytes);
         Equal("rule-qa", loaded.Rules.Single().Id);
@@ -1026,6 +1124,24 @@ static void SqliteRoutesRestore()
     });
 }
 
+static void SqliteSourcesRestore()
+{
+    WithSqliteStore(store =>
+    {
+        store.InitializeAsync().GetAwaiter().GetResult();
+        var source = new DiscoveredSource(new SourceIdentity("QA", "live", "_definst_", "offline.stream"),
+            "Offline feed", new Uri("rtsp://127.0.0.1:8698/live/offline.stream"),
+            SourceState.PublisherDisconnected, 42, Tags: new HashSet<string> { "offline", "qa" },
+            LastObservedAt: DateTimeOffset.UtcNow.AddMinutes(-5));
+        store.UpsertSourceAsync(source).GetAwaiter().GetResult();
+        var restored = store.LoadSourcesAsync().GetAwaiter().GetResult().Single();
+        Equal(source.Identity.Value, restored.Identity.Value);
+        Equal(SourceState.PublisherDisconnected, restored.State);
+        Equal("Offline feed", restored.FriendlyName);
+        True(restored.Tags!.SetEquals(["offline", "qa"]));
+    });
+}
+
 static void SqliteLogsAreRedacted()
 {
     WithSqliteStore(store =>
@@ -1069,6 +1185,16 @@ static void WithSqliteStore(Action<SqliteDataStore> body)
 }
 
 static WowzaServerConfiguration Server(string template) => new("Main", "MAIN", new Uri("http://127.0.0.1:8087/"), "cred-main", true, "127.0.0.1", 8698, ["live"], ["_definst_"], template, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5));
+
 static void True(bool value) { if (!value) throw new Exception("Expected true."); }
 static void Equal<T>(T expected, T actual) { if (!EqualityComparer<T>.Default.Equals(expected, actual)) throw new Exception($"Expected '{expected}', got '{actual}'."); }
 static void Throws<T>(Action action) where T : Exception { try { action(); } catch (T) { return; } throw new Exception($"Expected {typeof(T).Name}."); }
+
+sealed class StaticJsonHandler(string json) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+        Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+        });
+}

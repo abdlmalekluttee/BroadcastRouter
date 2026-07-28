@@ -22,13 +22,12 @@ public sealed class WowzaDiscoveryProvider(
             using var document = await GetInstanceAsync(application, instance, credential, cancellationToken).ConfigureAwait(false);
             foreach (var observation in WowzaIncomingStreamParser.Parse(document.RootElement))
             {
-                if (!observation.PublisherConnected) continue;
                 var identity = new SourceIdentity(server.ServerId, application, instance, observation.StreamName);
                 sources.Add(new DiscoveredSource(
                     identity,
                     observation.StreamName,
                     RtspUrlGenerator.Generate(server, identity),
-                    SourceState.PublisherActive,
+                    observation.PublisherConnected ? SourceState.PublisherActive : SourceState.PublisherDisconnected,
                     server.Priority,
                     LastObservedAt: DateTimeOffset.UtcNow));
             }

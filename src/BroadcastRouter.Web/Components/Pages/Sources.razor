@@ -53,7 +53,7 @@
         <td class="mono" title="@Sanitize(source.RtspUri)">@Sanitize(source.RtspUri)</td>
         <td>@FormatVideo(source.Media)</td>
         <td>@(source.Media?.AudioCodec is null ? "None" : $"{source.Media.AudioCodec} · {source.Media.AudioSampleRate} Hz · {source.Media.AudioChannels} ch")</td>
-        <td><BroadcastRouter.Web.Components.Shared.StateBadge Value="source.State" /></td><td>@source.Priority</td><td>@source.LastObservedAt?.ToLocalTime().ToString("HH:mm:ss")</td>
+        <td><div class="source-status-stack"><BroadcastRouter.Web.Components.Shared.StateBadge Value="SourceAvailability(source)" /><span class="badge">@SourceAssignment(route)</span></div></td><td>@source.Priority</td><td>@source.LastObservedAt?.ToLocalTime().ToString("HH:mm:ss")</td>
         <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions">
             @if (routeAction == SourceRouteActionKind.View)
             {
@@ -61,11 +61,11 @@
             }
             else
             {
-                <button class="btn small primary" disabled="@(routeBusySource is not null)" @onclick='() => Run("start", source.Identity.Value)'>@(routeBusySource == source.Identity.Value ? "Routing…" : routeAction == SourceRouteActionKind.Retry ? "Retry route" : "Route")</button>
+                <a class="btn small primary" href="/routes">Configure route</a>
             }
             <button class="btn small" disabled="@(previewBusy || source.Media is null)" title="Play an embedded browser preview with audio VU meter" @onclick='() => StartPreview(source.Identity.Value)'>Preview</button><button class="btn small" disabled="@(routeBusySource is not null)" @onclick='() => Run("reprobe", source.Identity.Value)'>Reprobe</button></div></Authorized></AuthorizeView></td></tr>
 }
-@if (snapshot.Sources.Count == 0) { <tr><td colspan="9"><div class="empty-state">No active sources discovered. Check Wowza settings or add a manual RTSP source.</div></td></tr> }
+@if (snapshot.Sources.Count == 0) { <tr><td colspan="9"><div class="empty-state">No configured or discovered incoming streams. Check Wowza settings or add a manual RTSP source.</div></td></tr> }
 </tbody></table></div></div>
 
 @code {
@@ -125,5 +125,21 @@
         null => "—",
         { HasUsableVideo: false, AudioCodec: not null } => "Generated black · audio-led input",
         _ => $"{media.VideoCodec} · {media.Width}×{media.Height} · {FormatRate(media)}"
+    };
+    private static string SourceAvailability(DiscoveredSource source) => source.State switch
+    {
+        SourceState.Ready or SourceState.Running or SourceState.PublisherActive => "Active",
+        SourceState.PublisherDisconnected or SourceState.RtspUnavailable or SourceState.Disabled => "Offline",
+        _ => source.State.ToString()
+    };
+    private static string SourceAssignment(RuntimeRoute? route) => route switch
+    {
+        null => "Unassigned",
+        { FailureCategory: "RoutingConflict" } => "Routing conflict",
+        { State: RouteState.WaitingForStream } => "Waiting for stream",
+        { AssignmentMode: AssignmentMode.Preconfigured or AssignmentMode.Fixed or AssignmentMode.Rule } => "Preconfigured",
+        { AssignmentMode: AssignmentMode.Manual } => "Manually assigned",
+        { AssignmentMode: AssignmentMode.Automatic } => "Automatically assigned",
+        _ => "Unassigned"
     };
 }

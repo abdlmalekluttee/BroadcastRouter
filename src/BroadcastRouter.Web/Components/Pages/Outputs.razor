@@ -5,7 +5,7 @@
 @implements IDisposable
 
 <PageTitle>DeckLink Outputs · BroadcastRouter</PageTitle>
-<div class="page-head"><div><h1>DeckLink Outputs</h1><p class="lead">Physical cards and connectors use operator names while persistent hardware identity protects saved assignments.</p></div><AuthorizeView Roles="Administrator"><Authorized><button class="btn" @onclick='() => Commands.ExecuteAsync("rescan")'>Rescan hardware</button></Authorized></AuthorizeView></div>
+<div class="page-head"><div><h1>DeckLink ports</h1><p class="lead">Only connectors explicitly marked as output ports can be routed. Idle output ports show their configured standby screen.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><a class="btn" href="/settings">Configure ports</a><button class="btn" @onclick='() => Commands.ExecuteAsync("rescan")'>Rescan hardware</button></div></Authorized></AuthorizeView></div>
 @if (!snapshot.SimulationMode && !snapshot.ToolValidation.CanStartHardwareRoutes) { <div class="notice danger">DeckLink starts are blocked: @snapshot.ToolValidation.Findings.LastOrDefault(x => x.StartsWith("FAIL"))</div> }
 
 @foreach (var card in CardGroups())
@@ -21,12 +21,14 @@
         @foreach (var port in card.Ports)
         {
             var route = snapshot.Routes.FirstOrDefault(x => x.PortId == port.StableId && x.State != RouteState.Released);
+            var standby = snapshot.Standbys?.FirstOrDefault(value => value.PortId.Equals(port.StableId, StringComparison.OrdinalIgnoreCase));
             <article class="card port-card @(route is null ? "" : "occupied")" @key="port.StableId">
                 <span class="connector"></span><div class="stat-label">Connector @(port.SubdeviceIndex + 1)</div><h2 style="margin-top:8px">@DeckLinkDisplayName.Connector(port)</h2>
-                <span class="secondary-text">@DeckLinkDisplayName.Full(port)</span><div style="margin-top:16px"><BroadcastRouter.Web.Components.Shared.StateBadge Value="@(port.IsAvailable ? (route is null ? "Available" : "Running") : "Unavailable")" /></div>
+                <span class="secondary-text">@DeckLinkDisplayName.Full(port)</span><div class="actions" style="margin-top:16px"><span class="badge @(port.IsOutputPort ? "success" : "warning")">@(port.IsOutputPort ? "Output port" : "Input / excluded")</span><BroadcastRouter.Web.Components.Shared.StateBadge Value="@(port.IsAvailable ? (route is null ? "Available" : "Reserved") : "Unavailable")" />@if(standby is not null){<BroadcastRouter.Web.Components.Shared.StateBadge Value="standby.State" />}</div>
                 <dl><dt>Port group</dt><dd>@(string.IsNullOrWhiteSpace(port.PortGroup) ? "Default" : port.PortGroup) @(port.Reserved ? "· reserved from automatic routing" : "")</dd><dt>Mapping confidence</dt><dd>@port.IdentityConfidence</dd><dt>Supported modes</dt><dd>@(port.SupportedModes.Count == 0 ? "Query not exposed / verified when FFmpeg starts" : string.Join(", ", port.SupportedModes.Select(Mode)))</dd></dl>
                 <details class="technical-identity"><summary>Technical identity</summary><dl><dt>FFmpeg address</dt><dd class="mono">@port.FfmpegName</dd><dt>Connector stable ID</dt><dd class="mono">@port.StableId</dd>@if(port.PersistentId is not null){<dt>Persistent connector ID</dt><dd class="mono">@port.PersistentId</dd>}@if(port.DeviceGroupId is not null){<dt>Physical card identity</dt><dd class="mono">@port.DeviceGroupId</dd>}@if(port.TopologicalId is not null){<dt>Current topology ID (not saved)</dt><dd class="mono">@port.TopologicalId</dd>}</dl></details>
                 @if (route is not null) { <div class="notice success" style="margin:12px 0 0"><strong>@route.SourceName</strong><br />@route.PresetId · @(route.Locked ? "locked" : "unlocked")</div> }
+                @if (standby is not null) { <div class="standby-summary"><strong>@standby.Summary</strong>@if(!string.IsNullOrWhiteSpace(standby.ErrorMessage)){<span class="secondary-text">@standby.ErrorMessage</span>}</div> }
             </article>
         }
         </div></div>

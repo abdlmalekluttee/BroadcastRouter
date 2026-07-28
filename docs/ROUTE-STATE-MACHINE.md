@@ -9,6 +9,10 @@ stateDiagram-v2
     PublisherActive --> Probing
     Probing --> Ready: video frame or live audio received
     Probing --> Unavailable: RTSP/media failure
+    Known --> WaitingForStream: saved route, publisher offline
+    Unavailable --> WaitingForStream: saved route retained
+    WaitingForStream --> Reserved: publisher ready and saved port acquired
+    WaitingForStream --> WaitingForPort: higher-priority saved conflict
     Ready --> WaitingForPort: no compatible free port
     Ready --> Reserved: atomic reservation succeeds
     WaitingForPort --> Reserved: port becomes available
@@ -35,4 +39,6 @@ stateDiagram-v2
 
 API-unreachable is server health, not a destructive route transition. Healthy `Running` routes remain running until RTSP/progress or process evidence says otherwise.
 
-Locked assignments retain `Reserved` ownership indefinitely. Unlocked offline routes retain it until their grace deadline, then transition through `Released`. Every transition is validated; invalid jumps are rejected and logged with source identity and correlation ID.
+Saved preconfigured/manual assignments retain their desired port and preset independently of transient process state. Their ports remain reserved while offline unless temporary automatic use is explicitly enabled. Preconfigured ownership outranks manual ownership; both outrank automatic routes. A lower-priority saved entry remains in `WaitingForPort` with a routing-conflict reason rather than being overwritten.
+
+At host startup, saved intent is retained but stale `Running`, PID, frame, and lease fields are cleared before the atomic reservation table is rebuilt. This prevents two persisted entries from restoring the same connector. Every transition is validated; invalid jumps are rejected and logged with source identity and correlation ID.

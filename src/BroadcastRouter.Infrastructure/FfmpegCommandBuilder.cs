@@ -124,6 +124,78 @@ public static class FfmpegCommandBuilder
         return start;
     }
 
+    public static ProcessStartInfo BuildPortStandby(
+        FfmpegRouteOptions options,
+        DeckLinkPort port,
+        OutputPreset preset,
+        PortStandbyConfiguration configuration)
+    {
+        if (string.IsNullOrWhiteSpace(options.ExecutablePath)) throw new ArgumentException("FFmpeg path is required.", nameof(options));
+        ValidateToken(port.FfmpegName, nameof(port.FfmpegName));
+        ValidateToken(preset.Mode.PixelFormat, nameof(preset.Mode.PixelFormat));
+
+        var start = new ProcessStartInfo(options.ExecutablePath)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            CreateNoWindow = true
+        };
+        Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats");
+        var rate = preset.Interlaced
+            ? $"{checked(preset.Mode.FrameRateNumerator * 2)}/{preset.Mode.FrameRateDenominator}"
+            : $"{preset.Mode.FrameRateNumerator}/{preset.Mode.FrameRateDenominator}";
+        var source = configuration.Pattern switch
+        {
+            StandbyPattern.SmpteBars => $"smptebars=size={preset.Mode.Width}x{preset.Mode.Height}:rate={rate}",
+            StandbyPattern.SmpteHdBars => $"smptehdbars=size={preset.Mode.Width}x{preset.Mode.Height}:rate={rate}",
+            StandbyPattern.TestSource => $"testsrc2=size={preset.Mode.Width}x{preset.Mode.Height}:rate={rate}",
+            _ => $"color=c=black:size={preset.Mode.Width}x{preset.Mode.Height}:rate={rate}"
+        };
+        Add(start, "-re", "-f", "lavfi", "-i", source);
+
+        var hasLogo = !string.IsNullOrWhiteSpace(configuration.LogoPath);
+        if (hasLogo)
+        {
+            if (!File.Exists(configuration.LogoPath)) throw new InvalidOperationException("The configured per-port standby logo does not exist.");
+            Add(start, "-loop", "1", "-framerate", rate, "-i", configuration.LogoPath!);
+        }
+        var audioInput = hasLogo ? 2 : 1;
+        if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
+
+        var outputLabel = SafeOverlayText($"{DeckLinkDisplayName.Full(port)}  {configuration.PortLabel}".Trim());
+        var fontSize = Math.Clamp(preset.Mode.Height / 24, 24, 72);
+        var margin = Math.Clamp(preset.Mode.Height / 36, 16, 48);
+        var textFilters = new List<string>();
+        if (!string.IsNullOrWhiteSpace(outputLabel))
+            textFilters.Add($"drawtext=text='{outputLabel}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x={margin}:y={margin}");
+        if (configuration.ShowClock)
+            textFilters.Add($"drawtext=text='%{{localtime\\:%H\\\\:%M\\\\:%S}}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x=w-tw-{margin}:y=h-th-{margin}");
+
+        var baseFilter = BuildVideoFilter(preset, sourceIsInterlaced: false);
+        string filterGraph;
+        if (hasLogo)
+        {
+            var logoWidth = Math.Clamp(preset.Mode.Width / 6, 96, 360);
+            var tail = textFilters.Count == 0 ? "null" : string.Join(',', textFilters);
+            filterGraph = $"[0:v:0]{baseFilter}[base];[1:v:0]scale={logoWidth}:-1[logo];" +
+                $"[base][logo]overlay=x=W-w-{margin}:y={margin}[composite];[composite]{tail}[outv]";
+        }
+        else
+        {
+            var tail = textFilters.Count == 0 ? "null" : string.Join(',', textFilters);
+            filterGraph = $"[0:v:0]{baseFilter},{tail}[outv]";
+        }
+
+        Add(start, "-filter_complex", filterGraph, "-map", "[outv]", "-pix_fmt", preset.Mode.PixelFormat);
+        if (preset.IncludeAudio)
+            Add(start, "-map", $"{audioInput}:a:0", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
+        else Add(start, "-an");
+        AddDeckLinkOutput(start, options, port.FfmpegName);
+        return start;
+    }
+
     private static void AddDeckLinkOutput(ProcessStartInfo start, FfmpegRouteOptions options, string ffmpegName)
     {
         if (options.UseWindowsDeckLinkSafeTerminate) Add(start, "-win_safe_terminate", "1");
@@ -169,6 +241,12 @@ public static class FfmpegCommandBuilder
         if (string.IsNullOrWhiteSpace(value) || value.Any(char.IsControl))
             throw new ArgumentException("FFmpeg argument values cannot be empty or contain control characters.", name);
     }
+
+    private static string SafeOverlayText(string value) => new(value
+        .Where(character => char.IsLetterOrDigit(character) || char.IsWhiteSpace(character)
+            || character is '-' or '_' or '.' or '/' or '#' or '(' or ')')
+        .Take(160)
+        .ToArray());
 
     private static string RedactUri(string token)
     {

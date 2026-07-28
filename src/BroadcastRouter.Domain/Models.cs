@@ -10,11 +10,12 @@ public enum SourceState
 public enum RouteState
 {
     Known, PublisherActive, Probing, Ready, WaitingForPort, Reserved, Starting,
-    Running, Stalled, Reconnecting, Fallback, Unavailable, Released, Disabled, Failed
+    Running, Stalled, Reconnecting, Fallback, WaitingForStream, Unavailable, Released, Disabled, Failed
 }
 
-public enum AssignmentMode { None, Automatic, Rule, Fixed, Manual }
+public enum AssignmentMode { None, Automatic, Rule, Fixed, Manual, Preconfigured }
 public enum FallbackMode { Black, TestPattern, FreezeLastFrame, StandbySource, File }
+public enum StandbyPattern { Black, SmpteBars, SmpteHdBars, TestSource }
 
 public sealed record WowzaServerConfiguration(
     string FriendlyName,
@@ -81,7 +82,8 @@ public sealed record DeckLinkPort(
     string? DeviceHandle = null,
     string? TopologicalId = null,
     IReadOnlyList<string>? PreviousStableIds = null,
-    string? CardFriendlyName = null);
+    string? CardFriendlyName = null,
+    bool IsOutputPort = false);
 
 public static class DeckLinkDisplayName
 {
@@ -128,3 +130,9 @@ public sealed record PortReservation(
     SourceIdentity Source,
     bool Locked,
     DateTimeOffset ReservedAt);
+
+public sealed record PortStandbyConfiguration(
+    StandbyPattern Pattern,
+    string? LogoPath,
+    string PortLabel,
+    bool ShowClock);

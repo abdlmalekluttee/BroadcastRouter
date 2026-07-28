@@ -1,9 +1,9 @@
 # BroadcastRouter production-safety review
 
-Review date: 2026-07-27
-Review branch: `codex/release-privacy-hardening`
-Reviewed baseline: `6799789` (`origin/main`)
-Resulting release version: `1.2.11`
+Review date: 2026-07-28
+Review branch: `codex/persistent-routing-standby`
+Reviewed baseline: `f921a2e` (`origin/main`)
+Resulting release version: `1.3.0`
 
 ## Executive summary
 
@@ -23,6 +23,8 @@ The 1.2.8 release/privacy follow-up audited every GitHub release asset and reach
 
 The 1.2.10 audio-led follow-up reproduced a valid H.264/AAC publisher that delivered continuous audio but only sparse still/black video. The bounded FFprobe window opened the input and detected media metadata but counted no video frames, causing a false `UnsupportedMedia` state while both embedded preview and an independent FFmpeg route received the source. FFprobe now counts audio packets as well as frames, readiness requires actual video or audio delivery, and audio-led routes generate continuous preset-matched black video with live normalized audio. Metadata-only inputs remain rejected. Live 1.2.10 browser validation then caught the publisher delivering an isolated frame, which briefly changed it back to normal-video mode. Version 1.2.11 requires sustained video cadence and retains audio-led mode for the active publisher observation.
 
+The 1.3.0 routing follow-up makes the connector role explicit and fail-closed, persists offline source inventory and saved route intent, enforces preconfigured → manual → automatic priority, and adds independently configured per-port standby screens. Restart integration testing exposed and fixed an important duplicate-ownership defect: saved routes now discard stale runtime lease/process fields before priority-ordered reconstruction. A lower-priority saved entry remains a visible conflict and cannot acquire the same atomic port lease.
+
 ## Architecture assessment
 
 - `BroadcastRouter.Domain` contains normalized source identities, configuration models, media/output models, and runtime snapshots.
@@ -31,7 +33,7 @@ The 1.2.10 audio-led follow-up reproduced a valid H.264/AAC publisher that deliv
 - `BroadcastRouter.Web` owns the long-running host, coordinator, Blazor UI, SignalR status publication, authentication, health, and diagnostics endpoints. Browser refresh/closure does not own or stop FFmpeg.
 - `BroadcastRouter.Tests` is a dependency-light executable regression suite.
 
-Route lifecycle: Wowza/manual discovery → normalized source identity → bounded FFprobe frame validation → ordered rule evaluation → compatible port selection → atomic lease → fail-closed media-tool gate → FFmpeg start/progress supervision → stall/exit classification → retry/fallback → explicit stop or grace-based release → SQLite persistence and restart lease reconstruction.
+Route lifecycle: persistent Wowza/manual inventory → normalized source identity → active-source FFprobe validation → saved preconfigured/manual reconciliation → output-designated compatible port selection → atomic lease → fail-closed media-tool gate → per-port standby/live handoff → FFmpeg progress supervision → retry/fallback → SQLite intent persistence and clean restart reconstruction.
 
 The main coupling risk remains `RouterCoordinator`: it combines discovery scheduling, probing, state mutation, retry/fallback, persistence, process supervision, and operator commands in one large service. A large rewrite is not justified. This pass added per-source serialization and small testable policy boundaries while retaining the existing deployment shape.
 
@@ -100,7 +102,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Version 1.3.0: 75/75 tests.
 
 Added coverage:
 
@@ -170,6 +172,7 @@ Still requiring integration or hardware coverage:
 - 1.2.5 follow-up: fallback-audio input ordering, idempotent release of already-free leases, and Windows Job Object containment for abrupt-host orphan prevention.
 - 1.2.6 follow-up: explicit Sources-page route actions, patched-FFmpeg capability detection, and an opt-in Windows DeckLink final-release workaround validated against Desktop Video 16.1.
 - 1.2.8 follow-up: direct Blackmagic persistent-ID discovery, legacy-reference migration, physical-card grouping, safe live-migration deferral, clean FFmpeg sink labels, and focused identity/reorder/migration regressions.
+- 1.3.0 follow-up: explicit output-port roles, offline source persistence, durable saved routing intent and priority/conflict policy, per-port standby supervision, and restart-safe transient-state reset.
 
 ## Commands and results
 
@@ -182,7 +185,7 @@ dotnet run --no-build --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.cs
 git diff --check
 ```
 
-Current branch results: restore passed; Release build passed with 0 warnings/errors; 64/64 tests passed; the vulnerability audit was clean; and `git diff --check` reported no whitespace errors. The human-identity UI was exercised in isolated simulation: two physical-card names persisted, Outputs grouped connectors under those names, route/manual/rule selectors rendered `Card / Connector`, raw identities remained collapsed, tested pages had no document/card overflow, and no post-fix browser errors were recorded. A self-contained `win-x64` 1.2.8 package was previously deployed in a controlled lab with rollback backups and preserved configuration/database. The current identity branch has not been deployed. Concrete network, source, output, process, and device identifiers are intentionally excluded. Physical SDI picture/audio and actual PCI-slot swapping remain unobserved.
+Current 1.3.0 branch results: Release build passed with 0 warnings/errors; 75/75 regressions passed; all seven server-rendered UI routes and health returned HTTP 200 in isolated simulation; tagged sources survived a real host restart; and a persisted preconfigured/manual conflict produced exactly one owner with the lower-priority entry retained as `RoutingConflict`. The in-app browser-control runtime failed during connection, so final visual click-through remains pending. Concrete network, source, output, process, and device identifiers are intentionally excluded. Physical SDI picture/audio and standby-screen observation remain environment-specific validation steps.
 
 ## Recommended follow-up
 

@@ -57,6 +57,13 @@ public sealed class FfmpegProcessSupervisor(
         return StartProcessAsync(source, FfmpegCommandBuilder.BuildFallback(options, port, preset, mode, value));
     }
 
+    public Task StartPortStandbyAsync(SourceIdentity owner, DeckLinkPort port, OutputPreset preset,
+        PortStandbyConfiguration configuration, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return StartProcessAsync(owner, FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration));
+    }
+
     public async Task StopAsync(SourceIdentity source, CancellationToken cancellationToken)
     {
         if (!_running.TryRemove(source.Value, out var managed)) return;

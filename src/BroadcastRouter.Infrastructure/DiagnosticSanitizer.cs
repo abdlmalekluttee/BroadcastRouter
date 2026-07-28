@@ -20,6 +20,7 @@ public static class DiagnosticSanitizer
         {
             Id = Opaque(port.StableId),
             port.IsAvailable,
+            port.IsOutputPort,
             port.Reserved,
             port.IdentityConfidence,
             SupportedModeCount = port.SupportedModes.Count
@@ -28,10 +29,13 @@ public static class DiagnosticSanitizer
         {
             Source = Opaque(route.SourceId),
             Port = Opaque(route.PortId),
+            DesiredPort = Opaque(route.DesiredPortId),
             Preset = Opaque(route.PresetId),
             route.State,
             route.AssignmentMode,
             route.Locked,
+            route.ReserveWhileOffline,
+            route.AllowTemporaryUse,
             route.Priority,
             route.RestartCount,
             route.Frame,
@@ -45,6 +49,15 @@ public static class DiagnosticSanitizer
             FailureMessage = LogRedactor.RedactForDiagnostics(route.FailureMessage ?? "")
         }),
         Waiting = snapshot.Waiting.Select(item => new { Source = Opaque(item.SourceId), item.Priority, Reason = LogRedactor.RedactForDiagnostics(item.Reason), item.Sequence }),
+        Standbys = (snapshot.Standbys ?? []).Select(standby => new
+        {
+            Port = Opaque(standby.PortId),
+            standby.State,
+            standby.ProcessId,
+            Summary = LogRedactor.RedactForDiagnostics(standby.Summary),
+            ErrorMessage = LogRedactor.RedactForDiagnostics(standby.ErrorMessage ?? ""),
+            standby.UpdatedAt
+        }),
         Servers = snapshot.Servers.Select(server => new { server.Reachable, server.Authenticated, server.ActiveStreamCount, Summary = LogRedactor.RedactForDiagnostics(server.Summary), server.CheckedAt }),
         ToolValidation = new
         {
@@ -66,6 +79,8 @@ public static class DiagnosticSanitizer
         ManualSourceCount = settings.ManualSources.Count,
         DeckLinkCardOverrideCount = settings.DeckLinkCardOverrides.Count,
         DeckLinkOverrideCount = settings.DeckLinkPortOverrides.Count,
+        OutputPortCount = settings.DeckLinkPortOverrides.Count(port => port.IsOutputPort),
+        StandbyPortCount = settings.DeckLinkPortOverrides.Count(port => port.IsOutputPort && port.StandbyEnabled),
         Presets = settings.Presets.Select(preset => new
         {
             Id = Opaque(preset.Id),

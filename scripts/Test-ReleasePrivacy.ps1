@@ -26,7 +26,9 @@ $findings = [Collections.Generic.List[object]]::new()
 $textExtensions = @('.config', '.css', '.html', '.htm', '.ini', '.js', '.json', '.md', '.ps1', '.txt', '.xml', '.yaml', '.yml')
 
 foreach ($file in Get-ChildItem -LiteralPath $resolvedPackage -Recurse -File) {
-    $relative = [IO.Path]::GetRelativePath($resolvedPackage, $file.FullName)
+    # Windows PowerShell 5.1 targets .NET Framework, which does not expose
+    # Path.GetRelativePath. Both paths are already fully resolved.
+    $relative = $file.FullName.Substring($resolvedPackage.TrimEnd('\').Length).TrimStart('\')
     foreach ($rule in $forbiddenNames.GetEnumerator()) {
         if ($relative -match $rule.Value) {
             $findings.Add([pscustomobject]@{ File = $relative; Rule = $rule.Key })

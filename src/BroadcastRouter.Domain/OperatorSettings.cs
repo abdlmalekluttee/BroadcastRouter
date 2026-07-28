@@ -2,7 +2,7 @@ namespace BroadcastRouter.Domain;
 
 public sealed class OperatorSettings
 {
-    public int SchemaVersion { get; set; } = 4;
+    public int SchemaVersion { get; set; } = 5;
     public bool SimulationMode { get; set; } = false;
     public MediaToolPaths MediaTools { get; set; } = new();
     public List<WowzaServerProfile> WowzaServers { get; set; } = [];
@@ -27,6 +27,13 @@ public sealed class DeckLinkPortOverride
     public string FriendlyName { get; set; } = "";
     public string PortGroup { get; set; } = "";
     public bool Reserved { get; set; }
+    public bool IsOutputPort { get; set; }
+    public bool StandbyEnabled { get; set; } = true;
+    public string StandbyPresetId { get; set; } = "";
+    public StandbyPattern StandbyPattern { get; set; } = StandbyPattern.SmpteBars;
+    public string StandbyLogoPath { get; set; } = "";
+    public string StandbyLabel { get; set; } = "";
+    public bool StandbyShowClock { get; set; } = true;
 }
 
 public sealed class MediaToolPaths
