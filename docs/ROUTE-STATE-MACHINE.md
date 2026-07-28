@@ -7,7 +7,7 @@ stateDiagram-v2
     [*] --> Known
     Known --> PublisherActive
     PublisherActive --> Probing
-    Probing --> Ready: frames received
+    Probing --> Ready: video frame or live audio received
     Probing --> Unavailable: RTSP/media failure
     Ready --> WaitingForPort: no compatible free port
     Ready --> Reserved: atomic reservation succeeds

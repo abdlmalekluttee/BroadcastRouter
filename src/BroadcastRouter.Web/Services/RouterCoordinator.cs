@@ -429,16 +429,23 @@ public sealed class RouterCoordinator(
             var probed = source;
             if (source.Media is null)
             {
+                bool wasAudioLedReady;
+                lock (_gate)
+                    wasAudioLedReady = _sources.TryGetValue(source.Identity.Value, out var previous)
+                        && previous.State == SourceState.Ready
+                        && previous.Media is { HasUsableVideo: false, AudioCodec: not null };
                 var probe = settings.SimulationMode
                     ? await new SimulationStreamProbe().ProbeAsync(source.RtspUri, cancellationToken)
                     : await new FfprobeStreamProbe(settings.MediaTools.FfprobePath, TimeSpan.FromSeconds(8)).ProbeAsync(source.RtspUri, cancellationToken);
                 probed = source with
                 {
-                    State = probe.FramesReceived ? SourceState.Ready : probe.Opened ? SourceState.UnsupportedMedia : SourceState.RtspUnavailable,
+                    State = SourceProbeReadinessPolicy.Resolve(probe),
                     Media = probe.Media
                 };
-                if (!probe.FramesReceived)
+                if (probed.State != SourceState.Ready)
                     await LogAsync("Warning", "Probe", $"Probe failed: {probe.FailureCategory}: {probe.Detail}", source.Identity.Value, cancellationToken: cancellationToken);
+                else if (probe.AudioReceived && !probe.FramesReceived && !wasAudioLedReady)
+                    await LogAsync("Information", "Probe", $"Audio-led source accepted: {probe.Detail}", source.Identity.Value, cancellationToken: cancellationToken);
             }
             lock (_gate)
             {

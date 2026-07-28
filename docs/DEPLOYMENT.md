@@ -10,6 +10,7 @@
 5. In **Settings > Media Tools**, select `ffmpeg.exe` and `ffprobe.exe`, save, and require every routing validation gate to pass. Embedded preview additionally requires the H.264/AAC, fragmented MP4, and preview-filter capabilities listed above.
 6. Configure and test Wowza. Name each persistent physical card for its operational role, then name each connector, assign groups/reserved ports, create presets/rules, and test one output at a time. Selectors show `Card name / Connector name`; raw identities are diagnostic values, not operator input. Manual route creation and confirmed reassignment can choose any saved output preset.
    On supported hardware, the Outputs page must report **Blackmagic persistent hardware ID**. Version 1.2.7 migrates legacy FFmpeg-hash references during the first controlled restart and preserves operator names, fixed rules, and desired routes. If ownership is active during discovery, migration is intentionally deferred until the next restart.
+   Audio-only and sparse-video sources require an audio-enabled preset. BroadcastRouter verifies live audio packets, generates continuous black video at the preset raster/rate, and preserves the live audio; it does not treat codec metadata by itself as route-ready.
 7. Run `scripts\Install-InteractiveLogon.ps1` as the broadcast account. It creates a normal per-user Task Scheduler entry that starts the server when that user logs in; elevation is not required.
 8. Perform the soak plan in `PRODUCTION-VALIDATION.md` before enabling automatic routing.
 

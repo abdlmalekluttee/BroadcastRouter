@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.2.10 — 2026-07-28
+
+- Accept audio-led RTSP inputs only after FFprobe counts real audio packets or frames, even when no video frame arrives during the bounded probe window.
+- Generate continuous preset-matched black video with 48 kHz stereo PCM live audio for audio-only and sparse-video sources.
+- End generated-black routes when their live audio input ends, preventing an indefinite black-output process after source loss.
+- Make embedded preview use generated black video plus its existing VU meter for audio-led sources.
+- Show audio-led/generated-black operation explicitly on the Sources page instead of reporting supported audio as unsupported media.
+- Added regressions for sparse-video admission, true audio-only admission, metadata-only rejection, continuous-black route arguments, and audio-led browser preview.
+
 ## 1.2.9 — 2026-07-27
 
 - Added operator-defined physical-card names keyed by the stable DeckLink device-group identity.
