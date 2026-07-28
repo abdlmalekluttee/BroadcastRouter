@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.3.1 — 2026-07-29
+
+- Corrected the standby clock filter expression to use the portable `%T` `HH:MM:SS` format without over-escaped delimiters.
+- Require the FFmpeg DeckLink build to include HarfBuzz so FFmpeg 8.1.2 enables `drawtext` alongside FreeType and Fontconfig.
+- Added functional SMPTE-bars-plus-clock validation to the builder so presence-only filter checks cannot ship a broken standby runtime.
+
 ## 1.3.0 — 2026-07-28
 
 - Added an explicit, fail-closed output-port designation for every DeckLink connector; input-only connectors are excluded from manual, rule-based, and automatic routing.

@@ -171,7 +171,7 @@ public static class FfmpegCommandBuilder
         if (!string.IsNullOrWhiteSpace(outputLabel))
             textFilters.Add($"drawtext=text='{outputLabel}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x={margin}:y={margin}");
         if (configuration.ShowClock)
-            textFilters.Add($"drawtext=text='%{{localtime\\:%H\\\\:%M\\\\:%S}}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x=w-tw-{margin}:y=h-th-{margin}");
+            textFilters.Add($"drawtext=text='%{{localtime\\:%T}}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x=w-tw-{margin}:y=h-th-{margin}");
 
         var baseFilter = BuildVideoFilter(preset, sourceIsInterlaced: false);
         string filterGraph;

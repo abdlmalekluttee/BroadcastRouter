@@ -3,7 +3,7 @@
 Review date: 2026-07-28
 Review branch: `codex/persistent-routing-standby`
 Reviewed baseline: `f921a2e` (`origin/main`)
-Resulting release version: `1.3.0`
+Resulting release version: `1.3.1`
 
 ## Executive summary
 
@@ -102,7 +102,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Version 1.3.0: 75/75 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 and 1.3.1: 75/75 tests.
 
 Added coverage:
 
@@ -185,7 +185,7 @@ dotnet run --no-build --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.cs
 git diff --check
 ```
 
-Current 1.3.0 branch results: Release build passed with 0 warnings/errors; 75/75 regressions passed; all seven server-rendered UI routes and health returned HTTP 200 in isolated simulation; tagged sources survived a real host restart; and a persisted preconfigured/manual conflict produced exactly one owner with the lower-priority entry retained as `RoutingConflict`. The in-app browser-control runtime failed during connection, so final visual click-through remains pending. Concrete network, source, output, process, and device identifiers are intentionally excluded. Physical SDI picture/audio and standby-screen observation remain environment-specific validation steps.
+Current 1.3.1 branch results: Release build passed with 0 warnings/errors; 75/75 regressions passed; all seven server-rendered UI routes and health returned HTTP 200 in isolated simulation; tagged sources survived a real host restart; and a persisted preconfigured/manual conflict produced exactly one owner with the lower-priority entry retained as `RoutingConflict`. The FFmpeg builder also passed functional SMPTE-bars plus local-clock rendering after enabling HarfBuzz. The in-app browser-control runtime failed during connection, so final visual click-through remains pending. Concrete network, source, output, process, and device identifiers are intentionally excluded. Physical SDI picture/audio and standby-screen observation remain environment-specific validation steps.
 
 ## Recommended follow-up
 
