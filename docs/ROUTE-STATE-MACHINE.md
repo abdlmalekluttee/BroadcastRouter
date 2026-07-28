@@ -26,9 +26,9 @@ stateDiagram-v2
     Reconnecting --> Fallback: grace policy
     Fallback --> Probing: primary returns
     Fallback --> Released: grace expires and unlocked
-    Starting --> Failed: permanent or retry-exhausted startup failure
+    Starting --> Failed: permanent automatic-route failure
     Running --> Failed: permanent output failure
-    Reconnecting --> Failed: retry cap exhausted
+    Reconnecting --> Failed: automatic-route retry cap exhausted
     Failed --> Reconnecting: explicit recovery
     Failed --> Released: operator stop or unlocked retry exhaustion
     Unavailable --> Probing: publisher/API observation recovers
@@ -40,5 +40,7 @@ stateDiagram-v2
 API-unreachable is server health, not a destructive route transition. Healthy `Running` routes remain running until RTSP/progress or process evidence says otherwise.
 
 Saved preconfigured/manual assignments retain their desired port and preset independently of transient process state. Their ports remain reserved while offline unless temporary automatic use is explicitly enabled. Preconfigured ownership outranks manual ownership; both outrank automatic routes. A lower-priority saved entry remains in `WaitingForPort` with a routing-conflict reason rather than being overwritten.
+
+Preconfigured and manual entries do not lose their retry intent after the automatic-route attempt cap. Stream loss returns the connector to its configured standby owner, while monitoring continues. A recovered publisher or temporary DeckLink/reference condition re-enters probing and startup without changing the output-port designation.
 
 At host startup, saved intent is retained but stale `Running`, PID, frame, and lease fields are cleared before the atomic reservation table is rebuilt. This prevents two persisted entries from restoring the same connector. Every transition is validated; invalid jumps are rejected and logged with source identity and correlation ID.

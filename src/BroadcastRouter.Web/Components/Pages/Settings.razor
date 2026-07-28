@@ -1,13 +1,14 @@
 @page "/settings"
 @attribute [Authorize(Roles = "Administrator")]
 @rendermode InteractiveServer
+@implements IDisposable
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject IJSRuntime JS
 
 <PageTitle>Settings · BroadcastRouter</PageTitle>
-<div class="page-head"><div><h1>Settings</h1><p class="lead">Persistent SQLite configuration, DPAPI credentials, media-tool validation, routing policy, and manual inputs.</p></div><button class="btn primary" @onclick="Save">Save settings</button></div>
-@if (!string.IsNullOrWhiteSpace(message)) { <div class="notice @messageClass">@message</div> }
+<div class="page-head"><div><h1>Settings</h1><p class="lead">Persistent SQLite configuration, DPAPI credentials, media-tool validation, routing policy, and manual inputs.</p></div><button class="btn primary" disabled="@saving" @onclick="Save">@(saving ? "Saving…" : "Save settings")</button></div>
+@if (!string.IsNullOrWhiteSpace(message)) { <div class="notice @messageClass" role="status">@message</div> }
 
 <div class="panel"><div class="panel-head"><h2>Operating mode</h2></div><div class="panel-body"><label class="check"><InputCheckbox aria-label="Simulation mode" @bind-Value="settings.SimulationMode" /><strong>Simulation mode</strong></label><p class="secondary-text">Turn simulation off only after selecting and validating production media tools. Changing hosting address or authentication requires an application restart.</p></div></div>
 
@@ -65,10 +66,10 @@
 <div class="panel"><div class="panel-head"><h2>LAN access and security</h2></div><div class="panel-body"><div class="notice warning">The server binds to localhost by default. Non-loopback binding is refused unless authentication is enabled. Forwarded headers are accepted only from exact trusted proxy addresses. Restart after changes. Passwords come from <span class="mono">BROADCASTROUTER_ADMIN_PASSWORD</span> and <span class="mono">BROADCASTROUTER_OPERATOR_PASSWORD</span>.</div><div class="form-grid"><div class="form-group"><label>Bind address</label><InputText aria-label="Bind address" @bind-Value="settings.Security.BindAddress" /></div><div class="form-group"><label>Port</label><InputNumber aria-label="Listening port" @bind-Value="settings.Security.Port" /></div><div class="form-group check"><InputCheckbox aria-label="Require login" @bind-Value="settings.Security.RequireAuthentication" /><label>Require login</label></div><div class="form-group check"><InputCheckbox aria-label="Kestrel HTTPS enabled" @bind-Value="settings.Security.HttpsEnabled" /><label>Kestrel HTTPS enabled</label></div><div class="form-group wide"><label>Allowed client networks</label><InputText aria-label="Allowed client networks" @bind-Value="settings.Security.AllowedNetworks" /></div><div class="form-group wide"><label>Trusted reverse proxies</label><InputText aria-label="Trusted reverse proxy addresses" @bind-Value="settings.Security.TrustedProxies" /><span class="secondary-text">Exact IP addresses separated by semicolons; CIDR ranges are intentionally rejected.</span></div><div class="form-group"><label>Session timeout (minutes)</label><InputNumber aria-label="Session timeout minutes" @bind-Value="settings.Security.SessionTimeoutMinutes" /></div></div></div></div>
 
 @code {
-    private OperatorSettings settings = null!; private string message = ""; private string messageClass = ""; private string retryDelays = "";
+    private OperatorSettings settings = null!; private string message = ""; private string messageClass = ""; private string retryDelays = ""; private bool saving;
     private SecuritySettings originalSecurity = null!;
     private HashSet<string> originalOutputPorts = new(StringComparer.OrdinalIgnoreCase);
-    protected override void OnInitialized() { settings = Coordinator.GetSettings(); originalSecurity = CopySecurity(settings.Security); retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); originalOutputPorts = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort).Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase); }
+    protected override void OnInitialized() { settings = Coordinator.GetSettings(); originalSecurity = CopySecurity(settings.Security); retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); originalOutputPorts = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort).Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase); Coordinator.Changed += BackendChanged; }
     private void AddManual() => settings.ManualSources.Add(new ManualSourceProfile());
     private IReadOnlyList<CardView> PersistentCardGroups() => Coordinator.Snapshot.Ports
         .Where(port => !string.IsNullOrWhiteSpace(port.DeviceGroupId))
@@ -110,10 +111,13 @@
     private async Task Save()
     {
         if (SecurityChanged() && !await JS.InvokeAsync<bool>("confirm", "Changing bind, authentication, HTTPS, allowlist, or proxy trust can interrupt or lock out remote operators after restart. Save these security changes?")) return;
+        var securityChanged = SecurityChanged();
         var newlyEnabledStandby = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort && value.StandbyEnabled && !originalOutputPorts.Contains(value.StableId)).ToArray();
         if (newlyEnabledStandby.Length > 0 && !await JS.InvokeAsync<bool>("confirm", $"Saving will start an FFmpeg standby screen on {newlyEnabledStandby.Length} newly enabled output port(s) after Media Tools validation. Continue?")) return;
-        try { settings.Routing.RetryDelaysSeconds = retryDelays.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(int.Parse).ToArray(); await Coordinator.SaveSettingsAsync(settings); originalSecurity = CopySecurity(settings.Security); originalOutputPorts = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort).Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase); message = "Settings saved to SQLite. Routing and standby changes are queued now; host/bind/security changes take effect after restart."; messageClass = "success"; }
+        saving = true;
+        try { settings.Routing.RetryDelaysSeconds = retryDelays.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(int.Parse).ToArray(); var result = await Commands.SaveSettingsAsync(settings); settings = result.Settings; retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); originalSecurity = CopySecurity(settings.Security); originalOutputPorts = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort).Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase); message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Backend revision {result.ConfigurationRevision} confirmed." + (securityChanged ? " Host/bind/security changes require a restart; routing, output-port, and standby changes do not." : " No restart is required."); messageClass = "success"; }
         catch(Exception ex) { message = ex.Message; messageClass = "danger"; }
+        finally { saving = false; }
     }
     private async Task Validate() { await Save(); if(messageClass == "success") { await Commands.ExecuteAsync("rescan"); message = "Validation and hardware rescan requested."; } }
     private async Task RemoveManual(ManualSourceProfile source) { if (await JS.InvokeAsync<bool>("confirm", $"Remove manual source '{source.FriendlyName}' from the pending settings?")) settings.ManualSources.Remove(source); }
@@ -124,5 +128,12 @@
     private static SecuritySettings CopySecurity(SecuritySettings value) => new() { BindAddress = value.BindAddress, Port = value.Port,
         RequireAuthentication = value.RequireAuthentication, HttpsEnabled = value.HttpsEnabled, AllowedNetworks = value.AllowedNetworks,
         TrustedProxies = value.TrustedProxies, SessionTimeoutMinutes = value.SessionTimeoutMinutes };
+    private void BackendChanged()
+    {
+        var revision = Coordinator.GetSettings().ConfigurationRevision;
+        if (settings is null || revision == settings.ConfigurationRevision) return;
+        _ = InvokeAsync(() => { message = $"Backend configuration changed to revision {revision} while this page was open. Reload before saving; stale values will not overwrite the backend."; messageClass = "warning"; StateHasChanged(); });
+    }
+    public void Dispose() => Coordinator.Changed -= BackendChanged;
     private sealed record CardView(string Key, IReadOnlyList<DeckLinkPort> Ports);
 }

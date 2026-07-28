@@ -11,13 +11,17 @@
     </tbody></table></div></div>
     <div>
         <div class="panel"><div class="panel-head"><h2>Media validation</h2><BroadcastRouter.Web.Components.Shared.StateBadge Value="Coordinator.Snapshot.ToolValidation.State" /></div><div class="panel-body"><ul class="validation-list">@foreach(var finding in Coordinator.Snapshot.ToolValidation.Findings){<li class="@(finding.StartsWith("PASS") ? "pass" : finding.StartsWith("FAIL") ? "fail" : "warn")">@finding</li>}</ul></div></div>
-        <div class="panel"><div class="panel-head"><h2>Support package contents</h2></div><div class="panel-body"><ul><li>Sanitized runtime snapshot and settings</li><li>Redacted recent structured logs</li><li>SQLite integrity result (no database copy)</li><li>FFmpeg/FFprobe validation findings</li><li>Opaque route/output identifiers, states, and recent failures</li></ul><p class="secondary-text">Credentials, internal addresses, topology names, media paths, and the production database are omitted or redacted.</p></div></div>
+        <div class="panel"><div class="panel-head"><h2>Support package contents</h2></div><div class="panel-body"><ul><li>Sanitized runtime snapshot and settings revision</li><li>Redacted recent structured and configuration-audit logs</li><li>SQLite integrity result (no database copy)</li><li>FFmpeg/FFprobe validation findings</li><li>Opaque route/output identifiers, reference status, states, and recent failures</li></ul><p class="secondary-text">Credentials, internal addresses, topology names, media paths, and the production database are omitted or redacted.</p></div></div>
         <div class="panel"><div class="panel-head"><h2>Failure summary</h2></div><div class="panel-body">@foreach(var route in Coordinator.Snapshot.Routes.Where(x => x.FailureCategory is not null)){<div class="notice danger"><strong>@route.SourceName · @route.FailureCategory</strong><br />@route.FailureMessage</div>}@if(!Coordinator.Snapshot.Routes.Any(x => x.FailureCategory is not null)){<p class="secondary-text">No current route failures.</p>}</div></div>
     </div>
 </div>
+<div class="panel"><div class="panel-head"><div><h2>Configuration audit</h2><span class="secondary-text">Confirmed operator changes, identity migrations, rediscovery, and service-start events.</span></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Card / port</th><th>Previous</th><th>New</th><th>Responsible</th><th>Reason / backend</th><th>Stream</th></tr></thead><tbody>
+@foreach(var entry in audit){<tr><td class="mono">@entry.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td><td>@entry.EventType</td><td><strong>@entry.CardName</strong><span class="secondary-text">@entry.PortName</span><span class="secondary-text mono">@entry.EntityId</span></td><td style="white-space:normal;min-width:240px">@entry.PreviousState</td><td style="white-space:normal;min-width:240px">@entry.NewState</td><td>@entry.Actor</td><td style="white-space:normal;min-width:260px">@entry.Reason<br /><span class="secondary-text">@entry.BackendStatus</span></td><td class="mono">@entry.SourceId</td></tr>}
+@if(audit.Count == 0){<tr><td colspan="8"><div class="empty-state">No configuration audit entries have been recorded yet.</div></td></tr>}
+</tbody></table></div></div>
 
 @code {
-    private IReadOnlyList<StructuredLogEntry> logs = []; private string search = "";
+    private IReadOnlyList<StructuredLogEntry> logs = []; private IReadOnlyList<ConfigurationAuditEntry> audit = []; private string search = "";
     protected override async Task OnInitializedAsync() => await Load();
-    private async Task Load() { logs = await Coordinator.ReadLogsAsync(search, 1000); }
+    private async Task Load() { logs = await Coordinator.ReadLogsAsync(search, 1000); audit = await Coordinator.ReadConfigurationAuditAsync(1000); }
 }

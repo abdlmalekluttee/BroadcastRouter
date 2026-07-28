@@ -9,7 +9,9 @@ public sealed record DeckLinkHardwareIdentity(
     uint? PersistentId,
     uint? DeviceGroupId,
     uint? TopologicalId,
-    int? SubdeviceIndex);
+    int? SubdeviceIndex,
+    bool? HasReferenceInput = null,
+    bool? ReferenceSignalLocked = null);
 
 public static class DeckLinkSdkIdentityEnumerator
 {
@@ -19,6 +21,8 @@ public static class DeckLinkSdkIdentityEnumerator
     private const uint TopologicalId = 0x746F6964; // toid
     private const uint SubdeviceIndex = 0x73756269; // subi
     private const uint DeviceHandle = 0x64657668; // devh
+    private const uint HasReferenceInput = 0x6872696E; // hrin
+    private const uint ReferenceSignalLocked = 0x7265666C; // refl
 
     public static IReadOnlyList<DeckLinkHardwareIdentity> Enumerate()
     {
@@ -40,6 +44,11 @@ public static class DeckLinkSdkIdentityEnumerator
                     _ = device.GetDisplayName(out var displayName);
                     if (device is not IDeckLinkProfileAttributes attributes) continue;
                     if (attributes.GetString(DeviceHandle, out var handle) != 0 || string.IsNullOrWhiteSpace(handle)) continue;
+                    var hasReferenceInput = TryGetFlag(attributes, HasReferenceInput);
+                    bool? referenceSignalLocked = null;
+                    if (hasReferenceInput == true && device is IDeckLinkStatus status
+                        && status.GetFlag(ReferenceSignalLocked, out var locked) == 0)
+                        referenceSignalLocked = locked != 0;
                     devices.Add(new(
                         handle.Trim(),
                         displayName?.Trim() ?? handle.Trim(),
@@ -47,7 +56,9 @@ public static class DeckLinkSdkIdentityEnumerator
                         TryGetUInt32(attributes, PersistentId),
                         TryGetUInt32(attributes, DeviceGroupId),
                         TryGetUInt32(attributes, TopologicalId),
-                        TryGetIndex(attributes, SubdeviceIndex)));
+                        TryGetIndex(attributes, SubdeviceIndex),
+                        hasReferenceInput,
+                        referenceSignalLocked));
                 }
                 finally { Marshal.FinalReleaseComObject(device); }
             }
@@ -72,6 +83,9 @@ public static class DeckLinkSdkIdentityEnumerator
         attributes.GetInt(id, out var value) == 0 && value is >= 0 and <= int.MaxValue
             ? (int)value
             : null;
+
+    private static bool? TryGetFlag(IDeckLinkProfileAttributes attributes, uint id) =>
+        attributes.GetFlag(id, out var value) == 0 ? value != 0 : null;
 
     [ComImport, Guid("50FB36CD-3063-4B73-BDBB-958087F2D8BA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IDeckLinkIterator
@@ -98,5 +112,11 @@ public static class DeckLinkSdkIdentityEnumerator
         [PreserveSig] int GetFloat(uint cfgId, out double value);
         [PreserveSig] int GetString(uint cfgId, [MarshalAs(UnmanagedType.BStr)] out string? value);
         [PreserveSig] int GetStringWithParam(uint cfgId, ulong parameter, [MarshalAs(UnmanagedType.BStr)] out string? value);
+    }
+
+    [ComImport, Guid("2A04A635-ED42-41EF-9342-0E11F8CF6B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IDeckLinkStatus
+    {
+        [PreserveSig] int GetFlag(uint statusId, out int value);
     }
 }

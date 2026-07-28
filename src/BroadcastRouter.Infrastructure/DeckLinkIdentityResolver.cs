@@ -46,7 +46,9 @@ public static class DeckLinkIdentityResolver
                         : "DeckLink SDK did not expose a unique persistent ID — verify after topology changes",
                     DeviceHandle: identity?.DeviceHandle,
                     DeviceGroupId: Format(identity?.DeviceGroupId),
-                    TopologicalId: Format(identity?.TopologicalId));
+                    TopologicalId: Format(identity?.TopologicalId),
+                    HasReferenceInput: identity?.HasReferenceInput,
+                    ReferenceSignalLocked: identity?.ReferenceSignalLocked);
             }
 
             var cardIndex = identity!.DeviceGroupId is uint groupId && groupOrder.TryGetValue(groupId, out var groupIndex)
@@ -67,7 +69,9 @@ public static class DeckLinkIdentityResolver
                 DeviceGroupId: Format(identity.DeviceGroupId),
                 DeviceHandle: identity.DeviceHandle,
                 TopologicalId: Format(identity.TopologicalId),
-                PreviousStableIds: [legacyId]);
+                PreviousStableIds: [legacyId],
+                HasReferenceInput: identity.HasReferenceInput,
+                ReferenceSignalLocked: identity.ReferenceSignalLocked);
         }).ToArray();
     }
 

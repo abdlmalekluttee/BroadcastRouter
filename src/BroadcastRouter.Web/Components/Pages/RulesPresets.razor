@@ -2,6 +2,7 @@
 @attribute [Authorize(Roles = "Administrator")]
 @rendermode InteractiveServer
 @inject RouterCoordinator Coordinator
+@inject AuthorizedRouterCommands Commands
 @inject IJSRuntime JS
 
 <PageTitle>Rules &amp; Presets · BroadcastRouter</PageTitle>
@@ -75,5 +76,5 @@
         if (routeReferences > 0) { message = $"Preset '{preset.Name}' is used by {routeReferences} active or waiting route(s). Reassign or stop those routes first."; messageClass = "danger"; return; }
         if (await JS.InvokeAsync<bool>("confirm", $"Remove output preset '{preset.Name}'?")) settings.Presets.Remove(preset);
     }
-    private async Task Save() { try { await Coordinator.SaveSettingsAsync(settings); message = "Rules and presets saved."; messageClass = "success"; } catch (Exception ex) { message = ex.Message; messageClass = "danger"; } }
+    private async Task Save() { try { var result = await Commands.SaveSettingsAsync(settings); settings = result.Settings; message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success"; } catch (Exception ex) { message = ex.Message; messageClass = "danger"; } }
 }

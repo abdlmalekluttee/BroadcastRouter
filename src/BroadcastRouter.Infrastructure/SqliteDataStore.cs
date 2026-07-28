@@ -79,9 +79,24 @@ public sealed class SqliteDataStore
                 source_id TEXT NULL,
                 correlation_id TEXT NULL
             );
+            CREATE TABLE IF NOT EXISTS configuration_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_utc TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                card_name TEXT NOT NULL,
+                port_name TEXT NOT NULL,
+                previous_state TEXT NOT NULL,
+                new_state TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                backend_status TEXT NOT NULL,
+                source_id TEXT NULL
+            );
             CREATE INDEX IF NOT EXISTS ix_logs_timestamp ON logs(timestamp_utc DESC);
             CREATE INDEX IF NOT EXISTS ix_logs_category ON logs(category);
             CREATE INDEX IF NOT EXISTS ix_history_source ON route_history(source_id, timestamp_utc DESC);
+            CREATE INDEX IF NOT EXISTS ix_configuration_audit_timestamp ON configuration_audit(timestamp_utc DESC);
             """, cancellationToken);
     }
 
@@ -292,6 +307,54 @@ public sealed class SqliteDataStore
         return logs;
     }
 
+    public async Task WriteConfigurationAuditAsync(ConfigurationAuditEntry entry, CancellationToken cancellationToken = default)
+    {
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO configuration_audit(timestamp_utc,event_type,entity_id,card_name,port_name,
+                    previous_state,new_state,actor,reason,backend_status,source_id)
+                VALUES($timestamp,$event,$entity,$card,$port,$previous,$new,$actor,$reason,$status,$source);
+                """;
+            command.Parameters.AddWithValue("$timestamp", entry.Timestamp.ToString("O"));
+            command.Parameters.AddWithValue("$event", entry.EventType);
+            command.Parameters.AddWithValue("$entity", entry.EntityId);
+            command.Parameters.AddWithValue("$card", LogRedactor.Redact(entry.CardName));
+            command.Parameters.AddWithValue("$port", LogRedactor.Redact(entry.PortName));
+            command.Parameters.AddWithValue("$previous", LogRedactor.Redact(entry.PreviousState));
+            command.Parameters.AddWithValue("$new", LogRedactor.Redact(entry.NewState));
+            command.Parameters.AddWithValue("$actor", LogRedactor.Redact(entry.Actor));
+            command.Parameters.AddWithValue("$reason", LogRedactor.Redact(entry.Reason));
+            command.Parameters.AddWithValue("$status", LogRedactor.Redact(entry.BackendStatus));
+            command.Parameters.AddWithValue("$source", (object?)entry.SourceId ?? DBNull.Value);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally { _writeGate.Release(); }
+    }
+
+    public async Task<IReadOnlyList<ConfigurationAuditEntry>> ReadConfigurationAuditAsync(int limit = 1000,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id,timestamp_utc,event_type,entity_id,card_name,port_name,previous_state,new_state,
+                actor,reason,backend_status,source_id
+            FROM configuration_audit ORDER BY id DESC LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 5000));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var entries = new List<ConfigurationAuditEntry>();
+        while (await reader.ReadAsync(cancellationToken))
+            entries.Add(new(reader.GetInt64(0), DateTimeOffset.Parse(reader.GetString(1)), reader.GetString(2),
+                reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetString(6), reader.GetString(7),
+                reader.GetString(8), reader.GetString(9), reader.GetString(10), reader.IsDBNull(11) ? null : reader.GetString(11)));
+        return entries;
+    }
+
     public async Task<string> IntegrityCheckAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenAsync(cancellationToken);
@@ -345,6 +408,7 @@ public sealed class SqliteDataStore
     private static void ValidateSettings(OperatorSettings settings)
     {
         if (settings.SchemaVersion < 1) throw new InvalidOperationException("Settings schema version is invalid.");
+        if (settings.ConfigurationRevision < 0) throw new InvalidOperationException("Configuration revision is invalid.");
         ValidateOptionalPath(settings.MediaTools.FfmpegPath, "FFmpeg executable");
         ValidateOptionalPath(settings.MediaTools.FfprobePath, "FFprobe executable");
         ValidateOptionalPath(settings.MediaTools.FfplayPath, "FFplay executable");
@@ -453,7 +517,8 @@ public sealed class SqliteDataStore
 
     private static void NormalizeSettings(OperatorSettings settings)
     {
-        settings.SchemaVersion = Math.Max(settings.SchemaVersion, 5);
+        settings.SchemaVersion = Math.Max(settings.SchemaVersion, 6);
+        settings.LastAppliedBy = settings.LastAppliedBy.Trim();
         settings.MediaTools.FfmpegPath = settings.MediaTools.FfmpegPath.Trim();
         settings.MediaTools.FfprobePath = settings.MediaTools.FfprobePath.Trim();
         settings.MediaTools.FfplayPath = settings.MediaTools.FfplayPath.Trim();

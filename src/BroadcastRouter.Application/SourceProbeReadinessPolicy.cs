@@ -4,6 +4,9 @@ namespace BroadcastRouter.Application;
 
 public static class SourceProbeReadinessPolicy
 {
+    public static bool ShouldRestoreVideo(int consecutiveSustainedVideoProbes, int requiredProbes = 2) =>
+        requiredProbes > 0 && consecutiveSustainedVideoProbes >= requiredProbes;
+
     public static SourceState Resolve(StreamProbeResult probe) =>
         probe.FramesReceived || probe.AudioReceived
             ? SourceState.Ready

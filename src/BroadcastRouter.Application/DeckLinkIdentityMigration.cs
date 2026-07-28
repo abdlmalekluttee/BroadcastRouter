@@ -4,6 +4,17 @@ namespace BroadcastRouter.Application;
 
 public static class DeckLinkIdentityMigration
 {
+    public static bool HasLegacyReferences(OperatorSettings settings, IEnumerable<RuntimeRoute> routes,
+        IReadOnlyDictionary<string, string> aliases)
+    {
+        if (aliases.Count == 0) return false;
+        return settings.DeckLinkPortOverrides.Any(value => aliases.ContainsKey(value.StableId))
+            || settings.ManualSources.Any(value => aliases.ContainsKey(value.FixedPortId))
+            || settings.Rules.Any(value => aliases.ContainsKey(value.FixedPortId))
+            || routes.Any(route => (route.PortId is not null && aliases.ContainsKey(route.PortId))
+                || (route.DesiredPortId is not null && aliases.ContainsKey(route.DesiredPortId)));
+    }
+
     public static IReadOnlyList<DeckLinkPort> DeferUntilRestart(IEnumerable<DeckLinkPort> ports) => ports
         .Select(port => port.PreviousStableIds?.FirstOrDefault() is { Length: > 0 } previousId
             ? port with
