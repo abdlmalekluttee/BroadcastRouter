@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.4.0 — 2026-07-31
+
+- Shorten standby-to-live handoff by giving the owned standby process a dedicated 750 ms graceful-stop deadline instead of the normal multi-second maintenance timeout.
+- Open low-latency RTSP routes with bounded one-second demux analysis, reduced probing, and no-buffer flags; log the measured time from standby handoff to the first DeckLink output frame.
+- Redesign every per-port standby screen with card and SDI identity at the top, a centered `HH:mm:ss` clock and full date, the port/stream label at the bottom, and the configured channel logo in all four corners.
+- Correct Windows FFmpeg clock rendering by using an explicitly escaped `HH:mm:ss` format; the Windows C runtime does not implement the `%T` shorthand.
+- Ensure cancellation during owned-process shutdown still terminates and reaps the exact FFmpeg process tree before propagating cancellation.
+
 ## 1.3.6 — 2026-07-30
 
 - Render source availability, waiting condition, and saved assignment as separate semantic badges instead of allowing an offline wait to hide the manual or preconfigured assignment.

@@ -1,9 +1,9 @@
 # BroadcastRouter production-safety review
 
-Review date: 2026-07-30
-Review branch: `codex/recovery-state-colors`
-Reviewed baseline: release `1.3.3`
-Resulting release version: `1.3.4`
+Review date: 2026-07-31
+Review branch: `codex/fast-cutover-standby-layout`
+Reviewed baseline: release `1.3.6`
+Resulting release version: `1.4.0`
 
 ## Executive summary
 
@@ -16,6 +16,8 @@ The repository is materially safer after these changes, but this review does **n
 The 1.3.3 incident follow-up addresses output-port checkboxes that temporarily disappeared during rapid publisher interruption testing. The coordinator was unnecessarily reverting enumeration to legacy DeckLink IDs whenever standby ownership existed, so persistent-ID overrides appeared absent until a later scan. A stale Settings circuit could also overwrite a newer backend snapshot. Identity deferral now requires an actual unresolved legacy reference; actively owned ports survive transient enumeration gaps; settings use monotonic optimistic revisions and persist-before-apply acknowledgement; and every confirmed change is audited. Bounded parallel probing and supervision-before-discovery prevent slow publishers from delaying route monitoring. Audio-led sources require two stable video observations before returning to decoded video, and saved assignments keep retrying temporary stream, DeckLink initialization, and reference failures without altering port configuration.
 
 The 1.3.4 production-log follow-up found a deterministic `Fallback -> Reserved` exception once per reconciliation cycle while a saved route attempted to recover. Recovery states can now reacquire their persisted reservation before FFmpeg starts, and start failures are converted into route-scoped retry state instead of aborting the coordinator cycle. Media-mode decisions now use hysteresis in both directions and trigger one controlled playout restart only after the committed mode changes, preventing alternating sparse-video samples from flipping between live video and generated black. Identical unexpected cycle failures are retained at most once per minute with a suppression count. State and assignment badges now use distinct colors in addition to text.
+
+The 1.4.0 cutover follow-up bounds the normal standby release phase to 750 ms, applies the preview-proven reduced RTSP analysis settings to low-latency routes, and records end-to-end time through the first DeckLink frame. The redesigned FFmpeg standby graph was rendered with the release media tool and visually inspected. It shows the four logos, top card/SDI identity, centered live time/full date, and bottom label. Physical first-picture timing still depends on DeckLink hardware and the source encoder GOP; it must be measured at the SDI destination with a keyframe interval of two seconds or less.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. RTSP frame receipt, H.264/AAC fragmented-MP4 streaming, the VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified in a controlled lab; physical DeckLink picture/audio observation remains an environment-specific validation step.
 
@@ -90,6 +92,8 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-030 | High | Saved-route recovery | `Application/RouteStateMachine.cs`; `Web/Services/RouterCoordinator.cs` | A saved route in fallback or reconnect state reacquired its intended lease and was persisted as reserved, but the state machine rejected that legitimate recovery transition. The exception repeated each coordinator cycle and prevented deterministic restart. | **Fixed in 1.3.4.** Fallback and reconnect states can transition to reserved before starting; saved-route starts are failure-contained and retain intent. Regression: `Fallback and reconnect recovery can reacquire a reservation`. |
 | BR-031 | High | Media-mode stability | `Application/SourceProbeReadinessPolicy.cs`; `Web/Services/RouterCoordinator.cs` | After audio-led input restored to video, one later sparse sample immediately selected generated black again; the already-running FFmpeg process was not restarted when the committed mode changed. | **Fixed in 1.3.4.** Bidirectional confirmation counters reject alternating evidence, retain the last usable video properties during transient sparse samples, and perform one gated route restart after a confirmed mode transition. Regression: `Probe media mode resists alternating sparse-video samples`. |
 | BR-032 | Medium | Diagnostic availability | `Application/RepeatedFailureLogGate.cs`; `Web/Services/RouterCoordinator.cs` | An unexpected route-scoped exception could write duplicate coordinator errors every second and obscure other operational evidence. | **Fixed in 1.3.4.** Identical failures are persisted at most once per minute and the next record reports the suppressed count. Regression: `Repeated coordinator failures are log-throttled`. |
+| BR-033 | High | Standby-to-live latency | `Infrastructure/FfmpegProcessSupervisor.cs`; `Infrastructure/FfmpegCommandBuilder.cs`; `Web/Services/RouterCoordinator.cs` | Normal process shutdown could spend the full multi-second maintenance grace period releasing standby before live FFmpeg opened RTSP; normal input analysis could add more delay and left no measured first-frame evidence. | **Fixed in 1.4.0.** Standby handoff has a dedicated 750 ms deadline, low-latency presets use bounded one-second/no-buffer probing, cancellation cannot orphan the owned process, and every completed cutover logs elapsed time to the first DeckLink frame. Long encoder GOP remains an external bound and must be configured at two seconds or less. |
+| BR-034 | Medium | Standby identification | `Infrastructure/FfmpegCommandBuilder.cs`; `Components/Pages/Settings.razor` | The prior screen rendered one logo and combined labels, making ports harder to identify at a glance; `%T` also produced no clock with the Windows FFmpeg runtime. | **Fixed in 1.4.0.** Top card/SDI identity, centered explicit `HH:mm:ss` plus full date, bottom operator label, and four copies of the configured logo are rendered by the actual FFmpeg graph. Regression: `Per-port standby command is broadcast safe`. |
 
 ## GUI review
 
@@ -157,7 +161,7 @@ Still requiring integration or hardware coverage:
 
 | Validation | Status |
 |---|---|
-| Restore, Release build, tests | **Verified automatically**: clean; 60/60 after FFmpeg startup, recovery, scan, audio, reservation, process-containment, route-action, and safe-termination fixes. |
+| Restore, Release build, tests | **Verified automatically**: clean; 84/84 after FFmpeg startup, recovery, scan, audio, reservation, process-containment, route-action, standby-layout, and safe-termination fixes. |
 | Package vulnerability audit | **Verified automatically**: no vulnerable packages reported. |
 | Atomic single-port ownership | **Verified automatically** with 500 concurrent contenders. |
 | Local browser pages/viewports | **Verified locally** in isolated simulation on port 5180; stable-session console clean; zero document/preset-card overflow at 1920×1080 and 768×1024; zero controls outside cards. |
@@ -187,6 +191,7 @@ Still requiring integration or hardware coverage:
 - 1.2.6 follow-up: explicit Sources-page route actions, patched-FFmpeg capability detection, and an opt-in Windows DeckLink final-release workaround validated against Desktop Video 16.1.
 - 1.2.8 follow-up: direct Blackmagic persistent-ID discovery, legacy-reference migration, physical-card grouping, safe live-migration deferral, clean FFmpeg sink labels, and focused identity/reorder/migration regressions.
 - 1.3.0 follow-up: explicit output-port roles, offline source persistence, durable saved routing intent and priority/conflict policy, per-port standby supervision, and restart-safe transient-state reset.
+- 1.4.0 follow-up: bounded standby handoff, low-analysis RTSP open, first-frame cutover telemetry, four-corner standby identity layout, and Windows-compatible live clock rendering.
 
 ## Commands and results
 
@@ -199,7 +204,7 @@ dotnet run --no-build --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.cs
 git diff --check
 ```
 
-Current 1.3.2 branch results: Release build passed with 0 warnings/errors; 75/75 regressions passed; all seven server-rendered UI routes and health returned HTTP 200 in isolated simulation; tagged sources survived a real host restart; and a persisted preconfigured/manual conflict produced exactly one owner with the lower-priority entry retained as `RoutingConflict`. The FFmpeg builder also passed functional SMPTE-bars plus local-clock rendering after enabling HarfBuzz, using an explicit Windows font file so no system Fontconfig file is required. The in-app browser-control runtime failed during connection, so final visual click-through remains pending. Concrete network, source, output, process, and device identifiers are intentionally excluded. Physical SDI picture/audio and standby-screen observation remain environment-specific validation steps.
+Current 1.4.0 branch results: Release build passed with 0 warnings/errors; 84/84 regressions passed; and the exact Windows DeckLink-enabled FFmpeg build rendered the new 1920×1080 SMPTE standby graph with four logos, card/SDI identity, explicit `HH:mm:ss`, full date, and bottom port label. The 750 ms handoff deadline and first-frame telemetry are covered by build/regression review, but physical SDI first-picture latency remains an environment-specific validation step. Concrete network, source, output, process, and device identifiers are intentionally excluded.
 
 ## Recommended follow-up
 

@@ -16,4 +16,6 @@ Version 1.3.5 is a cache-busting maintenance release and does not change the set
 
 Version 1.3.6 changes presentation only and does not change the settings or database schema. Saved assignments and route state are unchanged; the management UI now presents availability, waiting, and assignment identity as independent color-coded badges.
 
+Version 1.4.0 does not change the settings or database schema. Existing output designations, saved routes, aliases, presets, and standby configuration are preserved. Standby rendering adopts the new four-corner layout automatically, and low-latency presets use faster RTSP input analysis. Verify the host clock is NTP-synchronized and set source encoder keyframe intervals to two seconds or less before timing physical SDI cuts.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

@@ -36,6 +36,7 @@ public sealed class RouterCoordinator(
     private readonly Dictionary<string, string> _processDiagnosticSignatures = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SourceMediaModeState> _sourceMediaModes = new(StringComparer.Ordinal);
     private readonly HashSet<string> _pendingMediaModeRestarts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _cutoverStartedAt = new(StringComparer.Ordinal);
     private readonly StartupRouteRecoveryTracker _startupRecovery = new();
     private readonly RepeatedFailureLogGate _reconciliationFailureLogGate = new();
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
@@ -1083,6 +1084,7 @@ public sealed class RouterCoordinator(
             }
             catch (Exception ex)
             {
+                ClearCutoverMeasurement(sourceId);
                 var detail = LogRedactor.Redact(ex.Message);
                 var failed = RouteStartFailureRecovery.ReleaseAndFail(_reservations, route with { State = RouteState.Starting }, source.Identity,
                     string.IsNullOrWhiteSpace(detail) ? "FFmpeg could not be started." : detail, DateTimeOffset.UtcNow);
@@ -1099,11 +1101,22 @@ public sealed class RouterCoordinator(
         await portGate.WaitAsync(cancellationToken);
         try
         {
-            await StopPortStandbyAsync(port.StableId, cancellationToken);
+            var standbyOwner = StandbyIdentity(port.StableId);
+            var standbyWasRunning = _supervisor?.Snapshot().Any(value => value.Source == standbyOwner && value.Running) == true;
+            if (standbyWasRunning)
+            {
+                lock (_gate) _cutoverStartedAt[route.SourceId] = DateTimeOffset.UtcNow;
+                await StopPortStandbyForHandoffAsync(port.StableId, cancellationToken);
+            }
+            else
+            {
+                await StopPortStandbyAsync(port.StableId, cancellationToken);
+            }
             var starting = route with { State = RouteState.Starting, UpdatedAt = DateTimeOffset.UtcNow, FailureCategory = null, FailureMessage = null, RetryAt = null };
             await ReplaceRouteAsync(starting, route.State, cancellationToken);
             if (_settings.SimulationMode)
             {
+                ClearCutoverMeasurement(route.SourceId);
                 await ReplaceRouteAsync(starting with { State = RouteState.Running, StartedAt = DateTimeOffset.UtcNow, Frame = 0, Fps = preset.FrameRateNumerator / (double)preset.FrameRateDenominator, Speed = 1 }, RouteState.Starting, cancellationToken);
                 return;
             }
@@ -1237,11 +1250,28 @@ public sealed class RouterCoordinator(
     {
         if (_supervisor is not null)
             await _supervisor.StopAsync(StandbyIdentity(portId), cancellationToken);
+        ClearStandbyState(portId);
+    }
+
+    private async Task StopPortStandbyForHandoffAsync(string portId, CancellationToken cancellationToken)
+    {
+        if (_supervisor is not null)
+            await _supervisor.StopForOutputHandoffAsync(StandbyIdentity(portId), cancellationToken);
+        ClearStandbyState(portId);
+    }
+
+    private void ClearStandbyState(string portId)
+    {
         lock (_gate)
         {
             _standbys.Remove(portId);
             _standbyConfigurationSignatures.Remove(portId);
         }
+    }
+
+    private void ClearCutoverMeasurement(string sourceId)
+    {
+        lock (_gate) _cutoverStartedAt.Remove(sourceId);
     }
 
     private async Task StopAllPortStandbysAsync(CancellationToken cancellationToken)
@@ -1333,6 +1363,14 @@ public sealed class RouterCoordinator(
             else if (process.Running)
             {
                 var state = route.State == RouteState.Fallback ? RouteState.Fallback : progress?.Frame > 0 ? RouteState.Running : RouteState.Starting;
+                DateTimeOffset? cutoverStarted = null;
+                if (state == RouteState.Running && route.State != RouteState.Running)
+                {
+                    lock (_gate)
+                    {
+                        if (_cutoverStartedAt.Remove(route.SourceId, out var startedAt)) cutoverStarted = startedAt;
+                    }
+                }
                 var processDetail = string.Join(" | ", process.RecentErrors.TakeLast(5));
                 var outputCategory = FfmpegErrorClassifier.Classify(null, processDetail);
                 var outputDiagnostic = outputCategory is FfmpegFailureCategory.DeckLinkInitialization
@@ -1372,6 +1410,13 @@ public sealed class RouterCoordinator(
                         route.FailureCategory?.StartsWith("DeckLink", StringComparison.Ordinal) == true ? null : route.FailureMessage,
                     UpdatedAt = DateTimeOffset.UtcNow
                 }, route.State, cancellationToken, persistHistory: state != route.State);
+                if (cutoverStarted is not null)
+                {
+                    var elapsed = DateTimeOffset.UtcNow - cutoverStarted.Value;
+                    await LogAsync("Information", "Cutover",
+                        $"Standby-to-live cutover produced its first DeckLink frame in {elapsed.TotalMilliseconds:F0} ms.",
+                        route.SourceId, cancellationToken: cancellationToken);
+                }
             }
             else if (route.State is RouteState.Starting or RouteState.Running or RouteState.Fallback)
             {
@@ -1485,6 +1530,7 @@ public sealed class RouterCoordinator(
             {
                 _sourceMissingSince.Remove(sourceId);
                 _sourceReadySince.Remove(sourceId);
+                _cutoverStartedAt.Remove(sourceId);
             }
             if (_supervisor is not null) await _supervisor.StopAsync(identity, cancellationToken);
             if (route.PortId is not null && !keepReservation)
