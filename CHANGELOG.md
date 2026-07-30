@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.3.5 — 2026-07-30
+
+- Bump the application stylesheet revision so management browsers cannot retain a stale pre-1.3.4 state-color stylesheet after an in-place production upgrade.
+- Keep the 1.3.4 routing recovery, media-mode hysteresis, failure isolation, and log-throttling behavior unchanged.
+
 ## 1.3.4 — 2026-07-30
 
 - Color-coded source availability and routing assignment badges so active, offline, waiting, conflict, preconfigured, manual, automatic, and unassigned states remain visually distinct while retaining text labels.

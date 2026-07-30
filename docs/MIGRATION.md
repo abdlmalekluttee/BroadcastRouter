@@ -12,4 +12,6 @@ Version 1.3.3 advances operator settings to schema 6 and adds a monotonic config
 
 Version 1.3.4 does not change the settings or database schema. Existing output-port selections, stable DeckLink identities, saved routes, source inventory, and standby configuration are reused unchanged. The normal version deployment restart is sufficient.
 
+Version 1.3.5 is a cache-busting maintenance release and does not change the settings or database schema. Use a clean versioned directory as described in the deployment guide; browsers that previously loaded 1.3.4 will request the corrected stylesheet automatically.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.
