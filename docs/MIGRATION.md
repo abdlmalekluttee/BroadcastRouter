@@ -14,4 +14,6 @@ Version 1.3.4 does not change the settings or database schema. Existing output-p
 
 Version 1.3.5 is a cache-busting maintenance release and does not change the settings or database schema. Use a clean versioned directory as described in the deployment guide; browsers that previously loaded 1.3.4 will request the corrected stylesheet automatically.
 
+Version 1.3.6 changes presentation only and does not change the settings or database schema. Saved assignments and route state are unchanged; the management UI now presents availability, waiting, and assignment identity as independent color-coded badges.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

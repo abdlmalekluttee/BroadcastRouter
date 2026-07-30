@@ -167,7 +167,6 @@
     private static string AssignmentBadgeClass(RuntimeRoute route) => route switch
     {
         { FailureCategory: "RoutingConflict" } => "danger",
-        { State: RouteState.WaitingForStream } => "warning",
         { AssignmentMode: AssignmentMode.Preconfigured or AssignmentMode.Fixed or AssignmentMode.Rule } => "preconfigured",
         { AssignmentMode: AssignmentMode.Manual } => "manual",
         { AssignmentMode: AssignmentMode.Automatic } => "automatic",
