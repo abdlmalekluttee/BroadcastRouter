@@ -17,7 +17,7 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that invent
 - atomic DeckLink port reservations, priorities, locks, queues, retries, standby, and recovery;
 - persistent preconfigured/manual routing for offline streams, with deterministic preconfigured → manual → automatic priority;
 - explicit output-port designation so input connectors can never be selected by routing;
-- per-port SMPTE/HD color bars with optional logo, operator label, card/connector name, and NTP-synchronized Windows clock;
+- per-port SMPTE/HD color bars with card/SDI identity, centered time and full date, bottom operator label, a configurable four-corner logo, and the NTP-synchronized Windows clock;
 - Blackmagic SDK persistent hardware identities that keep operator-defined physical-card names, connector names, and assignments attached when identical supported cards move between PCIe slots;
 - production-safe defaults: loopback binding, simulation disabled, and hardware starts blocked until validation passes;
 - SQLite persistence, DPAPI-protected Wowza credentials, structured redacted logs, minimal health checks, and sanitized diagnostics that never embed the production database;
@@ -42,7 +42,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.3.4`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.4.0`.
 3. Run `BroadcastRouter.Server.exe` as the dedicated Windows broadcast account.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
@@ -65,7 +65,9 @@ Under **Settings > Physical DeckLink cards**, name each card for its real operat
 
 Incoming streams remain in the inventory when their publisher is offline. A preconfigured or manual routing entry can therefore be saved in advance and activates when FFprobe marks the stream ready. Preconfigured entries outrank manual entries, and both outrank automatic assignment. A saved output remains reserved while offline unless **Allow automatic streams to use it temporarily** is enabled; the saved entry itself is never deleted or reassigned.
 
-Every connector marked as an output port can run an independent standby screen whenever it is not carrying live playout. Configure SMPTE/HD bars, a logo path, a custom port label, and the clock under **Settings > DeckLink connector mappings and standby**. The FFmpeg clock reads the Windows system clock, so configure and monitor Windows Time/NTP on the host.
+Every connector marked as an output port can run an independent standby screen whenever it is not carrying live playout. Configure SMPTE/HD bars, a four-corner logo path, and a custom port/stream label under **Settings > DeckLink connector mappings and standby**. The top line identifies the physical card and SDI connector, the center shows `HH:mm:ss` and the full date, and the label remains at the bottom. FFmpeg reads the Windows system clock, so configure and monitor Windows Time/NTP on the host.
+
+For fast standby-to-live cuts, enable **Low latency** on the output preset and configure the source encoder for a keyframe interval no longer than two seconds. BroadcastRouter bounds RTSP analysis and standby shutdown, but a receiver cannot display predictive video until a decodable keyframe arrives. Each completed cutover records its measured first-DeckLink-frame latency in structured logs under the `Cutover` category.
 
 ## Build and test
 
@@ -79,7 +81,7 @@ dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --conf
 Create a clean self-contained release:
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Version 1.3.4
+.\scripts\Publish-Release.ps1 -Version 1.4.0
 ```
 
 The publisher removes build-path PDBs and runs `scripts\Test-ReleasePrivacy.ps1` before creating the archive. Packaging fails if it finds a database, diagnostics/log artifact, credential-bearing URL, user-profile path, private network address, private key, or common service token.

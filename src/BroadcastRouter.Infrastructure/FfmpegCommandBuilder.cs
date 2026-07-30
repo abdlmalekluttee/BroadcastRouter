@@ -37,7 +37,13 @@ public static class FfmpegCommandBuilder
         if (options.ReadTimeout is { } timeout)
             Add(start, "-timeout", ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture));
         if (preset.BufferSizeMegabytes > 0) Add(start, "-buffer_size", $"{preset.BufferSizeMegabytes}M");
-        if (preset.LowLatency) Add(start, "-flags", "low_delay");
+        if (preset.LowLatency)
+            Add(start,
+                "-fflags", "nobuffer",
+                "-flags", "low_delay",
+                "-analyzeduration", "1000000",
+                "-probesize", "1000000",
+                "-fpsprobesize", "0");
         Add(start, "-i", source.RtspUri.AbsoluteUri);
 
         var audioLed = source.Media is { HasUsableVideo: false } media
@@ -164,29 +170,47 @@ public static class FfmpegCommandBuilder
         var audioInput = hasLogo ? 2 : 1;
         if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
 
-        var outputLabel = SafeOverlayText($"{DeckLinkDisplayName.Full(port)}  {configuration.PortLabel}".Trim());
-        var fontSize = Math.Clamp(preset.Mode.Height / 24, 24, 72);
+        var cardAndPort = SafeOverlayText($"{DeckLinkDisplayName.Card(port)}  -  SDI {port.SubdeviceIndex + 1}");
+        var outputLabel = SafeOverlayText(string.IsNullOrWhiteSpace(configuration.PortLabel)
+            ? DeckLinkDisplayName.Connector(port)
+            : configuration.PortLabel);
+        var labelFontSize = Math.Clamp(preset.Mode.Height / 26, 24, 64);
+        var clockFontSize = Math.Clamp(preset.Mode.Height / 9, 64, 144);
+        var dateFontSize = Math.Clamp(preset.Mode.Height / 24, 28, 64);
         var margin = Math.Clamp(preset.Mode.Height / 36, 16, 48);
         const string windowsFont = "fontfile='C\\:/Windows/Fonts/arial.ttf':";
-        var textFilters = new List<string>();
-        if (!string.IsNullOrWhiteSpace(outputLabel))
-            textFilters.Add($"drawtext={windowsFont}text='{outputLabel}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x={margin}:y={margin}");
+        var textFilters = new List<string>
+        {
+            $"drawtext={windowsFont}text='{cardAndPort}':fontcolor=white:fontsize={labelFontSize}:box=1:boxcolor=black@0.72:boxborderw={margin / 2}:x=(w-tw)/2:y={margin}"
+        };
         if (configuration.ShowClock)
-            textFilters.Add($"drawtext={windowsFont}text='%{{localtime\\:%T}}':fontcolor=white:fontsize={fontSize}:box=1:boxcolor=black@0.65:boxborderw={margin / 2}:x=w-tw-{margin}:y=h-th-{margin}");
+        {
+            // %T is not implemented by the Windows C runtime used by FFmpeg. The
+            // literal colons in an explicit HH:mm:ss format must survive both the
+            // filter-graph parser and drawtext's expansion parser.
+            textFilters.Add($"drawtext={windowsFont}text='%{{localtime\\:%H\\\\\\:%M\\\\\\:%S}}':fontcolor=white:fontsize={clockFontSize}:box=1:boxcolor=black@0.72:boxborderw={margin / 2}:x=(w-tw)/2:y=h/2-th-{dateFontSize / 3}");
+            textFilters.Add($"drawtext={windowsFont}text='%{{localtime\\:%A %d %B %Y}}':fontcolor=white:fontsize={dateFontSize}:box=1:boxcolor=black@0.72:boxborderw={margin / 3}:x=(w-tw)/2:y=h/2+{dateFontSize / 2}");
+        }
+        if (!string.IsNullOrWhiteSpace(outputLabel))
+            textFilters.Add($"drawtext={windowsFont}text='{outputLabel}':fontcolor=white:fontsize={labelFontSize}:box=1:boxcolor=black@0.72:boxborderw={margin / 2}:x=(w-tw)/2:y=h-th-{margin}");
 
         var baseFilter = BuildVideoFilter(preset, sourceIsInterlaced: false);
         string filterGraph;
         if (hasLogo)
         {
-            var logoWidth = Math.Clamp(preset.Mode.Width / 6, 96, 360);
-            var tail = textFilters.Count == 0 ? "null" : string.Join(',', textFilters);
-            filterGraph = $"[0:v:0]{baseFilter}[base];[1:v:0]scale={logoWidth}:-1[logo];" +
-                $"[base][logo]overlay=x=W-w-{margin}:y={margin}[composite];[composite]{tail}[outv]";
+            var logoSize = Math.Clamp(Math.Min(preset.Mode.Width, preset.Mode.Height) / 7, 72, 220);
+            var tail = string.Join(',', textFilters);
+            filterGraph = $"[0:v:0]{baseFilter}[base];" +
+                $"[1:v:0]scale={logoSize}:{logoSize}:force_original_aspect_ratio=decrease,split=4[logo_tl][logo_tr][logo_bl][logo_br];" +
+                $"[base][logo_tl]overlay=x={margin}:y={margin}[corner1];" +
+                $"[corner1][logo_tr]overlay=x=W-w-{margin}:y={margin}[corner2];" +
+                $"[corner2][logo_bl]overlay=x={margin}:y=H-h-{margin}[corner3];" +
+                $"[corner3][logo_br]overlay=x=W-w-{margin}:y=H-h-{margin}[composite];" +
+                $"[composite]{tail}[outv]";
         }
         else
         {
-            var tail = textFilters.Count == 0 ? "null" : string.Join(',', textFilters);
-            filterGraph = $"[0:v:0]{baseFilter},{tail}[outv]";
+            filterGraph = $"[0:v:0]{baseFilter},{string.Join(',', textFilters)}[outv]";
         }
 
         Add(start, "-filter_complex", filterGraph, "-map", "[outv]", "-pix_fmt", preset.Mode.PixelFormat);

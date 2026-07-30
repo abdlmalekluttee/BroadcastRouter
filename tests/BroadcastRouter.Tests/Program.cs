@@ -384,6 +384,13 @@ static void FfmpegCommandUsesArgumentList()
     True(start.ArgumentList.Contains(port.FfmpegName));
     True(start.ArgumentList.Contains("-timeout"));
     True(!start.ArgumentList.Contains("-rw_timeout"));
+    True(start.ArgumentList.Contains("-fflags"));
+    True(start.ArgumentList.Contains("nobuffer"));
+    True(start.ArgumentList.Contains("-analyzeduration"));
+    True(start.ArgumentList.Contains("1000000"));
+    True(start.ArgumentList.Contains("-probesize"));
+    True(start.ArgumentList.Contains("-fpsprobesize"));
+    True(start.ArgumentList.IndexOf("-analyzeduration") < start.ArgumentList.IndexOf("-i"));
     True(start.ArgumentList.Contains("48000"));
     True(start.ArgumentList.Contains("pcm_s16le"));
     True(!start.ArgumentList.Contains("-win_safe_terminate"));
@@ -1035,20 +1042,32 @@ static void PortStandbyCommandIsBroadcastSafe()
         CardFriendlyName = "Transmission card",
         FriendlyName = "Output 1"
     };
-    var preset = OutputPresetProfile.CommonDefaults()[0].ToDomain();
-    var start = FfmpegCommandBuilder.BuildPortStandby(new FfmpegRouteOptions("ffmpeg.exe"), port, preset,
-        new PortStandbyConfiguration(StandbyPattern.SmpteBars, null, "TX 1", true));
-    True(start.ArgumentList.Contains("smptebars=size=1920x1080:rate=25/1"));
-    True(start.ArgumentList.Contains("anullsrc=r=48000:cl=stereo"));
-    True(start.ArgumentList.Contains("pcm_s16le"));
-    var graph = start.ArgumentList[start.ArgumentList.IndexOf("-filter_complex") + 1];
-    True(graph.Contains("Transmission card", StringComparison.Ordinal));
-    True(graph.Contains("TX 1", StringComparison.Ordinal));
-    True(graph.Contains("fontfile='C\\:/Windows/Fonts/arial.ttf'", StringComparison.Ordinal));
-    True(graph.Contains("%{localtime\\:%T}", StringComparison.Ordinal));
-    True(!graph.Contains("%H", StringComparison.Ordinal));
-    True(!start.ArgumentList.Contains("-b:v"));
-    Equal(port.FfmpegName, start.ArgumentList[^1]);
+    var logoPath = Path.GetTempFileName();
+    try
+    {
+        var preset = OutputPresetProfile.CommonDefaults()[0].ToDomain();
+        var start = FfmpegCommandBuilder.BuildPortStandby(new FfmpegRouteOptions("ffmpeg.exe"), port, preset,
+            new PortStandbyConfiguration(StandbyPattern.SmpteBars, logoPath, "Stream-3", true));
+        True(start.ArgumentList.Contains("smptebars=size=1920x1080:rate=25/1"));
+        True(start.ArgumentList.Contains("anullsrc=r=48000:cl=stereo"));
+        True(start.ArgumentList.Contains("pcm_s16le"));
+        var graph = start.ArgumentList[start.ArgumentList.IndexOf("-filter_complex") + 1];
+        True(graph.Contains("Transmission card  -  SDI 1", StringComparison.Ordinal));
+        True(graph.Contains("Stream-3", StringComparison.Ordinal));
+        True(graph.Contains("fontfile='C\\:/Windows/Fonts/arial.ttf'", StringComparison.Ordinal));
+        True(graph.Contains("%{localtime\\:%H\\\\\\:%M\\\\\\:%S}", StringComparison.Ordinal));
+        True(graph.Contains("%{localtime\\:%A %d %B %Y}", StringComparison.Ordinal));
+        True(graph.Contains("split=4[logo_tl][logo_tr][logo_bl][logo_br]", StringComparison.Ordinal));
+        Equal(4, graph.Split("overlay=", StringSplitOptions.None).Length - 1);
+        True(graph.Contains("x=(w-tw)/2", StringComparison.Ordinal));
+        True(graph.Contains("y=h-th-", StringComparison.Ordinal));
+        True(!start.ArgumentList.Contains("-b:v"));
+        Equal(port.FfmpegName, start.ArgumentList[^1]);
+    }
+    finally
+    {
+        File.Delete(logoPath);
+    }
 }
 
 static void SettingsRejectInvalidGuiValues()

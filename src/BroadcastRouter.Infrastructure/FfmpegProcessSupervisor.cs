@@ -18,6 +18,7 @@ public sealed class FfmpegProcessSupervisor(
     FfmpegRouteOptions options,
     TimeSpan gracefulStopTimeout) : IRouteProcessSupervisor, IAsyncDisposable
 {
+    private static readonly TimeSpan OutputHandoffStopTimeout = TimeSpan.FromMilliseconds(750);
     private readonly ConcurrentDictionary<string, ManagedProcess> _running = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RouteProcessSnapshot> _last = new(StringComparer.Ordinal);
     private readonly WindowsKillOnCloseJob _containmentJob = WindowsKillOnCloseJob.Create();
@@ -64,10 +65,16 @@ public sealed class FfmpegProcessSupervisor(
         return StartProcessAsync(owner, FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration));
     }
 
-    public async Task StopAsync(SourceIdentity source, CancellationToken cancellationToken)
+    public Task StopAsync(SourceIdentity source, CancellationToken cancellationToken) =>
+        StopOwnedAsync(source, gracefulStopTimeout, cancellationToken);
+
+    public Task StopForOutputHandoffAsync(SourceIdentity source, CancellationToken cancellationToken) =>
+        StopOwnedAsync(source, OutputHandoffStopTimeout, cancellationToken);
+
+    private async Task StopOwnedAsync(SourceIdentity source, TimeSpan stopTimeout, CancellationToken cancellationToken)
     {
         if (!_running.TryRemove(source.Value, out var managed)) return;
-        await StopManagedAsync(managed, cancellationToken).ConfigureAwait(false);
+        await StopManagedAsync(managed, stopTimeout, cancellationToken).ConfigureAwait(false);
     }
 
     public IReadOnlyList<RouteProcessSnapshot> Snapshot()
@@ -84,7 +91,7 @@ public sealed class FfmpegProcessSupervisor(
         var processes = _running.ToArray();
         _running.Clear();
         foreach (var pair in processes)
-            await StopManagedAsync(pair.Value, CancellationToken.None).ConfigureAwait(false);
+            await StopManagedAsync(pair.Value, gracefulStopTimeout, CancellationToken.None).ConfigureAwait(false);
         _containmentJob.Dispose();
     }
 
@@ -165,7 +172,7 @@ public sealed class FfmpegProcessSupervisor(
             managed.AddError(LogRedactor.Redact(line));
     }
 
-    private async Task StopManagedAsync(ManagedProcess managed, CancellationToken cancellationToken)
+    private async Task StopManagedAsync(ManagedProcess managed, TimeSpan stopTimeout, CancellationToken cancellationToken)
     {
         try
         {
@@ -179,12 +186,13 @@ public sealed class FfmpegProcessSupervisor(
                 catch { }
 
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                deadline.CancelAfter(gracefulStopTimeout);
+                deadline.CancelAfter(stopTimeout);
                 try { await managed.Process.WaitForExitAsync(deadline.Token).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException)
                 {
                     if (!managed.Process.HasExited) managed.Process.Kill(entireProcessTree: true);
-                    await managed.Process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                    await managed.Process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
                 }
             }
             _last[managed.Source.Value] = CreateSnapshot(managed);
