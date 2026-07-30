@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.3.6 — 2026-07-30
+
+- Render source availability, waiting condition, and saved assignment as separate semantic badges instead of allowing an offline wait to hide the manual or preconfigured assignment.
+- Keep manual assignments purple, preconfigured assignments blue, automatic assignments teal, waits amber, conflicts red, and offline/unassigned states in distinct neutral tones across both source and routing views.
+
 ## 1.3.5 — 2026-07-30
 
 - Bump the application stylesheet revision so management browsers cannot retain a stale pre-1.3.4 state-color stylesheet after an in-place production upgrade.
