@@ -1,9 +1,9 @@
 # BroadcastRouter production-safety review
 
-Review date: 2026-07-29
-Review branch: `codex/port-state-stress-hardening`
-Reviewed baseline: release `1.3.2`
-Resulting release version: `1.3.3`
+Review date: 2026-07-30
+Review branch: `codex/recovery-state-colors`
+Reviewed baseline: release `1.3.3`
+Resulting release version: `1.3.4`
 
 ## Executive summary
 
@@ -14,6 +14,8 @@ This review confirmed and fixed high-severity issues in failed-start lease rollb
 The repository is materially safer after these changes, but this review does **not** certify production broadcast readiness. DeckLink hardware, matching Blackmagic driver output, power-cycle identity stability, Session 0, and an 8–24 hour soak were not available for this pass. The principal remaining software risk is the coordinator's breadth and the limited end-to-end process-supervision integration coverage.
 
 The 1.3.3 incident follow-up addresses output-port checkboxes that temporarily disappeared during rapid publisher interruption testing. The coordinator was unnecessarily reverting enumeration to legacy DeckLink IDs whenever standby ownership existed, so persistent-ID overrides appeared absent until a later scan. A stale Settings circuit could also overwrite a newer backend snapshot. Identity deferral now requires an actual unresolved legacy reference; actively owned ports survive transient enumeration gaps; settings use monotonic optimistic revisions and persist-before-apply acknowledgement; and every confirmed change is audited. Bounded parallel probing and supervision-before-discovery prevent slow publishers from delaying route monitoring. Audio-led sources require two stable video observations before returning to decoded video, and saved assignments keep retrying temporary stream, DeckLink initialization, and reference failures without altering port configuration.
+
+The 1.3.4 production-log follow-up found a deterministic `Fallback -> Reserved` exception once per reconciliation cycle while a saved route attempted to recover. Recovery states can now reacquire their persisted reservation before FFmpeg starts, and start failures are converted into route-scoped retry state instead of aborting the coordinator cycle. Media-mode decisions now use hysteresis in both directions and trigger one controlled playout restart only after the committed mode changes, preventing alternating sparse-video samples from flipping between live video and generated black. Identical unexpected cycle failures are retained at most once per minute with a suppression count. State and assignment badges now use distinct colors in addition to text.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. RTSP frame receipt, H.264/AAC fragmented-MP4 streaming, the VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified in a controlled lab; physical DeckLink picture/audio observation remains an environment-specific validation step.
 
@@ -85,6 +87,9 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-027 | Critical | Output-port persistence / DeckLink rediscovery | `Web/Services/RouterCoordinator.cs`; `Application/DeckLinkIdentityMigration.cs` | Every running standby counted as active ownership, so each scan deferred persistent identity even when no legacy reference remained. Overrides keyed by persistent IDs then appeared absent and the UI temporarily unchecked output ports until a later scan restored persistent enumeration. | **Fixed in 1.3.3.** Deferral requires an unresolved legacy reference; active connector records survive transient enumeration gaps; discovery never writes the output-port designation. Regression: `DeckLink migration deferral requires legacy references`. |
 | BR-028 | High | Configuration concurrency / audit | `Application/SettingsConcurrencyPolicy.cs`; `Infrastructure/SqliteDataStore.cs`; `Components/Pages/Settings.razor` | A long-lived Blazor Settings circuit could submit an older complete settings clone after the backend changed, silently rolling back identities or output flags. A success response did not prove which backend revision was active. | **Fixed in 1.3.3.** Settings carry a monotonic revision, are serialized and persisted before runtime apply, stale submissions are rejected, and the UI replaces its draft with the confirmed backend snapshot and timestamp. Durable audit records capture actor, reason, before/after state, backend status, port, card, stream, rediscovery, and service start. |
 | BR-029 | High | Reconciliation latency / black output recovery | `Web/Services/RouterCoordinator.cs`; `Infrastructure/FfprobeStreamProbe.cs`; `Infrastructure/FfmpegErrorClassifier.cs` | Serial bounded probes could delay route supervision by many seconds during publisher churn. Audio-led detection latched indefinitely after a sparse initial sample, and generic I/O classification hid DeckLink initialization/reference detail. | **Fixed in 1.3.3.** Probes run with bounded concurrency after monitoring/reconciliation; sustained decoded video restores after two confirmations; DeckLink initialization, buffer/header, and reference conditions are separately classified and reference status is displayed independently from stream readiness. |
+| BR-030 | High | Saved-route recovery | `Application/RouteStateMachine.cs`; `Web/Services/RouterCoordinator.cs` | A saved route in fallback or reconnect state reacquired its intended lease and was persisted as reserved, but the state machine rejected that legitimate recovery transition. The exception repeated each coordinator cycle and prevented deterministic restart. | **Fixed in 1.3.4.** Fallback and reconnect states can transition to reserved before starting; saved-route starts are failure-contained and retain intent. Regression: `Fallback and reconnect recovery can reacquire a reservation`. |
+| BR-031 | High | Media-mode stability | `Application/SourceProbeReadinessPolicy.cs`; `Web/Services/RouterCoordinator.cs` | After audio-led input restored to video, one later sparse sample immediately selected generated black again; the already-running FFmpeg process was not restarted when the committed mode changed. | **Fixed in 1.3.4.** Bidirectional confirmation counters reject alternating evidence, retain the last usable video properties during transient sparse samples, and perform one gated route restart after a confirmed mode transition. Regression: `Probe media mode resists alternating sparse-video samples`. |
+| BR-032 | Medium | Diagnostic availability | `Application/RepeatedFailureLogGate.cs`; `Web/Services/RouterCoordinator.cs` | An unexpected route-scoped exception could write duplicate coordinator errors every second and obscure other operational evidence. | **Fixed in 1.3.4.** Identical failures are persisted at most once per minute and the next record reports the suppressed count. Regression: `Repeated coordinator failures are log-throttled`. |
 
 ## GUI review
 
@@ -107,7 +112,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84 tests.
 
 Added coverage:
 

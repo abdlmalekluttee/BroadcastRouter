@@ -34,12 +34,14 @@ var tests = new (string Name, Action Body)[]
     ("Administrator route commands are authorized", RouteCommandsRequireAdministrator),
     ("Priority waiting queue", HigherPriorityDequeuesFirst),
     ("Route transition validation", InvalidStateJumpIsRejected),
+    ("Fallback and reconnect recovery can reacquire a reservation", RecoveryCanReacquireReservation),
     ("Automatic assignment", AutomaticAssignmentUsesOnePort),
     ("Automatic assignment ignores input-only ports", AutomaticAssignmentIgnoresInputOnlyPorts),
     ("Saved routing priority and protection", SavedRoutingPriorityAndProtection),
     ("Simulation discovery", SimulationReturnsUsableVideo),
     ("Retry policy caps delay", RetryPolicyCapsAtMaximum),
     ("Retry attempt cap is opt-in", RetryAttemptCapIsOptIn),
+    ("Repeated coordinator failures are log-throttled", RepeatedFailuresAreLogThrottled),
     ("Startup route recovery is single shot", StartupRouteRecoveryIsSingleShot),
     ("FFmpeg command uses argument list", FfmpegCommandUsesArgumentList),
     ("FFmpeg audio-led route generates continuous black video", FfmpegAudioLedRouteGeneratesBlackVideo),
@@ -62,6 +64,7 @@ var tests = new (string Name, Action Body)[]
     ("Probe readiness accepts audio and remains fail-closed", ProbeReadinessAcceptsAudioAndRejectsMetadataOnly),
     ("Probe readiness retains audio-led mode", ProbeReadinessRetainsAudioLedMode),
     ("Audio-led mode restores after stable video confirmation", ProbeReadinessRestoresStableVideo),
+    ("Probe media mode resists alternating sparse-video samples", ProbeMediaModeResistsFlapping),
     ("FFprobe rejects malformed output", FfprobeRejectsMalformedOutput),
     ("Wowza incoming stream parsing", WowzaIncomingStreamsAreParsed),
     ("Wowza discovery retains disconnected streams", WowzaDiscoveryRetainsDisconnectedStreams),
@@ -264,6 +267,28 @@ static void InvalidStateJumpIsRejected()
 {
     var route = new RouteRecord(new SourceIdentity("A", "live", "_definst_", "one"), null, "HD25", RouteState.Known, AssignmentMode.None, false);
     Throws<InvalidOperationException>(() => new RouteStateMachine().Transition(route, RouteState.Running));
+}
+
+static void RecoveryCanReacquireReservation()
+{
+    var machine = new RouteStateMachine();
+    True(machine.CanTransition(RouteState.Fallback, RouteState.Reserved));
+    True(machine.CanTransition(RouteState.Reconnecting, RouteState.Reserved));
+    True(!machine.CanTransition(RouteState.Fallback, RouteState.Running));
+}
+
+static void RepeatedFailuresAreLogThrottled()
+{
+    var gate = new RepeatedFailureLogGate();
+    var start = DateTimeOffset.Parse("2026-07-30T18:00:00Z");
+    True(gate.Evaluate("Fallback -> Reserved", start, TimeSpan.FromMinutes(1)).ShouldLog);
+    True(!gate.Evaluate("Fallback -> Reserved", start.AddSeconds(1), TimeSpan.FromMinutes(1)).ShouldLog);
+    True(!gate.Evaluate("Fallback -> Reserved", start.AddSeconds(2), TimeSpan.FromMinutes(1)).ShouldLog);
+    var repeated = gate.Evaluate("Fallback -> Reserved", start.AddMinutes(1), TimeSpan.FromMinutes(1));
+    True(repeated.ShouldLog);
+    Equal(2, repeated.SuppressedCount);
+    True(gate.Evaluate("different failure", start.AddMinutes(1).AddSeconds(1), TimeSpan.FromMinutes(1)).ShouldLog);
+    Equal(0, gate.Reset());
 }
 
 static void AutomaticAssignmentUsesOnePort()
@@ -643,6 +668,45 @@ static void ProbeReadinessRestoresStableVideo()
 {
     True(!SourceProbeReadinessPolicy.ShouldRestoreVideo(1));
     True(SourceProbeReadinessPolicy.ShouldRestoreVideo(2));
+}
+
+static void ProbeMediaModeResistsFlapping()
+{
+    var videoMedia = new MediaProperties("h264", "aac", 1920, 1080, 25, null, 48_000, 2, true);
+    var audioLedMedia = videoMedia with { HasUsableVideo = false };
+    var video = new StreamProbeResult(true, true, videoMedia, null, "continuous video", true);
+    var sparse = new StreamProbeResult(true, false, audioLedMedia, null, "audio with sparse video", true);
+
+    var state = SourceMediaModeState.Unknown;
+    var initial = SourceProbeReadinessPolicy.ObserveMediaMode(state, sparse);
+    Equal(SourceMediaMode.AudioLed, initial.State.Mode);
+    state = initial.State;
+
+    var firstVideo = SourceProbeReadinessPolicy.ObserveMediaMode(state, video);
+    Equal(SourceMediaMode.AudioLed, firstVideo.State.Mode);
+    True(!firstVideo.EffectiveProbe.Media!.HasUsableVideo);
+    state = firstVideo.State;
+
+    var restored = SourceProbeReadinessPolicy.ObserveMediaMode(state, video);
+    Equal(SourceMediaMode.Video, restored.State.Mode);
+    True(restored.ModeChanged && restored.EffectiveProbe.Media!.HasUsableVideo);
+    state = restored.State;
+
+    var oneSparse = SourceProbeReadinessPolicy.ObserveMediaMode(state, sparse);
+    Equal(SourceMediaMode.Video, oneSparse.State.Mode);
+    True(oneSparse.EffectiveProbe.Media!.HasUsableVideo);
+    True(!oneSparse.ModeChanged);
+    state = oneSparse.State;
+
+    var healthyAgain = SourceProbeReadinessPolicy.ObserveMediaMode(state, video);
+    Equal(SourceMediaMode.Video, healthyAgain.State.Mode);
+    Equal(0, healthyAgain.State.ConsecutiveAudioLedProbes);
+
+    state = SourceProbeReadinessPolicy.ObserveMediaMode(healthyAgain.State, sparse).State;
+    state = SourceProbeReadinessPolicy.ObserveMediaMode(state, sparse).State;
+    var confirmedAudioLed = SourceProbeReadinessPolicy.ObserveMediaMode(state, sparse);
+    Equal(SourceMediaMode.AudioLed, confirmedAudioLed.State.Mode);
+    True(confirmedAudioLed.ModeChanged);
 }
 
 static void FfprobeRejectsMalformedOutput()
@@ -1098,18 +1162,36 @@ static void AllGuiSettingsRoundTrip()
         };
         settings.WowzaServers.Add(new WowzaServerProfile
         {
-            FriendlyName = "QA Wowza", ServerId = " WOWZA-QA ", ManagementUrl = "http://10.0.0.1:8087/", Username = "operator",
-            ProtectedPassword = "protected", ValidateTlsCertificate = false, RtspHost = "10.0.0.1", RtspPort = 8698,
-            Applications = "live,news", ApplicationInstances = "_definst_", PollingIntervalSeconds = 7, ConnectionTimeoutSeconds = 9,
-            RtspUrlTemplate = "rtsp://{wowza-host}:{rtsp-port}/{application}/{stream-name}", Enabled = false, Priority = 123
+            FriendlyName = "QA Wowza",
+            ServerId = " WOWZA-QA ",
+            ManagementUrl = "http://10.0.0.1:8087/",
+            Username = "operator",
+            ProtectedPassword = "protected",
+            ValidateTlsCertificate = false,
+            RtspHost = "10.0.0.1",
+            RtspPort = 8698,
+            Applications = "live,news",
+            ApplicationInstances = "_definst_",
+            PollingIntervalSeconds = 7,
+            ConnectionTimeoutSeconds = 9,
+            RtspUrlTemplate = "rtsp://{wowza-host}:{rtsp-port}/{application}/{stream-name}",
+            Enabled = false,
+            Priority = 123
         });
         settings.ManualSources.Add(new ManualSourceProfile { StableId = "manual-qa", FriendlyName = "QA manual", RtspUrl = "rtsp://10.0.0.2/live/test", Priority = 77, FixedPortId = "PORT-2", Locked = true, Enabled = false });
         settings.DeckLinkCardOverrides.Add(new DeckLinkCardOverride { DeviceGroupId = "CARD-PERSISTENT-2", FriendlyName = "Studio input card" });
         settings.DeckLinkPortOverrides.Add(new DeckLinkPortOverride
         {
-            StableId = "PORT-2", FriendlyName = "Transmission 2", PortGroup = "TX", Reserved = true,
-            IsOutputPort = true, StandbyEnabled = true, StandbyPresetId = "qa-1080p25",
-            StandbyPattern = StandbyPattern.SmpteHdBars, StandbyLabel = "TX 2", StandbyShowClock = true
+            StableId = "PORT-2",
+            FriendlyName = "Transmission 2",
+            PortGroup = "TX",
+            Reserved = true,
+            IsOutputPort = true,
+            StandbyEnabled = true,
+            StandbyPresetId = "qa-1080p25",
+            StandbyPattern = StandbyPattern.SmpteHdBars,
+            StandbyLabel = "TX 2",
+            StandbyShowClock = true
         });
         settings.Presets = [new OutputPresetProfile { Id = "qa-1080p25", Name = "QA 1080p25", Width = 1920, Height = 1080, FrameRateNumerator = 25, FrameRateDenominator = 1, Interlaced = false, PixelFormat = "uyvy422", IncludeAudio = true, LowLatency = false, BufferSizeMegabytes = 512, StandbyMode = FallbackMode.TestPattern, StandbyValue = "bars" }];
         settings.Rules.Add(new RoutingRuleProfile { Id = "rule-qa", Name = "QA rule", Order = 20, Enabled = false, ServerPattern = "WOWZA-*", ApplicationPattern = "live", InstancePattern = "*", StreamPattern = "qa*", Codec = "h264", Tag = "news", PresetId = "qa-1080p25", FixedPortId = "PORT-2", LockAssignment = true });

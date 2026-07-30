@@ -5,9 +5,12 @@
     private string Text => Value.ToString() ?? "Unknown";
     private string Css => Text.ToLowerInvariant() switch
     {
-        "running" or "ready" or "valid" or "available" => "success",
-        "starting" or "probing" or "reserved" or "reconnecting" or "waitingforport" => "warning",
-        "failed" or "stalled" or "invalid" or "unavailable" => "danger",
+        "active" or "running" or "ready" or "valid" or "available" or "live" => "success",
+        "offline" or "publisherdisconnected" or "rtspunavailable" or "released" or "disabled" => "offline",
+        "starting" or "probing" or "reserved" or "reconnecting" or "waitingforport"
+            or "waiting for stream" or "waitingforstream" => "warning",
+        "failed" or "stalled" or "invalid" or "unavailable" or "unsupportedmedia"
+            or "routing conflict" => "danger",
         "fallback" => "accent",
         _ => "neutral"
     };
