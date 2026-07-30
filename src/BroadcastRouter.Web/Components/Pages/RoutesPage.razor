@@ -19,7 +19,7 @@
     <article class="route-editor" @key="route.SourceId">
         <header class="route-editor-head">
             <div><strong>@route.SourceName</strong><span class="secondary-text mono">@route.SourceId</span></div>
-            <div class="route-state"><BroadcastRouter.Web.Components.Shared.StateBadge Value="RouteStatus(route)" /><span class="badge">@AssignmentStatus(route)</span>@if (route.Locked) { <span class="badge warning">reserved</span> }</div>
+            <div class="route-state"><BroadcastRouter.Web.Components.Shared.StateBadge Value="RouteStatus(route)" /><span class="badge @AssignmentBadgeClass(route)">@AssignmentStatus(route)</span>@if (route.Locked) { <span class="badge warning">reserved</span> }</div>
         </header>
         <div class="route-summary-grid">
             <div><span class="field-label">Priority</span><strong>@route.Priority</strong></div>
@@ -163,5 +163,14 @@
         AssignmentMode.Manual => "Manually assigned",
         AssignmentMode.Automatic => "Automatically assigned",
         _ => "Unassigned"
+    };
+    private static string AssignmentBadgeClass(RuntimeRoute route) => route switch
+    {
+        { FailureCategory: "RoutingConflict" } => "danger",
+        { State: RouteState.WaitingForStream } => "warning",
+        { AssignmentMode: AssignmentMode.Preconfigured or AssignmentMode.Fixed or AssignmentMode.Rule } => "preconfigured",
+        { AssignmentMode: AssignmentMode.Manual } => "manual",
+        { AssignmentMode: AssignmentMode.Automatic } => "automatic",
+        _ => "unassigned"
     };
 }

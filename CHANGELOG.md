@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.3.4 — 2026-07-30
+
+- Color-coded source availability and routing assignment badges so active, offline, waiting, conflict, preconfigured, manual, automatic, and unassigned states remain visually distinct while retaining text labels.
+- Allow fallback and reconnect recovery to reacquire an already-selected output reservation without producing an invalid state-transition loop.
+- Added two-way media-mode hysteresis: two sustained-video observations restore live video, while three consecutive audio-led observations are required before replacing decoded video with generated black.
+- Restart an owned route under its existing source/port gates only after a media-mode change is confirmed, so the running FFmpeg command matches the committed video or audio-led mode.
+- Handle saved-route FFmpeg start failures inside route recovery and retain the saved output intent for retry instead of degrading the whole coordinator loop.
+- Throttle identical coordinator-cycle exceptions to one persisted error per minute, with the number of suppressed duplicates included in the next record.
+- Added regressions for reservation recovery, bidirectional media-mode stability, and repeated-error throttling.
+
 ## 1.3.3 — 2026-07-29
 
 - Made output-port designation deterministic across DeckLink rediscovery by retaining owned connectors and deferring identity migration only when unresolved legacy references actually exist.

@@ -53,7 +53,7 @@
         <td class="mono" title="@Sanitize(source.RtspUri)">@Sanitize(source.RtspUri)</td>
         <td>@FormatVideo(source.Media)</td>
         <td>@(source.Media?.AudioCodec is null ? "None" : $"{source.Media.AudioCodec} · {source.Media.AudioSampleRate} Hz · {source.Media.AudioChannels} ch")</td>
-        <td><div class="source-status-stack"><BroadcastRouter.Web.Components.Shared.StateBadge Value="SourceAvailability(source)" /><span class="badge">@SourceAssignment(route)</span></div></td><td>@source.Priority</td><td>@source.LastObservedAt?.ToLocalTime().ToString("HH:mm:ss")</td>
+        <td><div class="source-status-stack"><BroadcastRouter.Web.Components.Shared.StateBadge Value="SourceAvailability(source)" /><span class="badge @AssignmentBadgeClass(route)">@SourceAssignment(route)</span></div></td><td>@source.Priority</td><td>@source.LastObservedAt?.ToLocalTime().ToString("HH:mm:ss")</td>
         <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions">
             @if (routeAction == SourceRouteActionKind.View)
             {
@@ -141,5 +141,14 @@
         { AssignmentMode: AssignmentMode.Manual } => "Manually assigned",
         { AssignmentMode: AssignmentMode.Automatic } => "Automatically assigned",
         _ => "Unassigned"
+    };
+    private static string AssignmentBadgeClass(RuntimeRoute? route) => route switch
+    {
+        { FailureCategory: "RoutingConflict" } => "danger",
+        { State: RouteState.WaitingForStream } => "warning",
+        { AssignmentMode: AssignmentMode.Preconfigured or AssignmentMode.Fixed or AssignmentMode.Rule } => "preconfigured",
+        { AssignmentMode: AssignmentMode.Manual } => "manual",
+        { AssignmentMode: AssignmentMode.Automatic } => "automatic",
+        _ => "unassigned"
     };
 }

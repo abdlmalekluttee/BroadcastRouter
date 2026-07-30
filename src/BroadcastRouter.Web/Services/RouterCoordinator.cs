@@ -34,8 +34,10 @@ public sealed class RouterCoordinator(
     private readonly Dictionary<string, DateTimeOffset> _standbyRetryAt = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _standbyConfigurationSignatures = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _processDiagnosticSignatures = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, int> _sustainedVideoProbeCounts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SourceMediaModeState> _sourceMediaModes = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _pendingMediaModeRestarts = new(StringComparer.Ordinal);
     private readonly StartupRouteRecoveryTracker _startupRecovery = new();
+    private readonly RepeatedFailureLogGate _reconciliationFailureLogGate = new();
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private FfmpegProcessSupervisor? _supervisor;
     private string? _supervisorPath;
@@ -317,13 +319,23 @@ public sealed class RouterCoordinator(
                 await ReconcileRoutesAsync(stoppingToken);
                 await ReconcilePortStandbysAsync(stoppingToken);
                 await DiscoverAndProbeAsync(stoppingToken);
+                _reconciliationFailureLogGate.Reset();
                 Publish("Running");
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Router reconciliation cycle failed");
-                await LogAsync("Error", "Coordinator", $"Reconciliation cycle failed: {ex.Message}", cancellationToken: stoppingToken);
+                var signature = $"{ex.GetType().FullName}:{ex.Message}";
+                var decision = _reconciliationFailureLogGate.Evaluate(signature, DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1));
+                if (decision.ShouldLog)
+                {
+                    var suppressed = decision.SuppressedCount > 0
+                        ? $" {decision.SuppressedCount} identical failure(s) were suppressed during the previous minute."
+                        : "";
+                    logger.LogError(ex, "Router reconciliation cycle failed.{Suppressed}", suppressed);
+                    await store.WriteLogAsync("Error", "Coordinator",
+                        $"Reconciliation cycle failed: {ex.Message}.{suppressed}", cancellationToken: stoppingToken);
+                }
                 Publish("Reconciliation degraded");
             }
             await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
@@ -592,9 +604,10 @@ public sealed class RouterCoordinator(
             {
                 if (probed.State != SourceState.Ready)
                     await LogAsync("Warning", "Probe", $"Probe failed: {probe.FailureCategory}: {probe.Detail}", probed.Identity.Value, cancellationToken: cancellationToken);
-                else if (probe.AudioReceived && !probe.FramesReceived && !outcome.WasAudioLedReady)
+                else if (outcome.CurrentMode == SourceMediaMode.AudioLed
+                         && (outcome.PreviousMode == SourceMediaMode.Unknown || outcome.ModeChanged))
                     await LogAsync("Information", "Probe", $"Audio-led source accepted: {probe.Detail}", probed.Identity.Value, cancellationToken: cancellationToken);
-                else if (probe.FramesReceived && outcome.WasAudioLedReady)
+                else if (outcome.ModeChanged && outcome.CurrentMode == SourceMediaMode.Video)
                     await LogAsync("Information", "Probe", "Sustained decoded video was confirmed twice; live video playout is restored from audio-led black mode.",
                         probed.Identity.Value, cancellationToken: cancellationToken);
             }
@@ -624,38 +637,46 @@ public sealed class RouterCoordinator(
     private async Task<ProbeOutcome> ProbeObservationAsync(DiscoveredSource source, OperatorSettings settings,
         CancellationToken cancellationToken)
     {
-        if (source.Media is not null || source.State is SourceState.PublisherDisconnected or SourceState.Disabled)
-            return new(source, null, false);
-        bool wasAudioLedReady;
-        lock (_gate)
-            wasAudioLedReady = _sources.TryGetValue(source.Identity.Value, out var previous)
-                && previous.State == SourceState.Ready
-                && previous.Media is { HasUsableVideo: false, AudioCodec: not null };
-        var rawProbe = settings.SimulationMode
-            ? await new SimulationStreamProbe().ProbeAsync(source.RtspUri, cancellationToken)
-            : await new FfprobeStreamProbe(settings.MediaTools.FfprobePath, TimeSpan.FromSeconds(8)).ProbeAsync(source.RtspUri, cancellationToken);
-        var probe = rawProbe;
-        if (wasAudioLedReady)
+        if (source.State is SourceState.PublisherDisconnected or SourceState.Disabled)
         {
             lock (_gate)
             {
-                if (rawProbe.FramesReceived)
-                {
-                    var count = _sustainedVideoProbeCounts.GetValueOrDefault(source.Identity.Value) + 1;
-                    _sustainedVideoProbeCounts[source.Identity.Value] = count;
-                    if (!SourceProbeReadinessPolicy.ShouldRestoreVideo(count))
-                        probe = SourceProbeReadinessPolicy.RetainAudioLedMode(rawProbe, true);
-                    else _sustainedVideoProbeCounts.Remove(source.Identity.Value);
-                }
-                else
-                {
-                    _sustainedVideoProbeCounts.Remove(source.Identity.Value);
-                    probe = SourceProbeReadinessPolicy.RetainAudioLedMode(rawProbe, true);
-                }
+                _sourceMediaModes.Remove(source.Identity.Value);
+                _pendingMediaModeRestarts.Remove(source.Identity.Value);
+            }
+            return new(source, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false);
+        }
+        if (source.Media is not null)
+            return new(source, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false);
+
+        SourceMediaModeState previousMode;
+        lock (_gate)
+        {
+            if (!_sourceMediaModes.TryGetValue(source.Identity.Value, out previousMode!))
+            {
+                previousMode = _sources.TryGetValue(source.Identity.Value, out var previous)
+                    && previous.State == SourceState.Ready
+                    ? previous.Media switch
+                    {
+                        { HasUsableVideo: true } media => new(SourceMediaMode.Video, 0, 0, media),
+                        { HasUsableVideo: false, AudioCodec: not null } => new(SourceMediaMode.AudioLed, 0, 0, null),
+                        _ => SourceMediaModeState.Unknown
+                    }
+                    : SourceMediaModeState.Unknown;
             }
         }
-        else lock (_gate) _sustainedVideoProbeCounts.Remove(source.Identity.Value);
-        return new(source with { State = SourceProbeReadinessPolicy.Resolve(probe), Media = probe.Media }, probe, wasAudioLedReady);
+        var rawProbe = settings.SimulationMode
+            ? await new SimulationStreamProbe().ProbeAsync(source.RtspUri, cancellationToken)
+            : await new FfprobeStreamProbe(settings.MediaTools.FfprobePath, TimeSpan.FromSeconds(8)).ProbeAsync(source.RtspUri, cancellationToken);
+        var decision = SourceProbeReadinessPolicy.ObserveMediaMode(previousMode, rawProbe);
+        lock (_gate)
+        {
+            _sourceMediaModes[source.Identity.Value] = decision.State;
+            if (decision.ModeChanged) _pendingMediaModeRestarts.Add(source.Identity.Value);
+        }
+        var probe = decision.EffectiveProbe;
+        return new(source with { State = SourceProbeReadinessPolicy.Resolve(probe), Media = probe.Media }, probe,
+            previousMode.Mode, decision.State.Mode, decision.ModeChanged);
     }
 
     private async Task ReconcileRoutesAsync(CancellationToken cancellationToken)
@@ -663,6 +684,7 @@ public sealed class RouterCoordinator(
         if (_emergencyStopped) return;
         var settings = GetSettings();
         await RestoreReservationsAndProcessesAsync(settings, cancellationToken);
+        await RestartRoutesForMediaModeChangesAsync(cancellationToken);
 
         var savedRoutes = RoutesCopy().Where(DesiredRoutePolicy.HasSavedAssignment)
             .OrderByDescending(route => DesiredRoutePolicy.PriorityRank(route.AssignmentMode))
@@ -867,9 +889,95 @@ public sealed class RouterCoordinator(
             if (!active) return;
             if (!_settings.SimulationMode && !_validation.CanStartHardwareRoutes)
                 throw new InvalidOperationException("DeckLink route start refused because Media Tools validation has not passed.");
-            await StartRouteAsync(assigned, source, port, preset, cancellationToken);
+            await StartRouteWithRecoveryAsync(assigned, source, port, preset, cancellationToken);
         }
         finally { routeGate.Release(); }
+    }
+
+    private async Task RestartRoutesForMediaModeChangesAsync(CancellationToken cancellationToken)
+    {
+        string[] pending;
+        lock (_gate) pending = _pendingMediaModeRestarts.ToArray();
+        foreach (var sourceId in pending)
+        {
+            var routeGate = _routeGates.GetOrAdd(sourceId, static _ => new SemaphoreSlim(1, 1));
+            await routeGate.WaitAsync(cancellationToken);
+            try
+            {
+                RuntimeRoute? route;
+                DiscoveredSource? source;
+                DeckLinkPort? port;
+                OutputPresetProfile? preset;
+                lock (_gate)
+                {
+                    _routes.TryGetValue(sourceId, out route);
+                    _sources.TryGetValue(sourceId, out source);
+                    port = route?.PortId is null ? null : _ports.GetValueOrDefault(route.PortId);
+                    preset = route is null ? null : _settings.Presets.FirstOrDefault(value => value.Id == route.PresetId);
+                }
+
+                if (route is null || source?.State != SourceState.Ready || port is null || preset is null
+                    || route.State is not (RouteState.Starting or RouteState.Running or RouteState.Reconnecting or RouteState.Fallback))
+                {
+                    lock (_gate) _pendingMediaModeRestarts.Remove(sourceId);
+                    continue;
+                }
+                if (route.RetryAt is not null && route.RetryAt > DateTimeOffset.UtcNow) continue;
+
+                if (_supervisor is not null) await _supervisor.StopAsync(source.Identity, cancellationToken);
+                var restarting = route with
+                {
+                    State = RouteState.Reconnecting,
+                    FailureCategory = "MediaModeChanged",
+                    FailureMessage = source.Media?.HasUsableVideo == true
+                        ? "Stable decoded video was confirmed; restarting playout in live-video mode."
+                        : "Sustained audio-led input was confirmed; restarting playout with generated black video.",
+                    RetryAt = null,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                };
+                await ReplaceRouteAsync(restarting, route.State, cancellationToken);
+                lock (_gate) _pendingMediaModeRestarts.Remove(sourceId);
+                await LogAsync("Information", "MediaMode",
+                    restarting.FailureMessage, sourceId, cancellationToken: cancellationToken);
+                await StartRouteWithRecoveryAsync(restarting, source, port, preset, cancellationToken);
+            }
+            finally { routeGate.Release(); }
+        }
+    }
+
+    private async Task StartRouteWithRecoveryAsync(RuntimeRoute route, DiscoveredSource source, DeckLinkPort port,
+        OutputPresetProfile preset, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await StartRouteAsync(route, source, port, preset, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            RuntimeRoute current;
+            lock (_gate) current = _routes.GetValueOrDefault(route.SourceId) ?? route;
+            var detail = LogRedactor.Redact(ex.Message);
+            var category = FfmpegErrorClassifier.Classify(null, detail);
+            if (IsPermanent(category))
+            {
+                await ReplaceRouteAsync(current with
+                {
+                    State = RouteState.Failed,
+                    FailureCategory = category.ToString(),
+                    FailureMessage = detail,
+                    RetryAt = null,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                }, current.State, cancellationToken);
+            }
+            else
+            {
+                await ScheduleRetryAsync(current, category.ToString(), detail, cancellationToken);
+            }
+        }
     }
 
     private async Task RemoveDesiredRouteAsync(string sourceId, string actor, CancellationToken cancellationToken)
@@ -899,18 +1007,18 @@ public sealed class RouterCoordinator(
         await ownerGate.WaitAsync(cancellationToken);
         try
         {
-        var identity = SourceIdentityFromValue(route.SourceId);
-        if (_supervisor is not null) await _supervisor.StopAsync(identity, cancellationToken);
-        if (route.PortId is not null) _reservations.Release(route.PortId, identity, force: true);
-        await ReplaceRouteAsync(route with
-        {
-            PortId = null,
-            PortName = null,
-            State = RouteState.WaitingForPort,
-            FailureCategory = "RoutingConflict",
-            FailureMessage = "A higher-priority saved routing entry owns this output.",
-            UpdatedAt = DateTimeOffset.UtcNow
-        }, route.State, cancellationToken);
+            var identity = SourceIdentityFromValue(route.SourceId);
+            if (_supervisor is not null) await _supervisor.StopAsync(identity, cancellationToken);
+            if (route.PortId is not null) _reservations.Release(route.PortId, identity, force: true);
+            await ReplaceRouteAsync(route with
+            {
+                PortId = null,
+                PortName = null,
+                State = RouteState.WaitingForPort,
+                FailureCategory = "RoutingConflict",
+                FailureMessage = "A higher-priority saved routing entry owns this output.",
+                UpdatedAt = DateTimeOffset.UtcNow
+            }, route.State, cancellationToken);
         }
         finally { ownerGate.Release(); }
     }
@@ -922,65 +1030,65 @@ public sealed class RouterCoordinator(
         await routeGate.WaitAsync(cancellationToken);
         try
         {
-        RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
-        DiscoveredSource source;
-        DeckLinkPort[] ports;
-        OperatorSettings settings;
-        RuntimeRoute? previousRoute;
-        lock (_gate)
-        {
-            if (!_sources.TryGetValue(sourceId, out source!)) throw new InvalidOperationException("Source is not currently known.");
-            var protectedPorts = _routes.Values.Where(route => route.SourceId != sourceId && DesiredRoutePolicy.ProtectsPortWhileOffline(route))
-                .Select(route => route.DesiredPortId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            ports = _ports.Values.Where(port => !protectedPorts.Contains(port.StableId)).ToArray();
-            settings = Clone(_settings);
-            _routes.TryGetValue(sourceId, out previousRoute);
-        }
-        if (DesiredRoutePolicy.HasSavedAssignment(previousRoute)) return;
-        if (previousRoute?.State is RouteState.Reserved or RouteState.Starting or RouteState.Running or RouteState.Fallback) return;
-        if (!settings.SimulationMode && !_validation.CanStartHardwareRoutes)
-            throw new InvalidOperationException("DeckLink route start refused because Media Tools validation has not passed.");
-        var defaultPreset = settings.Presets.FirstOrDefault()?.Id ?? "";
-        var decision = RoutingRuleEvaluator.Evaluate(source, settings.Rules, defaultPreset);
-        var effective = source with
-        {
-            FixedPortId = requestedPortId ?? decision.FixedPortId,
-            AssignmentLocked = decision.Locked,
-            Priority = decision.Priority,
-            AutomaticRoutingEnabled = true
-        };
-        var presetProfile = OutputPresetSelection.Resolve(settings.Presets, decision.PresetId,
-            manual ? requestedPresetId : null);
-        var assignment = new AutomaticAssignmentEngine(_reservations, _waiting).Assign(effective, ports,
-            port => Compatible(port, presetProfile, decision.PortGroup));
-        if (!assignment.Assigned)
-        {
-            var waiting = new RuntimeRoute(sourceId, source.FriendlyName, null, null, presetProfile.Id, RouteState.WaitingForPort,
-                assignment.Mode, decision.Locked, decision.Priority, 0, null, null, null, 0, 0, null, DateTimeOffset.UtcNow,
-                "NoOutput", assignment.Reason);
-            await ReplaceRouteAsync(waiting, previousRoute?.State, cancellationToken);
-            return;
-        }
+            RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
+            DiscoveredSource source;
+            DeckLinkPort[] ports;
+            OperatorSettings settings;
+            RuntimeRoute? previousRoute;
+            lock (_gate)
+            {
+                if (!_sources.TryGetValue(sourceId, out source!)) throw new InvalidOperationException("Source is not currently known.");
+                var protectedPorts = _routes.Values.Where(route => route.SourceId != sourceId && DesiredRoutePolicy.ProtectsPortWhileOffline(route))
+                    .Select(route => route.DesiredPortId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                ports = _ports.Values.Where(port => !protectedPorts.Contains(port.StableId)).ToArray();
+                settings = Clone(_settings);
+                _routes.TryGetValue(sourceId, out previousRoute);
+            }
+            if (DesiredRoutePolicy.HasSavedAssignment(previousRoute)) return;
+            if (previousRoute?.State is RouteState.Reserved or RouteState.Starting or RouteState.Running or RouteState.Fallback) return;
+            if (!settings.SimulationMode && !_validation.CanStartHardwareRoutes)
+                throw new InvalidOperationException("DeckLink route start refused because Media Tools validation has not passed.");
+            var defaultPreset = settings.Presets.FirstOrDefault()?.Id ?? "";
+            var decision = RoutingRuleEvaluator.Evaluate(source, settings.Rules, defaultPreset);
+            var effective = source with
+            {
+                FixedPortId = requestedPortId ?? decision.FixedPortId,
+                AssignmentLocked = decision.Locked,
+                Priority = decision.Priority,
+                AutomaticRoutingEnabled = true
+            };
+            var presetProfile = OutputPresetSelection.Resolve(settings.Presets, decision.PresetId,
+                manual ? requestedPresetId : null);
+            var assignment = new AutomaticAssignmentEngine(_reservations, _waiting).Assign(effective, ports,
+                port => Compatible(port, presetProfile, decision.PortGroup));
+            if (!assignment.Assigned)
+            {
+                var waiting = new RuntimeRoute(sourceId, source.FriendlyName, null, null, presetProfile.Id, RouteState.WaitingForPort,
+                    assignment.Mode, decision.Locked, decision.Priority, 0, null, null, null, 0, 0, null, DateTimeOffset.UtcNow,
+                    "NoOutput", assignment.Reason);
+                await ReplaceRouteAsync(waiting, previousRoute?.State, cancellationToken);
+                return;
+            }
 
-        var port = assignment.Port!;
-        _waiting.Remove(source.Identity);
-        var now = DateTimeOffset.UtcNow;
-        var route = new RuntimeRoute(sourceId, source.FriendlyName, port.StableId, DeckLinkDisplayName.Full(port), presetProfile.Id,
-            RouteState.Reserved, manual ? AssignmentMode.Manual : assignment.Mode, decision.Locked, decision.Priority, 0,
-            null, null, null, 0, 0, null, now, null, null);
-        await ReplaceRouteAsync(route, previousRoute?.State, cancellationToken);
-        try
-        {
-            await StartRouteAsync(route, source, port, presetProfile, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            var detail = LogRedactor.Redact(ex.Message);
-            var failed = RouteStartFailureRecovery.ReleaseAndFail(_reservations, route with { State = RouteState.Starting }, source.Identity,
-                string.IsNullOrWhiteSpace(detail) ? "FFmpeg could not be started." : detail, DateTimeOffset.UtcNow);
-            await ReplaceRouteAsync(failed, RouteState.Starting, cancellationToken);
-            throw new InvalidOperationException("FFmpeg failed to start; the output reservation was released.", ex);
-        }
+            var port = assignment.Port!;
+            _waiting.Remove(source.Identity);
+            var now = DateTimeOffset.UtcNow;
+            var route = new RuntimeRoute(sourceId, source.FriendlyName, port.StableId, DeckLinkDisplayName.Full(port), presetProfile.Id,
+                RouteState.Reserved, manual ? AssignmentMode.Manual : assignment.Mode, decision.Locked, decision.Priority, 0,
+                null, null, null, 0, 0, null, now, null, null);
+            await ReplaceRouteAsync(route, previousRoute?.State, cancellationToken);
+            try
+            {
+                await StartRouteAsync(route, source, port, presetProfile, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                var detail = LogRedactor.Redact(ex.Message);
+                var failed = RouteStartFailureRecovery.ReleaseAndFail(_reservations, route with { State = RouteState.Starting }, source.Identity,
+                    string.IsNullOrWhiteSpace(detail) ? "FFmpeg could not be started." : detail, DateTimeOffset.UtcNow);
+                await ReplaceRouteAsync(failed, RouteState.Starting, cancellationToken);
+                throw new InvalidOperationException("FFmpeg failed to start; the output reservation was released.", ex);
+            }
         }
         finally { routeGate.Release(); }
     }
@@ -991,23 +1099,23 @@ public sealed class RouterCoordinator(
         await portGate.WaitAsync(cancellationToken);
         try
         {
-        await StopPortStandbyAsync(port.StableId, cancellationToken);
-        var starting = route with { State = RouteState.Starting, UpdatedAt = DateTimeOffset.UtcNow, FailureCategory = null, FailureMessage = null, RetryAt = null };
-        await ReplaceRouteAsync(starting, route.State, cancellationToken);
-        if (_settings.SimulationMode)
-        {
-            await ReplaceRouteAsync(starting with { State = RouteState.Running, StartedAt = DateTimeOffset.UtcNow, Frame = 0, Fps = preset.FrameRateNumerator / (double)preset.FrameRateDenominator, Speed = 1 }, RouteState.Starting, cancellationToken);
-            return;
-        }
+            await StopPortStandbyAsync(port.StableId, cancellationToken);
+            var starting = route with { State = RouteState.Starting, UpdatedAt = DateTimeOffset.UtcNow, FailureCategory = null, FailureMessage = null, RetryAt = null };
+            await ReplaceRouteAsync(starting, route.State, cancellationToken);
+            if (_settings.SimulationMode)
+            {
+                await ReplaceRouteAsync(starting with { State = RouteState.Running, StartedAt = DateTimeOffset.UtcNow, Frame = 0, Fps = preset.FrameRateNumerator / (double)preset.FrameRateDenominator, Speed = 1 }, RouteState.Starting, cancellationToken);
+                return;
+            }
 
-        EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
-        var domainRoute = new RouteRecord(source.Identity, port.StableId, preset.Id, RouteState.Starting, starting.AssignmentMode, starting.Locked, starting.RestartCount);
-        await _supervisor!.StartAsync(domainRoute, source, port, preset.ToDomain(), cancellationToken);
-        if (_emergencyStopped)
-        {
-            await _supervisor.StopAsync(source.Identity, CancellationToken.None);
-            throw new InvalidOperationException("Emergency stop became active while FFmpeg was starting.");
-        }
+            EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
+            var domainRoute = new RouteRecord(source.Identity, port.StableId, preset.Id, RouteState.Starting, starting.AssignmentMode, starting.Locked, starting.RestartCount);
+            await _supervisor!.StartAsync(domainRoute, source, port, preset.ToDomain(), cancellationToken);
+            if (_emergencyStopped)
+            {
+                await _supervisor.StopAsync(source.Identity, CancellationToken.None);
+                throw new InvalidOperationException("Emergency stop became active while FFmpeg was starting.");
+            }
         }
         finally { portGate.Release(); }
     }
@@ -1299,9 +1407,15 @@ public sealed class RouterCoordinator(
             await ReplaceRouteAsync(terminal, route.State, cancellationToken);
             return;
         }
-        var retry = route with { State = RouteState.Reconnecting, RestartCount = count, FailureCategory = category,
+        var retry = route with
+        {
+            State = RouteState.Reconnecting,
+            RestartCount = count,
+            FailureCategory = category,
             FailureMessage = string.IsNullOrWhiteSpace(detail) ? "FFmpeg stopped unexpectedly." : detail,
-            RetryAt = DateTimeOffset.UtcNow + RetryDelay(count), UpdatedAt = DateTimeOffset.UtcNow };
+            RetryAt = DateTimeOffset.UtcNow + RetryDelay(count),
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
         await LogAsync("Warning", "FFmpeg", $"Route process failed ({category}); retry {count} is scheduled. {retry.FailureMessage}",
             route.SourceId, cancellationToken: cancellationToken);
         if (!_settings.SimulationMode && route.PortId is not null)
@@ -1359,43 +1473,43 @@ public sealed class RouterCoordinator(
         await routeGate.WaitAsync(cancellationToken);
         try
         {
-        RuntimeRoute? route;
-        lock (_gate) _routes.TryGetValue(sourceId, out route);
-        if (route is null) return;
-        var preserve = preserveDesiredAssignment && DesiredRoutePolicy.HasSavedAssignment(route);
-        var keepReservation = preserve && DesiredRoutePolicy.ProtectsPortWhileOffline(route);
-        if (!keepReservation) RouteControlSafety.EnsureStopAllowed(route.Locked, forceRelease);
-        var identity = SourceIdentityFromValue(sourceId);
-        _waiting.Remove(identity);
-        lock (_gate)
-        {
-            _sourceMissingSince.Remove(sourceId);
-            _sourceReadySince.Remove(sourceId);
-        }
-        if (_supervisor is not null) await _supervisor.StopAsync(identity, cancellationToken);
-        if (route.PortId is not null && !keepReservation)
-        {
-            var release = _reservations.ReleaseWithResult(route.PortId, identity, forceRelease);
-            if (release == PortReleaseResult.OwnedByOther)
-                throw new InvalidOperationException("The output reservation could not be released because another route now owns it.");
-            if (release == PortReleaseResult.Locked)
-                throw new InvalidOperationException("The output reservation is locked and requires a forced stop.");
-            if (release == PortReleaseResult.AlreadyFree)
-                await LogAsync("Warning", "Reservation", "A stale route referenced an output that was already free; stop reconciled the route without releasing another owner's lease.",
-                    sourceId, cancellationToken: cancellationToken);
-        }
-        await ReplaceRouteAsync(route with
-        {
-            State = preserve ? RouteState.WaitingForStream : RouteState.Released,
-            PortId = keepReservation ? route.PortId : null,
-            PortName = keepReservation ? route.PortName : null,
-            DesiredPortId = preserve ? route.DesiredPortId : null,
-            DesiredPortName = preserve ? route.DesiredPortName : null,
-            AssignmentMode = preserve ? route.AssignmentMode : AssignmentMode.None,
-            FailureCategory = null,
-            FailureMessage = preserve ? "Waiting for the incoming stream to become active." : null,
-            UpdatedAt = DateTimeOffset.UtcNow
-        }, route.State, cancellationToken);
+            RuntimeRoute? route;
+            lock (_gate) _routes.TryGetValue(sourceId, out route);
+            if (route is null) return;
+            var preserve = preserveDesiredAssignment && DesiredRoutePolicy.HasSavedAssignment(route);
+            var keepReservation = preserve && DesiredRoutePolicy.ProtectsPortWhileOffline(route);
+            if (!keepReservation) RouteControlSafety.EnsureStopAllowed(route.Locked, forceRelease);
+            var identity = SourceIdentityFromValue(sourceId);
+            _waiting.Remove(identity);
+            lock (_gate)
+            {
+                _sourceMissingSince.Remove(sourceId);
+                _sourceReadySince.Remove(sourceId);
+            }
+            if (_supervisor is not null) await _supervisor.StopAsync(identity, cancellationToken);
+            if (route.PortId is not null && !keepReservation)
+            {
+                var release = _reservations.ReleaseWithResult(route.PortId, identity, forceRelease);
+                if (release == PortReleaseResult.OwnedByOther)
+                    throw new InvalidOperationException("The output reservation could not be released because another route now owns it.");
+                if (release == PortReleaseResult.Locked)
+                    throw new InvalidOperationException("The output reservation is locked and requires a forced stop.");
+                if (release == PortReleaseResult.AlreadyFree)
+                    await LogAsync("Warning", "Reservation", "A stale route referenced an output that was already free; stop reconciled the route without releasing another owner's lease.",
+                        sourceId, cancellationToken: cancellationToken);
+            }
+            await ReplaceRouteAsync(route with
+            {
+                State = preserve ? RouteState.WaitingForStream : RouteState.Released,
+                PortId = keepReservation ? route.PortId : null,
+                PortName = keepReservation ? route.PortName : null,
+                DesiredPortId = preserve ? route.DesiredPortId : null,
+                DesiredPortName = preserve ? route.DesiredPortName : null,
+                AssignmentMode = preserve ? route.AssignmentMode : AssignmentMode.None,
+                FailureCategory = null,
+                FailureMessage = preserve ? "Waiting for the incoming stream to become active." : null,
+                UpdatedAt = DateTimeOffset.UtcNow
+            }, route.State, cancellationToken);
         }
         finally { routeGate.Release(); }
     }
@@ -1448,8 +1562,15 @@ public sealed class RouterCoordinator(
             if (!_reservations.TryReserve(route.PortId!, source.Identity, route.Locked, DateTimeOffset.UtcNow, out var existing))
             {
                 _startupRecovery.TryBegin(route.SourceId);
-                var waiting = route with { PortId = null, PortName = null, State = RouteState.WaitingForPort,
-                    FailureCategory = "DuplicateReservation", FailureMessage = $"Persisted output is already reserved by {existing.Source.Value}.", UpdatedAt = DateTimeOffset.UtcNow };
+                var waiting = route with
+                {
+                    PortId = null,
+                    PortName = null,
+                    State = RouteState.WaitingForPort,
+                    FailureCategory = "DuplicateReservation",
+                    FailureMessage = $"Persisted output is already reserved by {existing.Source.Value}.",
+                    UpdatedAt = DateTimeOffset.UtcNow
+                };
                 _waiting.Enqueue(source.Identity, route.Priority, waiting.FailureMessage!);
                 await ReplaceRouteAsync(waiting, route.State, cancellationToken);
                 continue;
@@ -1460,8 +1581,14 @@ public sealed class RouterCoordinator(
             var ownsProcess = _supervisor?.Snapshot().Any(x => x.Source.Value == route.SourceId && x.Running) ?? false;
             if (!ownsProcess && route.State is RouteState.Running or RouteState.Starting or RouteState.Reserved)
             {
-                var recovering = route with { State = RouteState.Reconnecting, RetryAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
-                    FailureCategory = "RestartRecovery", FailureMessage = "Restoring persisted route after host restart." };
+                var recovering = route with
+                {
+                    State = RouteState.Reconnecting,
+                    RetryAt = DateTimeOffset.UtcNow,
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                    FailureCategory = "RestartRecovery",
+                    FailureMessage = "Restoring persisted route after host restart."
+                };
                 await ReplaceRouteAsync(recovering, route.State, cancellationToken);
                 try
                 {
@@ -1752,5 +1879,6 @@ public sealed class RouterCoordinator(
         }).ToArray();
     }
 
-    private sealed record ProbeOutcome(DiscoveredSource Source, StreamProbeResult? Probe, bool WasAudioLedReady);
+    private sealed record ProbeOutcome(DiscoveredSource Source, StreamProbeResult? Probe,
+        SourceMediaMode PreviousMode, SourceMediaMode CurrentMode, bool ModeChanged);
 }

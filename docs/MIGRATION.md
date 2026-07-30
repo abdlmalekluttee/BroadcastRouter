@@ -10,4 +10,6 @@
 
 Version 1.3.3 advances operator settings to schema 6 and adds a monotonic configuration revision plus last-applied metadata. The SQLite audit table is created automatically. Existing settings, output-port selections, identities, aliases, routes, and source inventory remain compatible; no manual migration or restart is required beyond the normal version deployment itself.
 
+Version 1.3.4 does not change the settings or database schema. Existing output-port selections, stable DeckLink identities, saved routes, source inventory, and standby configuration are reused unchanged. The normal version deployment restart is sufficient.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.
