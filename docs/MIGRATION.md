@@ -18,4 +18,6 @@ Version 1.3.6 changes presentation only and does not change the settings or data
 
 Version 1.4.0 does not change the settings or database schema. Existing output designations, saved routes, aliases, presets, and standby configuration are preserved. Standby rendering adopts the new four-corner layout automatically, and low-latency presets use faster RTSP input analysis. Verify the host clock is NTP-synchronized and set source encoder keyframe intervals to two seconds or less before timing physical SDI cuts.
 
+Version 1.5.0 does not change the settings or database schema. The optional DeckLink visual catalog reads an operator-installed pack from `data\decklink-assets`; public archives do not redistribute Blackmagic-owned images. Existing card identities, connector roles, saved routes, presets, and standby processes are independent of the catalog and remain unchanged when the pack is installed, replaced, missing, or unmatched.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.
