@@ -5,6 +5,7 @@
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject IJSRuntime JS
+@inject DeckLinkAssetCatalog AssetCatalog
 
 <PageTitle>Settings · BroadcastRouter</PageTitle>
 <div class="page-head"><div><h1>Settings</h1><p class="lead">Persistent SQLite configuration, DPAPI credentials, media-tool validation, routing policy, and manual inputs.</p></div><button class="btn primary" disabled="@saving" @onclick="Save">@(saving ? "Saving…" : "Save settings")</button></div>
@@ -22,10 +23,11 @@
 </div></div></div>
 
 <div class="panel"><div class="panel-head"><div><h2>Physical DeckLink cards</h2><span class="secondary-text">Give each persistent physical card a name that operators recognize. The name follows the card if identical models swap PCIe slots.</span></div></div><div class="panel-body decklink-card-settings">
+<div class="decklink-asset-status @(AssetCatalog.Status.Installed ? "installed" : "missing")"><strong>@AssetCatalog.Status.Message</strong><span>@(AssetCatalog.Status.Installed ? "Product and connection images are presentation-only; hardware identity remains authoritative." : "Run scripts\\Install-DeckLinkAssets.ps1 with your licensed/local asset ZIP. No restart is required after the files are installed.")</span></div>
 @foreach (var card in PersistentCardGroups())
 {
     var mapping = CardOverride(card.Key, card.Ports[0]);
-    <div class="card decklink-card-setting" @key="card.Key"><div><span class="stat-label">@card.Ports[0].ModelName · @card.Ports.Count connector(s)</span><strong>@(string.IsNullOrWhiteSpace(mapping.FriendlyName) ? "Unnamed physical card" : mapping.FriendlyName)</strong><span class="secondary-text">Hardware identity @DeckLinkDisplayName.ShortIdentity(card.Key)</span></div><div class="form-group"><label>Card name</label><input aria-label="@($"Card name for {DeckLinkDisplayName.ShortIdentity(card.Key)}")" @bind="mapping.FriendlyName" @bind:event="oninput" placeholder="e.g. Studio input card" /></div></div>
+    <div class="card decklink-card-setting" @key="card.Key"><div class="decklink-card-setting-identity"><span class="stat-label">@card.Ports[0].ModelName · @card.Ports.Count connector(s)</span><strong>@(string.IsNullOrWhiteSpace(mapping.FriendlyName) ? "Unnamed physical card" : mapping.FriendlyName)</strong><span class="secondary-text">Hardware identity @DeckLinkDisplayName.ShortIdentity(card.Key)</span></div><div class="form-group"><label>Card name</label><input aria-label="@($"Card name for {DeckLinkDisplayName.ShortIdentity(card.Key)}")" @bind="mapping.FriendlyName" @bind:event="oninput" placeholder="e.g. Studio input card" /></div><BroadcastRouter.Web.Components.Shared.DeckLinkCardVisual CardKey="@card.Key" Ports="@card.Ports" Routes="@Coordinator.Snapshot.Routes" Compact="true" ShowPortMap="false" /></div>
 }
 @if (!PersistentCardGroups().Any()) { <div class="empty-state compact">No persistent physical-card identities are available. Validate and rescan the DeckLink hardware first.</div> }
 </div></div>

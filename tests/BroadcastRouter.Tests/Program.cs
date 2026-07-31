@@ -77,6 +77,7 @@ var tests = new (string Name, Action Body)[]
     ("DeckLink sink enumeration parsing", DeckLinkSinksAreParsed),
     ("DeckLink persistent hardware identity", DeckLinkPersistentIdentityIsResolved),
     ("DeckLink human identity labels", DeckLinkHumanIdentityLabelsAreStable),
+    ("DeckLink visual asset catalog matching", DeckLinkVisualAssetCatalogMatchesSafely),
     ("DeckLink identity reference migration", DeckLinkIdentityReferencesAreMigrated),
     ("DeckLink migration deferral requires legacy references", DeckLinkMigrationDefersOnlyLegacyReferences),
     ("Wowza instance discovery endpoint", WowzaInstanceEndpointIsCorrect),
@@ -889,6 +890,56 @@ static void DeckLinkHumanIdentityLabelsAreStable()
     var moved = ports[0] with { CardIndex = 0, PciLocation = "PCI:02:00.0" };
     Equal(DeckLinkDisplayName.Full(ports[0]), DeckLinkDisplayName.Full(moved));
     Equal("DeckLink card 3", DeckLinkDisplayName.Card(ports[0] with { CardIndex = 2, CardFriendlyName = null }));
+}
+
+static void DeckLinkVisualAssetCatalogMatchesSafely()
+{
+    var directory = Path.Combine(Path.GetTempPath(), $"BroadcastRouter-decklink-assets-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(Path.Combine(directory, "decklink-quad-2"));
+    try
+    {
+        var catalog = new DeckLinkAssetCatalog(directory);
+        True(!catalog.Status.Installed);
+        var productPath = Path.Combine(directory, "decklink-quad-2", "product.jpg");
+        File.WriteAllText(productPath, "synthetic image fixture");
+        File.WriteAllText(Path.Combine(directory, "decklink-quad-2", "accessories.svg"), "<svg onload='alert(1)'></svg>");
+        File.WriteAllText(Path.Combine(directory, "manifest.min.json"), """
+            {
+              "models": [
+                {
+                  "name": "DeckLink Quad 2",
+                  "slug": "decklink-quad-2",
+                  "category": "Multi-channel 3G-SDI",
+                  "ports": "8 configurable SDI connectors",
+                  "assets": {
+                    "product": { "path": "decklink-quad-2/product.jpg", "width": 662, "height": 323 },
+                    "physical": { "path": "../outside.jpg", "width": 10, "height": 10 },
+                    "accessories": { "path": "decklink-quad-2/accessories.svg", "width": 10, "height": 10 }
+                  }
+                }
+              ]
+            }
+            """);
+        True(catalog.Status.Installed);
+        Equal(1, catalog.Status.ModelCount);
+        var match = catalog.Match("Blackmagic Design DeckLink Quad 2 (7)")!;
+        Equal("DeckLink Quad 2", match.ModelName);
+        Equal("Multi-channel 3G-SDI", match.Category);
+        True(match.HasAsset("product"));
+        True(!match.HasAsset("physical"));
+        True(!match.HasAsset("accessories"));
+        True(catalog.TryGetAsset(match.Slug, "product", out var asset));
+        Equal(Path.GetFullPath(productPath), asset!.FullPath);
+        Equal("image/jpeg", asset.ContentType);
+        True(!catalog.TryGetAsset(match.Slug, "physical", out _));
+        True(!catalog.TryGetAsset("../decklink-quad-2", "product", out _));
+        Equal("DeckLink Quad 2", catalog.Match("DeckLink Quad 2 (simulation)")!.ModelName);
+        True(catalog.Match("DeckLink model not in manifest") is null);
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
 }
 
 static void DeckLinkIdentityReferencesAreMigrated()

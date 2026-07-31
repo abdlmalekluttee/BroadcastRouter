@@ -19,6 +19,7 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that invent
 - explicit output-port designation so input connectors can never be selected by routing;
 - per-port SMPTE/HD color bars with card/SDI identity, centered time and full date, bottom operator label, a configurable four-corner logo, and the NTP-synchronized Windows clock;
 - Blackmagic SDK persistent hardware identities that keep operator-defined physical-card names, connector names, and assignments attached when identical supported cards move between PCIe slots;
+- optional manifest-driven DeckLink product and connector visuals, loaded from an operator-supplied local asset pack without making images part of routing identity;
 - production-safe defaults: loopback binding, simulation disabled, and hardware starts blocked until validation passes;
 - SQLite persistence, DPAPI-protected Wowza credentials, structured redacted logs, minimal health checks, and sanitized diagnostics that never embed the production database;
 - a responsive dark operator UI for servers, sources, outputs, routes, rules, presets, logs, and settings;
@@ -42,7 +43,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.4.0`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.0`.
 3. Run `BroadcastRouter.Server.exe` as the dedicated Windows broadcast account.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
@@ -60,6 +61,20 @@ Use the same Windows account for configuration and runtime because DPAPI credent
 ### Human-friendly DeckLink identity
 
 Under **Settings > Physical DeckLink cards**, name each card for its real operational role, such as `Studio input card` or `Transmission card`. Under **DeckLink connector mappings**, name its connectors `Input 1`, `Input 2`, and so on. Output selectors then show `Studio input card / Input 1`; operators never need to memorize a persistent ID. Card names are stored against the Blackmagic physical-card group identity, while connector names are stored against each persistent connector ID. Raw IDs remain available under **Outputs > Technical identity** for troubleshooting.
+
+### Optional DeckLink visual asset pack
+
+BroadcastRouter can match the Blackmagic SDK model name to `manifest.min.json` and show a product view, model/category/connection facts, live connector roles, current stream ownership, connection diagrams, optional Micro-model accessory diagrams, and physical dimensions. The main card view uses `product.jpg`; `physical.jpg` appears only inside the expanded technical guide. Images are blended into the dark operator interface and never affect hardware discovery, stable IDs, port selection, or route ownership.
+
+The provided images remain subject to Blackmagic Design's applicable copyright and trademark terms, so they are not committed or bundled in public releases. Install a pack you are permitted to use into the application's persistent data directory:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-DeckLinkAssets.ps1 `
+  -ArchivePath C:\Path\To\blackmagic-decklink-assets.zip `
+  -ApplicationRoot C:\BroadcastRouter
+```
+
+The importer validates archive paths, the manifest, every referenced file, and available SHA-256 values. The UI detects the installed manifest without an application restart. Replacing an existing pack requires `-Force` and creates a timestamped backup. If no pack or no exact model match is available, the interface shows the existing technical identity and port state without guessing a card image.
 
 ### Saved routing priority and standby
 
@@ -81,7 +96,7 @@ dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --conf
 Create a clean self-contained release:
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Version 1.4.0
+.\scripts\Publish-Release.ps1 -Version 1.5.0
 ```
 
 The publisher removes build-path PDBs and runs `scripts\Test-ReleasePrivacy.ps1` before creating the archive. Packaging fails if it finds a database, diagnostics/log artifact, credential-bearing URL, user-profile path, private network address, private key, or common service token.

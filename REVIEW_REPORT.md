@@ -2,6 +2,7 @@
 
 Review date: 2026-07-31
 Review branch: `codex/fast-cutover-standby-layout`
+Current release branch: `codex/decklink-asset-library` (1.5.0)
 Reviewed baseline: release `1.3.6`
 Resulting release version: `1.4.0`
 
@@ -17,7 +18,11 @@ The 1.3.3 incident follow-up addresses output-port checkboxes that temporarily d
 
 The 1.3.4 production-log follow-up found a deterministic `Fallback -> Reserved` exception once per reconciliation cycle while a saved route attempted to recover. Recovery states can now reacquire their persisted reservation before FFmpeg starts, and start failures are converted into route-scoped retry state instead of aborting the coordinator cycle. Media-mode decisions now use hysteresis in both directions and trigger one controlled playout restart only after the committed mode changes, preventing alternating sparse-video samples from flipping between live video and generated black. Identical unexpected cycle failures are retained at most once per minute with a suppression count. State and assignment badges now use distinct colors in addition to text.
 
+The 1.5.0 production validation installed the optional licensed asset pack after a stopped, hash-verified full backup. Both detected physical cards matched the exact SDK model, presented the correct product/connection/physical assets and authoritative connector roles, and retained all output designations, saved routes, and standby owners through two controlled restarts. Authenticated HTTP checks covered all operator pages and asset authorization/path confinement. Four bounded saved-route cutovers completed without duplicate ownership or an orphan; measured first-DeckLink-progress latency ranged from 2.409 to 5.776 seconds. Physical SDI first picture/audio was not observed, and the recurring DeckLink `no buffered audio` startup warning remains an environment-specific follow-up.
+
 The 1.4.0 cutover follow-up bounds the normal standby release phase to 750 ms, applies the preview-proven reduced RTSP analysis settings to low-latency routes, and records end-to-end time through the first DeckLink frame. The redesigned FFmpeg standby graph was rendered with the release media tool and visually inspected. It shows the four logos, top card/SDI identity, centered live time/full date, and bottom label. Physical first-picture timing still depends on DeckLink hardware and the source encoder GOP; it must be measured at the SDI destination with a keyframe interval of two seconds or less.
+
+The Unreleased DeckLink visual-catalog follow-up adds exact normalized SDK-model matching against an optional `manifest.min.json`, root-confined authenticated image delivery, operational card/connector/assignment summaries, and a checksum-validating local installer. Asset metadata is presentation-only and cannot affect stable identity, reservations, settings, or FFmpeg. The provided Blackmagic-owned images were used only in ignored local data for HTTP rendering checks; they were not committed or added to public release packaging. Release build and 85/85 regressions pass. The in-app browser-control runtime could not initialize, so a final visual click-through remains not verified.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. RTSP frame receipt, H.264/AAC fragmented-MP4 streaming, the VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified in a controlled lab; physical DeckLink picture/audio observation remains an environment-specific validation step.
 
@@ -36,6 +41,7 @@ The 1.3.0 routing follow-up makes the connector role explicit and fail-closed, p
 - `BroadcastRouter.Domain` contains normalized source identities, configuration models, media/output models, and runtime snapshots.
 - `BroadcastRouter.Application` contains assignment, atomic reservation, waiting priority, rules, retry policy, source reconciliation, and route-control safety policies.
 - `BroadcastRouter.Infrastructure` owns Wowza REST, RTSP probing, FFmpeg argument construction and supervision, DeckLink enumeration, SQLite, DPAPI, logging redaction, network policy, and diagnostics sanitization.
+- `DeckLinkAssetCatalog` in Infrastructure loads optional operator-supplied visual metadata from the persistent data directory, validates all resolved paths under that root, and exposes exact model matches without entering the routing lifecycle.
 - `BroadcastRouter.Web` owns the long-running host, coordinator, Blazor UI, SignalR status publication, authentication, health, and diagnostics endpoints. Browser refresh/closure does not own or stop FFmpeg.
 - `BroadcastRouter.Tests` is a dependency-light executable regression suite.
 
@@ -94,6 +100,7 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-032 | Medium | Diagnostic availability | `Application/RepeatedFailureLogGate.cs`; `Web/Services/RouterCoordinator.cs` | An unexpected route-scoped exception could write duplicate coordinator errors every second and obscure other operational evidence. | **Fixed in 1.3.4.** Identical failures are persisted at most once per minute and the next record reports the suppressed count. Regression: `Repeated coordinator failures are log-throttled`. |
 | BR-033 | High | Standby-to-live latency | `Infrastructure/FfmpegProcessSupervisor.cs`; `Infrastructure/FfmpegCommandBuilder.cs`; `Web/Services/RouterCoordinator.cs` | Normal process shutdown could spend the full multi-second maintenance grace period releasing standby before live FFmpeg opened RTSP; normal input analysis could add more delay and left no measured first-frame evidence. | **Fixed in 1.4.0.** Standby handoff has a dedicated 750 ms deadline, low-latency presets use bounded one-second/no-buffer probing, cancellation cannot orphan the owned process, and every completed cutover logs elapsed time to the first DeckLink frame. Long encoder GOP remains an external bound and must be configured at two seconds or less. |
 | BR-034 | Medium | Standby identification | `Infrastructure/FfmpegCommandBuilder.cs`; `Components/Pages/Settings.razor` | The prior screen rendered one logo and combined labels, making ports harder to identify at a glance; `%T` also produced no clock with the Windows FFmpeg runtime. | **Fixed in 1.4.0.** Top card/SDI identity, centered explicit `HH:mm:ss` plus full date, bottom operator label, and four copies of the configured logo are rendered by the actual FFmpeg graph. Regression: `Per-port standby command is broadcast safe`. |
+| BR-035 | Low | Release UI cache integrity | `Components/App.razor`; `wwwroot/app.css` | The first 1.5.0 production render still requested the 1.4.0 stylesheet cache key, so a browser could reuse CSS that lacked the new card-visual layout. | **Fixed during deployment.** The cache key now derives from the running assembly version; rebuilt output and authenticated production HTML both report `app.css?v=1.5.0`. |
 
 ## GUI review
 
@@ -161,7 +168,7 @@ Still requiring integration or hardware coverage:
 
 | Validation | Status |
 |---|---|
-| Restore, Release build, tests | **Verified automatically**: clean; 84/84 after FFmpeg startup, recovery, scan, audio, reservation, process-containment, route-action, standby-layout, and safe-termination fixes. |
+| Restore, Release build, tests | **Verified automatically**: clean; 85/85 after FFmpeg startup, recovery, scan, audio, reservation, process-containment, route-action, standby-layout, safe-termination, and visual-catalog fixes. |
 | Package vulnerability audit | **Verified automatically**: no vulnerable packages reported. |
 | Atomic single-port ownership | **Verified automatically** with 500 concurrent contenders. |
 | Local browser pages/viewports | **Verified locally** in isolated simulation on port 5180; stable-session console clean; zero document/preset-card overflow at 1920×1080 and 768×1024; zero controls outside cards. |
@@ -170,6 +177,7 @@ Still requiring integration or hardware coverage:
 | Authentication/antiforgery/diagnostics gate | **Verified locally** in isolated authenticated modes on ports 5181/5183, including operator denial and login throttling. |
 | Real Wowza REST and RTSP | **Verified in a controlled lab**: management authentication, application discovery, active publisher discovery, RTSP open, frame receipt, H.264 video, and AAC audio. Addresses, server IDs, application names, and stream names are intentionally excluded. |
 | DeckLink enumeration | **Verified in a controlled lab**: Desktop Video and DeckLink-enabled FFmpeg were detected; direct SDK interrogation returned unique persistent IDs and physical-card group metadata. Concrete identifiers, labels, and inventory counts are intentionally excluded. |
+| Optional DeckLink visual catalog | **Verified automatically, locally, and on the production host**: all 15 supplied manifest models and 45 checksummed images imported; both detected physical cards matched the exact SDK model; authoritative 8-input/8-output roles and current assignments rendered; product JPEG, connection PNG, physical JPEG, and Micro accessory PNG endpoints returned 200 with correct media types; unknown/traversal paths returned 404; unauthenticated requests redirected to login. Visual click-through remains not verified because the in-app browser-control runtime failed before connection. |
 | Physical DeckLink output | **Partially verified**: a bounded live RTSP-to-DeckLink test produced 375 frames in 15 seconds with 0 drops and 0 duplicates. The patched FFmpeg then produced 250 synthetic frames in 10 seconds, stopped with zero crash events, and left zero processes. Physical SDI picture/audio was not independently observed. |
 | Physical connector identity stability | **Partially verified**: simulated enumeration reordering retained every stable ID, and a controlled application restart retained a custom output name on the same persistent connector. Swapping identical cards between PCIe slots plus two Windows reboots/power cycles still requires physical verification. |
 | Broadcast modes/audio | **Requires physical tests** for 1080p25, 1080p50, 1080i50, and 720p50 on every compatible port. |
@@ -192,6 +200,7 @@ Still requiring integration or hardware coverage:
 - 1.2.8 follow-up: direct Blackmagic persistent-ID discovery, legacy-reference migration, physical-card grouping, safe live-migration deferral, clean FFmpeg sink labels, and focused identity/reorder/migration regressions.
 - 1.3.0 follow-up: explicit output-port roles, offline source persistence, durable saved routing intent and priority/conflict policy, per-port standby supervision, and restart-safe transient-state reset.
 - 1.4.0 follow-up: bounded standby handoff, low-analysis RTSP open, first-frame cutover telemetry, four-corner standby identity layout, and Windows-compatible live clock rendering.
+- 1.5.0 follow-up: `DeckLinkAssetCatalog`, authenticated asset endpoint, reusable card/connector visual component, Outputs/Settings/Routes integration, safe importer, assembly-derived stylesheet cache key, focused matching/path-confinement regression, and deployment/licensing documentation.
 
 ## Commands and results
 
@@ -205,6 +214,8 @@ git diff --check
 ```
 
 Current 1.4.0 branch results: Release build passed with 0 warnings/errors; 84/84 regressions passed; and the exact Windows DeckLink-enabled FFmpeg build rendered the new 1920×1080 SMPTE standby graph with four logos, card/SDI identity, explicit `HH:mm:ss`, full date, and bottom port label. The 750 ms handoff deadline and first-frame telemetry are covered by build/regression review, but physical SDI first-picture latency remains an environment-specific validation step. Concrete network, source, output, process, and device identifiers are intentionally excluded.
+
+Current 1.5.0 results: Release build passed with 0 warnings/errors; 85/85 regressions passed; release privacy validation passed; the importer installed 15 models/45 checksummed images on the production host. Two controlled deployment restarts retained eight output designations, five saved manual routes, and eight standby owners. Eight short publisher cycles plus a sustained discovery/probe cycle caused no configuration loss. Four real saved-route standby/live/standby cycles retained exactly one owner per output and ended with 8 standby, 0 live, 0 preview/probe, and no orphaned process. Authenticated production rendering returned 200 for all eight operator pages with no unhandled-error markup. Physical SDI picture/audio and visual browser click-through remain unverified.
 
 ## Recommended follow-up
 

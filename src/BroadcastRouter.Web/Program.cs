@@ -22,6 +22,7 @@ var dataSetting = builder.Configuration["DataDirectory"] ?? "data";
 var dataDirectory = Path.IsPathRooted(dataSetting) ? dataSetting : Path.Combine(AppContext.BaseDirectory, dataSetting);
 Directory.CreateDirectory(dataDirectory);
 var databasePath = Path.Combine(dataDirectory, "broadcast-router.db");
+var deckLinkAssetDirectory = Path.Combine(dataDirectory, "decklink-assets");
 var bootstrapStore = new SqliteDataStore(databasePath);
 await bootstrapStore.InitializeAsync();
 var persistedSettings = await bootstrapStore.LoadSettingsAsync();
@@ -37,6 +38,7 @@ if (requireAuthentication && string.IsNullOrWhiteSpace(Environment.GetEnvironmen
     throw new InvalidOperationException("Authentication is enabled, but BROADCASTROUTER_ADMIN_PASSWORD is not configured. Startup is refused.");
 
 builder.Services.AddSingleton(bootstrapStore);
+builder.Services.AddSingleton(new DeckLinkAssetCatalog(deckLinkAssetDirectory));
 builder.Services.AddSingleton<RouterCoordinator>();
 builder.Services.AddSingleton<BrowserPreviewSupervisor>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<RouterCoordinator>());
@@ -152,6 +154,19 @@ var previewStreamEndpoint = app.MapGet("/preview/stream/{token}", async (
     }
 });
 previewStreamEndpoint.RequireAuthorization(new AuthorizeAttribute { Roles = "Administrator" });
+
+var deckLinkAssetEndpoint = app.MapGet("/hardware-assets/decklink/{slug}/{kind}", (
+    HttpContext context,
+    string slug,
+    string kind,
+    DeckLinkAssetCatalog assets) =>
+{
+    if (!assets.TryGetAsset(slug, kind, out var asset) || asset is null) return Results.NotFound();
+    context.Response.Headers.CacheControl = "private, max-age=3600";
+    context.Response.Headers.XContentTypeOptions = "nosniff";
+    return Results.File(asset.FullPath, asset.ContentType, enableRangeProcessing: false);
+});
+deckLinkAssetEndpoint.RequireAuthorization();
 
 app.MapGet("/health", async (SqliteDataStore store, CancellationToken cancellationToken) =>
 {
