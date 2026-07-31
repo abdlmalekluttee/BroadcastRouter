@@ -26,6 +26,7 @@ The executable supports Windows Service hosting, but service/Session 0 DeckLink 
 - `SourceIdentity`: immutable escaped four-part identity.
 - `DiscoveredSource` / `MediaProperties`: discovery and independent media truth.
 - `DeckLinkPort`: Blackmagic persistent ID when supported, opaque FFmpeg device handle for playout, explicit output-port designation, separately observed reference/genlock state, physical-card group/subdevice/topology hints, modes, group, reserved state, operator card/connector names, confidence, and legacy aliases used only for one-time migration. The physical-card alias is keyed by `DeviceGroupId`; connector aliases remain keyed by `StableId`.
+- `DeckLinkAssetCatalog`: optional presentation-only metadata loaded from `data/decklink-assets/manifest.min.json`. Exact normalized SDK model-name matches expose validated, root-confined image paths through an authenticated endpoint. Missing, malformed, unmatched, or incomplete packs fail visually closed and cannot change discovery, reservations, settings, or FFmpeg arguments.
 - `OutputPresetProfile`: raster, rational rate, scan, pixel format, audio, latency, buffer, standby behavior.
 - `RoutingRuleProfile`: ordered source/media match and preset/group/fixed-port/priority/lock action.
 - `RuntimeRoute`: persistent desired port/preset/mode and offline-reservation policy plus transient lease, state, process metrics, failure, and retry state.
@@ -58,3 +59,4 @@ The server owns the exact FFmpeg process object, drains progress/errors, and sto
 - Freeze-frame standby requires a configured image. Automatic capture of the last decoded frame is not in this release.
 - Browser preview adds a separate decode/encode workload. Validate CPU/GPU headroom during the multi-port soak and stop preview when it is not required.
 - A live decoder still requires an encoder keyframe. Bound the source GOP/keyframe interval to two seconds or less; an arbitrarily long GOP can still delay the first picture even after the DeckLink handoff is complete.
+- DeckLink product images and diagrams are third-party copyrighted material. The application supports an operator-supplied local pack, but the public project and release archives do not redistribute those files without separate permission.

@@ -4,6 +4,7 @@
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject IJSRuntime JS
+@inject DeckLinkAssetCatalog AssetCatalog
 @implements IDisposable
 
 <PageTitle>Routes · BroadcastRouter</PageTitle>
@@ -12,6 +13,19 @@
     <AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@busy" @onclick='() => Run("rescan", "")'>Reconcile now</button><button class="btn danger" disabled="@busy" @onclick='() => Run("emergency-stop", "")'>Emergency stop</button></div></Authorized></AuthorizeView>
 </div>
 @if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger" role="alert">@error</div> }
+
+@if (OutputCardGroups().Count > 0)
+{
+    <details class="panel route-hardware-guide">
+        <summary><span><strong>Physical output guide</strong><small>Match software outputs to the installed card and connector before changing a route.</small></span><span class="badge @(AssetCatalog.Status.Installed ? "success" : "neutral")">@(AssetCatalog.Status.Installed ? "Visual pack loaded" : "Technical view")</span></summary>
+        <div class="panel-body route-hardware-grid">
+        @foreach (var card in OutputCardGroups())
+        {
+            <div class="route-hardware-card" @key="card.Key"><h3>@DeckLinkDisplayName.Card(card.Ports[0])</h3><BroadcastRouter.Web.Components.Shared.DeckLinkCardVisual CardKey="@card.Key" Ports="@card.Ports" Routes="@snapshot.Routes" Compact="true" ShowTechnicalImages="false" /></div>
+        }
+        </div>
+    </details>
+}
 
 <div class="route-list">
 @foreach (var route in snapshot.Routes)
@@ -104,6 +118,12 @@
         .Where(port => port.IsOutputPort)
         .OrderBy(DeckLinkDisplayName.Card, StringComparer.OrdinalIgnoreCase)
         .ThenBy(DeckLinkDisplayName.Connector, StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyList<CardView> OutputCardGroups() => snapshot.Ports
+        .GroupBy(port => port.DeviceGroupId ?? $"legacy-card-{port.CardIndex}", StringComparer.OrdinalIgnoreCase)
+        .Where(group => group.Any(port => port.IsOutputPort))
+        .Select(group => new CardView(group.Key, group.OrderBy(port => port.SubdeviceIndex).ToArray()))
+        .OrderBy(card => DeckLinkDisplayName.Card(card.Ports[0]), StringComparer.OrdinalIgnoreCase)
+        .ToArray();
     private bool IsUnavailableOutput(string stableId) => !string.IsNullOrWhiteSpace(stableId)
         && !snapshot.Ports.Any(port => port.IsOutputPort && port.StableId.Equals(stableId, StringComparison.OrdinalIgnoreCase));
 
@@ -172,4 +192,5 @@
         { AssignmentMode: AssignmentMode.Automatic } => "automatic",
         _ => "unassigned"
     };
+    private sealed record CardView(string Key, IReadOnlyList<DeckLinkPort> Ports);
 }

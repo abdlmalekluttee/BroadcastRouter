@@ -1,0 +1,79 @@
+@inject DeckLinkAssetCatalog AssetCatalog
+
+@if (Ports.Count > 0)
+{
+    var first = Ports[0];
+    var asset = AssetCatalog.Match(first.ModelName);
+    <div class="decklink-visual @(Compact ? "compact" : "")">
+        <div class="decklink-product-well">
+            @if (asset?.HasAsset("product") == true)
+            {
+                <img src="@asset.AssetUrl("product")" alt="@($"{asset.ModelName} product view")" loading="lazy" />
+            }
+            else
+            {
+                <div class="decklink-product-placeholder" aria-label="No matching product image installed"><span>DL</span><small>Product image unavailable</small></div>
+            }
+        </div>
+        <div class="decklink-card-facts">
+            <div><span class="stat-label">Complete model</span><strong>@(asset?.ModelName ?? first.ModelName)</strong></div>
+            <div><span class="stat-label">System card ID</span><strong class="mono">@(first.DeviceGroupId ?? CardKey)</strong></div>
+            <div><span class="stat-label">Category</span><strong>@(asset?.Category ?? "DeckLink hardware")</strong></div>
+            <div><span class="stat-label">Detected connectors</span><strong>@Ports.Count total · @OutputCount output · @InputCount input / excluded</strong></div>
+            <div class="wide"><span class="stat-label">Supported connections</span><strong>@(asset?.ConnectionSummary ?? "Use the installed driver and card documentation for connector capabilities.")</strong></div>
+            <div><span class="stat-label">Current card load</span><strong>@AssignedCount assigned · @AvailableOutputCount available output</strong></div>
+        </div>
+    </div>
+
+    @if (ShowPortMap)
+    {
+        <div class="decklink-port-map" aria-label="Software to physical connector map">
+            @foreach (var port in Ports.OrderBy(value => value.SubdeviceIndex))
+            {
+                var route = AssignedRoute(port);
+                <div class="decklink-port-map-item" @key="port.StableId">
+                    <span class="connector-dot @(route is null ? "" : "active")"></span>
+                    <span><strong>Connector @(port.SubdeviceIndex + 1) · @DeckLinkDisplayName.Connector(port)</strong><small>@(port.IsOutputPort ? "Output" : "Input / excluded") · @(port.IsAvailable ? "available" : "unavailable")</small></span>
+                    <span class="decklink-port-owner">@(route?.SourceName ?? (port.IsOutputPort ? "Standby / idle" : "Not routable"))</span>
+                </div>
+            }
+        </div>
+    }
+
+    @if (ShowTechnicalImages && asset is not null && (asset.HasAsset("connections") || asset.HasAsset("accessories") || asset.HasAsset("physical")))
+    {
+        <details class="decklink-hardware-guide">
+            <summary>Hardware connection guide and technical images</summary>
+            <div class="decklink-guide-grid">
+                @if (asset.HasAsset("connections"))
+                {
+                    <figure class="decklink-guide-image"><img src="@asset.AssetUrl("connections")" alt="@($"{asset.ModelName} labelled connector diagram")" loading="lazy" /><figcaption>Connector diagram</figcaption></figure>
+                }
+                @if (asset.HasAsset("accessories"))
+                {
+                    <figure class="decklink-guide-image"><img src="@asset.AssetUrl("accessories")" alt="@($"{asset.ModelName} accessory and breakout cable diagram")" loading="lazy" /><figcaption>Required accessories or breakout cables</figcaption></figure>
+                }
+                @if (asset.HasAsset("physical"))
+                {
+                    <figure class="decklink-guide-image physical"><img src="@asset.AssetUrl("physical")" alt="@($"{asset.ModelName} physical dimensions")" loading="lazy" /><figcaption>Physical dimensions (technical reference only)</figcaption></figure>
+                }
+            </div>
+        </details>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public string CardKey { get; set; } = "";
+    [Parameter, EditorRequired] public IReadOnlyList<DeckLinkPort> Ports { get; set; } = [];
+    [Parameter] public IReadOnlyList<RuntimeRoute> Routes { get; set; } = [];
+    [Parameter] public bool Compact { get; set; }
+    [Parameter] public bool ShowPortMap { get; set; } = true;
+    [Parameter] public bool ShowTechnicalImages { get; set; } = true;
+
+    private int OutputCount => Ports.Count(port => port.IsOutputPort);
+    private int InputCount => Ports.Count - OutputCount;
+    private int AssignedCount => Ports.Count(port => AssignedRoute(port) is not null);
+    private int AvailableOutputCount => Ports.Count(port => port.IsOutputPort && port.IsAvailable && AssignedRoute(port) is null);
+    private RuntimeRoute? AssignedRoute(DeckLinkPort port) => Routes.FirstOrDefault(route =>
+        route.PortId?.Equals(port.StableId, StringComparison.OrdinalIgnoreCase) == true && route.State != RouteState.Released);
+}

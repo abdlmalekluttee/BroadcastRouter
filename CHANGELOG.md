@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an optional manifest-driven DeckLink visual catalog that matches detected Blackmagic SDK model names to operator-supplied product, connector, physical-dimension, and accessory images.
+- Present each physical card with its complete model, stable system card ID, category, supported connections, detected input/output role counts, connector status, and current stream ownership on Outputs, Settings, and the routing hardware guide.
+- Keep visual metadata strictly separate from stable hardware identity and route ownership; an absent, invalid, or unmatched asset pack never affects broadcast operation.
+- Add a checksum-validating `Install-DeckLinkAssets.ps1` importer that installs the licensed/local pack into persistent application data without a restart and backs up an existing pack before replacement.
+- Keep Blackmagic-owned images out of source control and public release archives unless the distributor has separate permission to redistribute them.
+
 ## 1.4.0 — 2026-07-31
 
 - Shorten standby-to-live handoff by giving the owned standby process a dedicated 750 ms graceful-stop deadline instead of the normal multi-second maintenance timeout.

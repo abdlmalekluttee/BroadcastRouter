@@ -2,11 +2,16 @@
 @rendermode InteractiveServer
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
+@inject DeckLinkAssetCatalog AssetCatalog
 @implements IDisposable
 
 <PageTitle>DeckLink Outputs · BroadcastRouter</PageTitle>
 <div class="page-head"><div><h1>DeckLink ports</h1><p class="lead">Only connectors explicitly marked as output ports can be routed. Idle output ports show their configured standby screen.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><a class="btn" href="/settings">Configure ports</a><button class="btn" @onclick='() => Commands.ExecuteAsync("rescan")'>Rescan hardware</button></div></Authorized></AuthorizeView></div>
 @if (!snapshot.SimulationMode && !snapshot.ToolValidation.CanStartHardwareRoutes) { <div class="notice danger">DeckLink starts are blocked: @snapshot.ToolValidation.Findings.LastOrDefault(x => x.StartsWith("FAIL"))</div> }
+@if (!AssetCatalog.Status.Installed)
+{
+    <div class="notice asset-pack-notice"><strong>DeckLink visual asset pack is not installed.</strong> Technical identity and routing remain fully operational. Install the optional operator-supplied pack under <span class="mono">data\decklink-assets</span> to add model images and connector diagrams.</div>
+}
 
 @foreach (var card in CardGroups())
 {
@@ -17,7 +22,9 @@
             @if (first.DeviceGroupId is not null) { <span class="badge success">Persistent identity @DeckLinkDisplayName.ShortIdentity(first.DeviceGroupId)</span> }
             else { <span class="badge warning">Fallback identity</span> }
         </div>
-        <div class="panel-body"><div class="grid port-grid">
+        <div class="panel-body">
+        <BroadcastRouter.Web.Components.Shared.DeckLinkCardVisual CardKey="@card.Key" Ports="@card.Ports" Routes="@snapshot.Routes" />
+        <div class="grid port-grid">
         @foreach (var port in card.Ports)
         {
             var route = snapshot.Routes.FirstOrDefault(x => x.PortId == port.StableId && x.State != RouteState.Released);
