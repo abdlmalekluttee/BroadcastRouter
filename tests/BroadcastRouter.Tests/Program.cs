@@ -78,6 +78,7 @@ var tests = new (string Name, Action Body)[]
     ("DeckLink persistent hardware identity", DeckLinkPersistentIdentityIsResolved),
     ("DeckLink human identity labels", DeckLinkHumanIdentityLabelsAreStable),
     ("DeckLink visual asset catalog matching", DeckLinkVisualAssetCatalogMatchesSafely),
+    ("DeckLink official software update parsing", DeckLinkOfficialSoftwareUpdateIsParsed),
     ("DeckLink identity reference migration", DeckLinkIdentityReferencesAreMigrated),
     ("DeckLink migration deferral requires legacy references", DeckLinkMigrationDefersOnlyLegacyReferences),
     ("Wowza instance discovery endpoint", WowzaInstanceEndpointIsCorrect),
@@ -126,6 +127,24 @@ static void GeneratedIdsSkipCollisions()
 {
     Equal("WOWZA-2", UniqueIdGenerator.Next("WOWZA", ["WOWZA-1", "WOWZA-3"]));
     Equal("preset-3", UniqueIdGenerator.Next("preset", ["preset-1", "PRESET-2"]));
+}
+
+static void DeckLinkOfficialSoftwareUpdateIsParsed()
+{
+    const string html = """
+        <div class="sdk-download-info">
+          <h4 class="file-download-title">Desktop Video 16.2</h4>
+          <p class="release-date">Last Tuesday</p>
+        </div>
+        """;
+    var now = new DateTimeOffset(2026, 7, 31, 12, 0, 0, TimeSpan.Zero);
+    var release = DeckLinkSoftwareInformationProvider.ParseOfficialReleasePage(html, now);
+    Equal("16.2", release.Version);
+    Equal(new DateOnly(2026, 7, 28), release.ReleasedOn!.Value);
+    Equal(true, DeckLinkSoftwareInformationProvider.CompareVersions("16.1.0.0", release.Version));
+    Equal(false, DeckLinkSoftwareInformationProvider.CompareVersions("16.2.0.0", release.Version));
+    Equal<bool?>(null, DeckLinkSoftwareInformationProvider.CompareVersions("Not Available", release.Version));
+    Throws<InvalidOperationException>(() => DeckLinkSoftwareInformationProvider.ParseOfficialReleasePage("<html></html>", now));
 }
 
 static void RenamedWowzaSourceIsPruned()

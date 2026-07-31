@@ -43,7 +43,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.0`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.1`.
 3. Run `BroadcastRouter.Server.exe` as the dedicated Windows broadcast account.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
@@ -64,7 +64,9 @@ Under **Settings > Physical DeckLink cards**, name each card for its real operat
 
 ### Optional DeckLink visual asset pack
 
-BroadcastRouter can match the Blackmagic SDK model name to `manifest.min.json` and show a product view, model/category/connection facts, live connector roles, current stream ownership, connection diagrams, optional Micro-model accessory diagrams, and physical dimensions. The main card view uses `product.jpg`; `physical.jpg` appears only inside the expanded technical guide. Images are blended into the dark operator interface and never affect hardware discovery, stable IDs, port selection, or route ownership.
+BroadcastRouter can match the Blackmagic SDK model name to `manifest.min.json` and show a product view, model/category/connection facts, live connector roles, current stream ownership, connection diagrams, optional Micro-model accessory diagrams, and physical dimensions. The main card view uses `product.jpg`; `physical.jpg` appears only inside the expanded technical guide. Images retain their native colors and aspect ratio on a neutral canvas and never affect hardware discovery, stable IDs, port selection, or route ownership.
+
+The Outputs page reads the installed Desktop Video version and installation date from Windows, then performs a bounded cached comparison with Blackmagic Design's official Desktop Video page. Network or parsing failures never affect hardware discovery or routing and are shown as `Not Available`. The public DeckLink SDK does not expose a reliable per-card firmware version, so firmware fields also remain `Not Available` rather than displaying a guessed value.
 
 The provided images remain subject to Blackmagic Design's applicable copyright and trademark terms, so they are not committed or bundled in public releases. Install a pack you are permitted to use into the application's persistent data directory:
 
@@ -96,7 +98,7 @@ dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --conf
 Create a clean self-contained release:
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Version 1.5.0
+.\scripts\Publish-Release.ps1 -Version 1.5.1
 ```
 
 The publisher removes build-path PDBs and runs `scripts\Test-ReleasePrivacy.ps1` before creating the archive. Packaging fails if it finds a database, diagnostics/log artifact, credential-bearing URL, user-profile path, private network address, private key, or common service token.

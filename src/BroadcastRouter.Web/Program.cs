@@ -39,6 +39,10 @@ if (requireAuthentication && string.IsNullOrWhiteSpace(Environment.GetEnvironmen
 
 builder.Services.AddSingleton(bootstrapStore);
 builder.Services.AddSingleton(new DeckLinkAssetCatalog(deckLinkAssetDirectory));
+builder.Services.AddHttpClient<DeckLinkSoftwareInformationProvider>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(8);
+});
 builder.Services.AddSingleton<RouterCoordinator>();
 builder.Services.AddSingleton<BrowserPreviewSupervisor>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<RouterCoordinator>());

@@ -1,0 +1,53 @@
+<section class="decklink-software-status" aria-label="DeckLink firmware and Desktop Video software information">
+    <div><span class="stat-label">Card firmware</span><strong>@Value(Information.FirmwareVersion)</strong></div>
+    <div><span class="stat-label">Desktop Video driver</span><strong>@Value(Information.DriverVersion)</strong></div>
+    <div><span class="stat-label">Driver installed</span><strong>@Date(Information.DriverInstalledOn)</strong></div>
+    <div><span class="stat-label">Latest official driver</span><strong>@Value(Information.LatestDriverVersion)</strong></div>
+    <div><span class="stat-label">Available update date</span><strong>@Date(Information.LatestDriverReleasedOn)</strong></div>
+    <div>
+        <span class="stat-label">Driver update</span>
+        <strong class="@UpdateClass(Information.DriverUpdateAvailable)">@UpdateText(Information.DriverUpdateAvailable)</strong>
+    </div>
+    <div><span class="stat-label">Firmware update</span><strong>@UpdateText(Information.FirmwareUpdateAvailable)</strong></div>
+    <div class="wide decklink-update-source">
+        <span>
+            @if (Loading)
+            {
+                <span>Checking Blackmagic Design…</span>
+            }
+            else if (!string.IsNullOrWhiteSpace(Information.UpdateCheckMessage))
+            {
+                <span>@Information.UpdateCheckMessage</span>
+            }
+            else if (Information.UpdateCheckedAt is not null)
+            {
+                <span>Official update information checked @Information.UpdateCheckedAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm").</span>
+            }
+            @if (Information.FirmwareVersion is null)
+            {
+                <span class="firmware-unavailable-note">Per-card firmware version is not exposed by the installed DeckLink API.</span>
+            }
+        </span>
+        <a href="@DeckLinkSoftwareInformationProvider.OfficialSoftwareUrl" target="_blank" rel="noopener noreferrer">Blackmagic Desktop Video page</a>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public DeckLinkSoftwareInformation Information { get; set; } = DeckLinkSoftwareInformation.Unavailable;
+    [Parameter] public bool Loading { get; set; }
+
+    private static string Value(string? value) => string.IsNullOrWhiteSpace(value) ? "Not Available" : value;
+    private static string Date(DateOnly? value) => value?.ToString("yyyy-MM-dd") ?? "Not Available";
+    private static string UpdateText(bool? value) => value switch
+    {
+        true => "Update Available",
+        false => "Up to Date",
+        _ => "Not Available"
+    };
+    private static string UpdateClass(bool? value) => value switch
+    {
+        true => "update-available",
+        false => "update-current",
+        _ => ""
+    };
+}

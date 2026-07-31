@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.5.1 — 2026-07-31
+
+- Remove the CSS blend modes, contrast filters, and translucent image treatment that darkened DeckLink product and connector artwork; all supplied images now render at native color with uncropped `object-fit: contain` sizing on a consistent neutral canvas.
+- Rebuild the Physical DeckLink Cards editor with container-responsive card widths, zero-width grid tracks, predictable fact panels, and wrapping identities so identical cards align cleanly without horizontal clipping.
+- Detect the installed Blackmagic Desktop Video version and installation date from the Windows uninstall inventory.
+- Compare the installed driver with Blackmagic Design's official current Desktop Video release using a bounded, cached, fail-soft update check; unavailable data is rendered explicitly as `Not Available`.
+- Keep card firmware and firmware-update status fail-closed as `Not Available` because the public DeckLink SDK does not expose a reliable per-card firmware version.
+
 ## 1.5.0 — 2026-07-31
 
 - Add an optional manifest-driven DeckLink visual catalog that matches detected Blackmagic SDK model names to operator-supplied product, connector, physical-dimension, and accessory images.

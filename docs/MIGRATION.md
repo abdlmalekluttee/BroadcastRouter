@@ -20,4 +20,6 @@ Version 1.4.0 does not change the settings or database schema. Existing output d
 
 Version 1.5.0 does not change the settings or database schema. The optional DeckLink visual catalog reads an operator-installed pack from `data\decklink-assets`; public archives do not redistribute Blackmagic-owned images. Existing card identities, connector roles, saved routes, presets, and standby processes are independent of the catalog and remain unchanged when the pack is installed, replaced, missing, or unmatched.
 
+Version 1.5.1 does not change the settings or database schema. It corrects DeckLink image rendering and physical-card responsiveness, and adds read-only Desktop Video installation/update metadata. Driver lookup and the bounded official update check are presentation-only; a failed or blocked check displays `Not Available` and cannot affect card discovery, output ownership, or playout.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

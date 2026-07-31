@@ -3,6 +3,7 @@
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject DeckLinkAssetCatalog AssetCatalog
+@inject DeckLinkSoftwareInformationProvider SoftwareInformationProvider
 @implements IDisposable
 
 <PageTitle>DeckLink Outputs · BroadcastRouter</PageTitle>
@@ -24,6 +25,7 @@
         </div>
         <div class="panel-body">
         <BroadcastRouter.Web.Components.Shared.DeckLinkCardVisual CardKey="@card.Key" Ports="@card.Ports" Routes="@snapshot.Routes" />
+        <BroadcastRouter.Web.Components.Shared.DeckLinkSoftwareStatus Information="@softwareInformation" Loading="@softwareInformationLoading" />
         <div class="grid port-grid">
         @foreach (var port in card.Ports)
         {
@@ -53,7 +55,37 @@ else if (snapshot.Ports.Count > 0)
 
 @code {
     private RouterSnapshot snapshot = null!;
-    protected override void OnInitialized() { snapshot = Coordinator.Snapshot; Coordinator.Changed += Changed; }
+    private DeckLinkSoftwareInformation softwareInformation = DeckLinkSoftwareInformation.Unavailable;
+    private bool softwareInformationLoading;
+    protected override void OnInitialized()
+    {
+        snapshot = Coordinator.Snapshot;
+        softwareInformation = SoftwareInformationProvider.GetInstalledInformation();
+        Coordinator.Changed += Changed;
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        softwareInformationLoading = true;
+        StateHasChanged();
+        try
+        {
+            softwareInformation = await SoftwareInformationProvider.GetInformationAsync();
+        }
+        catch
+        {
+            softwareInformation = softwareInformation with
+            {
+                UpdateCheckedAt = DateTimeOffset.UtcNow,
+                UpdateCheckMessage = "Official update information is temporarily unavailable."
+            };
+        }
+        finally
+        {
+            softwareInformationLoading = false;
+            StateHasChanged();
+        }
+    }
     private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
     private IReadOnlyList<CardView> CardGroups() => snapshot.Ports
         .GroupBy(port => port.DeviceGroupId ?? $"legacy-card-{port.CardIndex}", StringComparer.OrdinalIgnoreCase)
