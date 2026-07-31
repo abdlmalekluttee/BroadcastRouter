@@ -1,6 +1,6 @@
 # Windows deployment
 
-## Recommended: dedicated broadcast user at logon
+## Recommended: dedicated broadcast Windows Service
 
 1. Install the matching Blackmagic Desktop Video release and verify each output in Desktop Video Setup/Media Express.
 2. Obtain a trusted prebuilt 64-bit FFmpeg package that includes DeckLink, FFprobe, H.264/AAC encoding, fragmented MP4 output, and the `showvolume`, `overlay`, `drawtext`, `scale`, `pad`, `color`, `smptebars`, `smptehdbars`, and `testsrc2` filters. Do not place it inside the BroadcastRouter release folder; upgrades should be explicit.
@@ -14,14 +14,26 @@
    On supported hardware, the Outputs page must report **Blackmagic persistent hardware ID**. Version 1.2.7 migrates legacy FFmpeg-hash references during the first controlled restart and preserves operator names, fixed rules, and desired routes. If ownership is active during discovery, migration is intentionally deferred until the next restart.
    Audio-only and sparse-video sources require an audio-enabled preset. BroadcastRouter verifies live audio packets, generates continuous black video at the preset raster/rate, and preserves the live audio; it does not treat codec metadata by itself as route-ready.
    Optionally install a DeckLink visual asset pack that your organization is permitted to use with `scripts\Install-DeckLinkAssets.ps1 -ArchivePath <zip> -ApplicationRoot <release-folder>`. The importer writes only to `data\decklink-assets`, validates referenced checksums, and does not require a restart. These visuals are presentation-only. Public release archives intentionally omit Blackmagic-owned images.
-7. Run `scripts\Install-InteractiveLogon.ps1` as the broadcast account. It creates a normal per-user Task Scheduler entry that starts the server when that user logs in; elevation is not required.
-8. Perform the soak plan in `PRODUCTION-VALIDATION.md` before enabling automatic routing.
+7. Disable any previous interactive-logon BroadcastRouter task. From an elevated PowerShell window, obtain a credential for the same dedicated Windows account and run:
+
+   ```powershell
+   $serviceAccount = Get-Credential "$env:COMPUTERNAME\BroadcastRouterUser"
+   .\scripts\Install-WindowsService.ps1 `
+     -ExecutablePath .\BroadcastRouter.Server.exe `
+     -Credential $serviceAccount `
+     -StartService
+   ```
+
+   The password is passed as a `SecureString`; the installer does not write it to a file or command line. The account receives only the required **Log on as a service** right. The service display name is `Broadcast Router – Version <version>`, startup is Automatic, and SCM recovery restarts it after 5, 15, then 60 seconds. Service/application lifecycle events are written to Windows Application Event Log and the structured application log.
+8. Reboot without signing in, confirm the server and owned FFmpeg children are in Session 0 with no windows, then perform the complete soak plan in `PRODUCTION-VALIDATION.md` before enabling automatic routing.
 
 Data and DPAPI credentials belong to the Windows account that runs the executable. Back up the `data` directory only while the app is stopped and protect the backup as a production secret. Sanitized diagnostics deliberately exclude the database. Copying DPAPI ciphertext to a different account does not make it decryptable.
 
-## Windows Service trial
+## Service-mode safety and rollback
 
-The executable includes normal Windows Service lifetime integration. `scripts\Install-WindowsService.ps1` creates an opt-in Automatic (Delayed Start) service. This proves hosting only; it does not prove DeckLink works in Session 0. Use it only in a lab, run the hardware validation plan, and revert to interactive-logon hosting if output enumeration or playout differs.
+The service must use the same Windows account that encrypted the Wowza credentials. LocalSystem cannot decrypt another account's DPAPI data. Never leave the old scheduled task enabled: a second host could contend for SQLite and physical DeckLink outputs.
+
+The installer configures hosting and recovery, but that alone does not prove a particular driver/card combination works in Session 0. Run the full hardware validation plan. If output enumeration, audio, picture, or teardown differs, stop and disable the service, restore the protected cold backup, and temporarily return to the interactive-logon task under the same account while the difference is investigated.
 
 The embedded browser preview has no desktop-window dependency and can be served by the same host in service mode. This does not change the requirement to physically validate DeckLink behavior in Session 0.
 

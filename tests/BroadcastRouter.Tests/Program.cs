@@ -45,6 +45,7 @@ var tests = new (string Name, Action Body)[]
     ("Startup route recovery is single shot", StartupRouteRecoveryIsSingleShot),
     ("FFmpeg command uses argument list", FfmpegCommandUsesArgumentList),
     ("FFmpeg audio-led route generates continuous black video", FfmpegAudioLedRouteGeneratesBlackVideo),
+    ("FFmpeg video-only route generates explicit silence", FfmpegVideoOnlyRouteGeneratesSilence),
     ("FFmpeg interlaced output is explicit", FfmpegInterlacedOutputIsExplicit),
     ("FFmpeg display redacts credentials", FfmpegDisplayRedactsCredentials),
     ("Browser preview is tokenized with VU overlay", BrowserPreviewIsTokenizedWithVuOverlay),
@@ -52,6 +53,7 @@ var tests = new (string Name, Action Body)[]
     ("FFmpeg stall detection", FfmpegStallIsDetected),
     ("FFmpeg first-progress timeout", FfmpegFirstProgressTimeoutIsDetected),
     ("Windows job kills orphaned media process", WindowsJobKillsOrphanedProcess),
+    ("Owned process stop and restart are serialized", OwnedProcessStopAndRestartAreSerialized),
     ("FFmpeg failure classification", FfmpegFailureIsClassified),
     ("DeckLink output failures are not mislabeled as network", DeckLinkOutputFailureIsClassified),
     ("FFprobe media parsing", FfprobeMediaIsParsed),
@@ -90,6 +92,7 @@ var tests = new (string Name, Action Body)[]
     ("Routing regex validation", InvalidRoutingRegexIsRejected),
     ("Fallback command is uncompressed", FallbackCommandIsSafeAndUncompressed),
     ("Per-port standby command is broadcast safe", PortStandbyCommandIsBroadcastSafe),
+    ("Windows service installer is automatic and recoverable", WindowsServiceInstallerIsAutomaticAndRecoverable),
     ("SQLite settings persistence", SqliteSettingsPersist),
     ("Stale settings revisions are rejected", StaleSettingsRevisionIsRejected),
     ("All GUI settings round trip", AllGuiSettingsRoundTrip),
@@ -568,6 +571,74 @@ static void WindowsJobKillsOrphanedProcess()
     }
 
     True(process.WaitForExit(5000));
+}
+
+static void FfmpegVideoOnlyRouteGeneratesSilence()
+{
+    var source = new SimulationDiscoveryProvider().DiscoverAsync(default).Result.Single();
+    source = source with
+    {
+        Media = source.Media! with
+        {
+            AudioCodec = null,
+            AudioSampleRate = null,
+            AudioChannels = null
+        }
+    };
+    var port = new SimulationDeckLinkEnumerator().EnumerateAsync(default).Result[0];
+    var preset = new OutputPreset("HD25", "1080p25", new VideoMode(1920, 1080, 25, 1, "uyvy422"), true, 256);
+    var start = FfmpegCommandBuilder.Build(new FfmpegRouteOptions("ffmpeg.exe"), source, port, preset);
+    True(start.ArgumentList.Contains("anullsrc=r=48000:cl=stereo"));
+    True(start.ArgumentList.Contains("1:a:0"));
+    True(!start.ArgumentList.Contains("0:a:0?"));
+    var audioFilter = start.ArgumentList[start.ArgumentList.IndexOf("-af") + 1];
+    True(audioFilter.Contains("volume=0", StringComparison.Ordinal));
+}
+
+static void OwnedProcessStopAndRestartAreSerialized()
+{
+    if (!OperatingSystem.IsWindows()) return;
+
+    var owner = new SourceIdentity("SYSTEM", "test", "_definst_", "serialized-owner");
+    var lifecycle = new System.Collections.Concurrent.ConcurrentQueue<RouteProcessLifecycleEvent>();
+    var supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions("unused.exe"), TimeSpan.FromSeconds(2));
+    supervisor.LifecycleChanged += lifecycle.Enqueue;
+    try
+    {
+        supervisor.StartOwnedProcessForTestingAsync(owner, SlowExitProcess()).GetAwaiter().GetResult();
+        var firstPid = supervisor.Snapshot().Single(value => value.Source == owner && value.Running).ProcessId;
+
+        var stop = supervisor.StopAsync(owner, CancellationToken.None);
+        Thread.Sleep(75);
+        var restart = supervisor.StartOwnedProcessForTestingAsync(owner, SlowExitProcess());
+        Thread.Sleep(75);
+        True(!restart.IsCompleted);
+
+        stop.GetAwaiter().GetResult();
+        restart.GetAwaiter().GetResult();
+        var secondPid = supervisor.Snapshot().Single(value => value.Source == owner && value.Running).ProcessId;
+        True(secondPid != firstPid);
+        supervisor.StopAsync(owner, CancellationToken.None).GetAwaiter().GetResult();
+        Equal(2, lifecycle.Count(value => value.State == RouteProcessLifecycleState.Exited));
+    }
+    finally { supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+
+    static System.Diagnostics.ProcessStartInfo SlowExitProcess()
+    {
+        var start = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-Command");
+        start.ArgumentList.Add("[Console]::Out.WriteLine('ready'); [Console]::In.ReadLine() | Out-Null; Start-Sleep -Milliseconds 600");
+        return start;
+    }
 }
 
 static void FfmpegFailureIsClassified()
@@ -1121,6 +1192,10 @@ static void PortStandbyCommandIsBroadcastSafe()
         True(start.ArgumentList.Contains("smptebars=size=1920x1080:rate=25/1"));
         True(start.ArgumentList.Contains("anullsrc=r=48000:cl=stereo"));
         True(start.ArgumentList.Contains("pcm_s16le"));
+        var audioFilter = start.ArgumentList[start.ArgumentList.IndexOf("-af") + 1];
+        True(audioFilter.Contains("volume=0", StringComparison.Ordinal));
+        True(audioFilter.Contains("asetpts=N/SR/TB", StringComparison.Ordinal));
+        True(start.CreateNoWindow && start.WindowStyle == System.Diagnostics.ProcessWindowStyle.Hidden);
         var graph = start.ArgumentList[start.ArgumentList.IndexOf("-filter_complex") + 1];
         True(graph.Contains("Transmission card  -  SDI 1", StringComparison.Ordinal));
         True(graph.Contains("Stream-3", StringComparison.Ordinal));
@@ -1138,6 +1213,19 @@ static void PortStandbyCommandIsBroadcastSafe()
     {
         File.Delete(logoPath);
     }
+}
+
+static void WindowsServiceInstallerIsAutomaticAndRecoverable()
+{
+    var script = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+        "..", "..", "..", "..", "..", "scripts", "Install-WindowsService.ps1"));
+    var text = File.ReadAllText(script);
+    True(text.Contains("[PSCredential] $Credential", StringComparison.Ordinal));
+    True(text.Contains("StartupType = 'Automatic'", StringComparison.Ordinal));
+    True(text.Contains("failure $ServiceName", StringComparison.Ordinal));
+    True(text.Contains("failureflag $ServiceName 1", StringComparison.Ordinal));
+    True(text.Contains("SeServiceLogonRight", StringComparison.Ordinal));
+    True(text.Contains("Broadcast Router $([char]0x2013) Version $version", StringComparison.Ordinal));
 }
 
 static void SettingsRejectInvalidGuiValues()

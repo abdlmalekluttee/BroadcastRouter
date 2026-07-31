@@ -25,7 +25,7 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that invent
 - a responsive dark operator UI for servers, sources, outputs, routes, rules, presets, logs, and settings;
 - saved output-preset selection for manual route creation and confirmed route reassignment;
 - an administrator-controlled 720×450 embedded browser preview with confidence audio, a real VU overlay, and live process statistics;
-- self-contained Windows releases and Task Scheduler/service installation helpers.
+- self-contained Windows releases and a credential-aware automatic Windows Service installer with crash recovery.
 
 ## Validated production baseline
 
@@ -43,20 +43,24 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.1`.
-3. Run `BroadcastRouter.Server.exe` as the dedicated Windows broadcast account.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.2`.
+3. Run `BroadcastRouter.Server.exe` once as the dedicated Windows broadcast account to complete configuration and hardware validation.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
 6. Under **Wowza Servers**, configure the REST URL, credentials, RTSP host/port, applications, and instances. Test the connection and save.
 7. Mark only the intended SDI connectors as **Output ports**, configure each standby screen, and verify the Windows clock is synchronized to NTP.
 8. Prepare preconfigured/manual routes for active or offline streams, then enable automatic routing for unassigned active streams.
-9. Install startup with:
+9. From an elevated PowerShell window, install the automatic background service under that same DPAPI account:
 
 ```powershell
-.\scripts\Install-InteractiveLogon.ps1 -ExecutablePath .\BroadcastRouter.Server.exe
+$serviceAccount = Get-Credential "$env:COMPUTERNAME\BroadcastRouterUser"
+.\scripts\Install-WindowsService.ps1 `
+  -ExecutablePath .\BroadcastRouter.Server.exe `
+  -Credential $serviceAccount `
+  -StartService
 ```
 
-Use the same Windows account for configuration and runtime because DPAPI credentials are account-bound.
+Disable any older interactive-logon task before starting the service; two hosts must never share the database or DeckLink outputs. Use the same Windows account for configuration and service runtime because DPAPI credentials are account-bound. The service starts at boot without a user logon, runs in Session 0, restarts after unexpected failure, and records lifecycle events. Physically repeat the DeckLink validation matrix after every driver, account, or service-hosting change.
 
 ### Human-friendly DeckLink identity
 
@@ -83,6 +87,8 @@ The importer validates archive paths, the manifest, every referenced file, and a
 Incoming streams remain in the inventory when their publisher is offline. A preconfigured or manual routing entry can therefore be saved in advance and activates when FFprobe marks the stream ready. Preconfigured entries outrank manual entries, and both outrank automatic assignment. A saved output remains reserved while offline unless **Allow automatic streams to use it temporarily** is enabled; the saved entry itself is never deleted or reassigned.
 
 Every connector marked as an output port can run an independent standby screen whenever it is not carrying live playout. Configure SMPTE/HD bars, a four-corner logo path, and a custom port/stream label under **Settings > DeckLink connector mappings and standby**. The top line identifies the physical card and SDI connector, the center shows `HH:mm:ss` and the full date, and the label remains at the bottom. FFmpeg reads the Windows system clock, so configure and monitor Windows Time/NTP on the host.
+
+Standby audio is always application-generated zero-valued 48 kHz stereo PCM; live source audio is never mapped into the per-port standby process. A standby replacement cannot start until the prior owned FFmpeg PID has exited and been reaped. Process start, stop, forced termination, and exit-code events are available under **Logs & Diagnostics** in the `ProcessLifecycle` category.
 
 For fast standby-to-live cuts, enable **Low latency** on the output preset and configure the source encoder for a keyframe interval no longer than two seconds. BroadcastRouter bounds RTSP analysis and standby shutdown, but a receiver cannot display predictive video until a decodable keyframe arrives. Each completed cutover records its measured first-DeckLink-frame latency in structured logs under the `Cutover` category.
 

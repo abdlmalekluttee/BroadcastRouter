@@ -1,10 +1,10 @@
 # BroadcastRouter production-safety review
 
 Review date: 2026-07-31
-Review branch: `codex/fast-cutover-standby-layout`
-Current release branch: `codex/decklink-visual-hardware-info` (1.5.1)
+Review branch: `codex/windows-service-audio-release`
+Current release branch: `codex/windows-service-audio-release` (1.5.2)
 Reviewed baseline: release `1.3.6`
-Resulting release version: `1.4.0`
+Resulting release version: `1.5.2`
 
 ## Executive summary
 
@@ -25,6 +25,8 @@ The 1.4.0 cutover follow-up bounds the normal standby release phase to 750 ms, a
 The Unreleased DeckLink visual-catalog follow-up adds exact normalized SDK-model matching against an optional `manifest.min.json`, root-confined authenticated image delivery, operational card/connector/assignment summaries, and a checksum-validating local installer. Asset metadata is presentation-only and cannot affect stable identity, reservations, settings, or FFmpeg. The provided Blackmagic-owned images were used only in ignored local data for HTTP rendering checks; they were not committed or added to public release packaging. Release build and 85/85 regressions pass. The in-app browser-control runtime could not initialize, so a final visual click-through remains not verified.
 
 The 1.5.1 presentation follow-up removes the blend/filter rules that visibly darkened product, connector, and physical-dimension assets and corrects nested minimum-width grids that clipped the Physical Cards editor. It also adds read-only Windows Desktop Video version/install-date discovery and a bounded six-hour comparison against Blackmagic Design's official Desktop Video page. The official SDK exposes no trustworthy per-card firmware version, so firmware and firmware-update values intentionally render as `Not Available`. Release build and 86/86 regressions pass; the local application and all asset endpoints returned healthy HTTP responses, while the in-app browser-control runtime again failed before visual connection.
+
+The 1.5.2 audio-release and service-hosting follow-up found that logical FFmpeg ownership was removed before the exact native process had exited. A replacement standby or live process could therefore open the same DeckLink connector while the old process still held audio/video resources, explaining stale program audio under standby. Per-owner and per-port serialization now retain ownership through exit and stream-drain completion; forced termination reaps the exact process tree before replacement; standby always maps explicit 48 kHz stereo silence; and each lifecycle event records PID and exit status. Production now runs as an automatic, recovery-enabled Windows Service in Session 0 under the existing DPAPI account. Reboot and forced-host failure tests restored the service and all eight owned media processes without interactive logon, visible windows, or orphaned FFmpeg. Release build and 89/89 regressions pass. Physical SDI silence still requires operator observation at the destination.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. RTSP frame receipt, H.264/AAC fragmented-MP4 streaming, the VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified in a controlled lab; physical DeckLink picture/audio observation remains an environment-specific validation step.
 
@@ -106,6 +108,8 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-036 | Medium | DeckLink image fidelity | `wwwroot/app.css` | `mix-blend-mode: multiply`, contrast/saturation filters, and opacity altered the supplied JPEG/PNG pixels against the dark card well, producing the reported dark mask/overlay appearance. | **Fixed in 1.5.1.** Product and technical images use native color, full opacity, no filter/blend, a neutral canvas, centered `object-fit: contain`, and no cropping. |
 | BR-037 | Medium | Physical Cards responsive layout | `Components/Pages/Settings.razor`; `Components/Shared/DeckLinkCardVisual.razor`; `wwwroot/app.css` | A 340 px outer auto-fit column contained a nested visual whose minimum tracks required substantially more width, clipping facts and misaligning otherwise identical cards. | **Fixed in 1.5.1.** Card columns now require a usable 660 px width, nested tracks can shrink to zero, long identities wrap, and container queries stack the visual/facts within narrow cards. |
 | BR-038 | Low | DeckLink software visibility | `Infrastructure/DeckLinkSoftwareInformationProvider.cs`; `Components/Shared/DeckLinkSoftwareStatus.razor`; `Components/Pages/Outputs.razor` | Operators could not see the installed Desktop Video version/date or whether Blackmagic published a newer driver. | **Fixed in 1.5.1.** Windows installation metadata is read without mutation and compared with the official page through a bounded/cached fail-soft request. Missing firmware/update evidence is explicitly `Not Available`. Regression: `DeckLink official software update parsing`. |
+| BR-039 | High | DeckLink A/V teardown | `Infrastructure/FfmpegProcessSupervisor.cs`; `Web/Services/RouterCoordinator.cs`; `Infrastructure/FfmpegCommandBuilder.cs` | Logical ownership was removed before the exact FFmpeg process exited, and standby replacement could stop/start outside the physical-port gate. An old native DeckLink writer could therefore overlap its replacement and continue program audio while standby video was visible. | **Fixed in 1.5.2.** Per-owner and per-port gates retain ownership until process exit and stream drain; timeout kills and reaps the exact tree before replacement; every standby maps explicit 48 kHz stereo `volume=0` audio. A real-process regression proves restart blocks until the old PID exits. Production inspection found every media child owned by the service and every idle standby command explicitly silent. |
+| BR-040 | High | Service availability | `Web/Program.cs`; `Web/Services/ServiceLifecycleReporter.cs`; `scripts/Install-WindowsService.ps1` | The host ran from an interactive scheduled task, depended on user logon, lacked Service Control Manager recovery, and could expose console windows. | **Fixed in 1.5.2.** The installer creates an automatic Windows Service under an explicitly supplied account, grants only service-logon rights, configures 5/15/60-second crash recovery, hides every child process, and records service/process lifecycle events. Production reboot and forced-host failure validation restored the service in Session 0 with the legacy task disabled. |
 
 ## GUI review
 
@@ -128,7 +132,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89 tests.
 
 Added coverage:
 
@@ -157,6 +161,9 @@ Added coverage:
 23. Stale settings revision rejection and atomic configuration-audit persistence.
 24. Delayed sustained-video admission and two-confirmation recovery from generated-black audio-led operation.
 25. DeckLink initialization/header failures cannot be mislabeled as generic network I/O failures.
+26. A real child process cannot be replaced for the same logical owner until the old PID has exited and been reaped.
+27. Video-only live routes and every standby graph map deterministic 48 kHz stereo silence with hidden process windows.
+28. Windows Service installation remains automatic, versioned, credential-explicit, and recovery configured.
 
 Expanded existing credential/log redaction assertions. HTTP integration checks separately verified antiforgery and diagnostics authorization.
 
@@ -173,7 +180,7 @@ Still requiring integration or hardware coverage:
 
 | Validation | Status |
 |---|---|
-| Restore, Release build, tests | **Verified automatically**: clean; 85/85 after FFmpeg startup, recovery, scan, audio, reservation, process-containment, route-action, standby-layout, safe-termination, and visual-catalog fixes. |
+| Restore, Release build, tests | **Verified automatically**: clean; 89/89 after FFmpeg startup, recovery, scan, audio, reservation, process-containment, route-action, standby-layout, safe-termination, visual-catalog, exact-exit serialization, silent-standby, and service-installer fixes. |
 | Package vulnerability audit | **Verified automatically**: no vulnerable packages reported. |
 | Atomic single-port ownership | **Verified automatically** with 500 concurrent contenders. |
 | Local browser pages/viewports | **Verified locally** in isolated simulation on port 5180; stable-session console clean; zero document/preset-card overflow at 1920×1080 and 768×1024; zero controls outside cards. |
@@ -182,14 +189,14 @@ Still requiring integration or hardware coverage:
 | Authentication/antiforgery/diagnostics gate | **Verified locally** in isolated authenticated modes on ports 5181/5183, including operator denial and login throttling. |
 | Real Wowza REST and RTSP | **Verified in a controlled lab**: management authentication, application discovery, active publisher discovery, RTSP open, frame receipt, H.264 video, and AAC audio. Addresses, server IDs, application names, and stream names are intentionally excluded. |
 | DeckLink enumeration | **Verified in a controlled lab**: Desktop Video and DeckLink-enabled FFmpeg were detected; direct SDK interrogation returned unique persistent IDs and physical-card group metadata. Concrete identifiers, labels, and inventory counts are intentionally excluded. |
-| Optional DeckLink visual catalog | **Verified automatically, locally, and on the production host**: all 15 supplied manifest models and 45 checksummed images imported; both detected physical cards matched the exact SDK model; authoritative 8-input/8-output roles and current assignments rendered; product JPEG, connection PNG, physical JPEG, and Micro accessory PNG endpoints returned 200 with correct media types; unknown/traversal paths returned 404; unauthenticated requests redirected to login. Visual click-through remains not verified because the in-app browser-control runtime failed before connection. |
+| Optional DeckLink visual catalog | **Verified automatically, locally, and on the production host**: all 15 supplied manifest models and 45 checksummed images imported; detected physical cards matched the exact SDK model; authoritative connector roles and current assignments rendered; product JPEG, connection PNG, physical JPEG, and Micro accessory PNG endpoints returned 200 with correct media types; unknown/traversal paths returned 404; unauthenticated requests redirected to login. The production Outputs page was also inspected through the authenticated in-app browser after reboot. |
 | Physical DeckLink output | **Partially verified**: a bounded live RTSP-to-DeckLink test produced 375 frames in 15 seconds with 0 drops and 0 duplicates. The patched FFmpeg then produced 250 synthetic frames in 10 seconds, stopped with zero crash events, and left zero processes. Physical SDI picture/audio was not independently observed. |
 | Physical connector identity stability | **Partially verified**: simulated enumeration reordering retained every stable ID, and a controlled application restart retained a custom output name on the same persistent connector. Swapping identical cards between PCIe slots plus two Windows reboots/power cycles still requires physical verification. |
 | Broadcast modes/audio | **Requires physical tests** for 1080p25, 1080p50, 1080i50, and 720p50 on every compatible port. |
 | Failure/recovery matrix | **Requires lab fault injection**: network pull, publisher stop, FFmpeg kill, RTSP stall, busy port, and safe card disconnect. |
-| Restart recovery | **Verified for a controlled application/task restart**: the owned FFmpeg child exited with the host, no orphan remained, and the desired route recovered automatically on the same persistent output at approximately 25 fps. A full Windows reboot remains required. |
+| Restart recovery | **Verified on the production host**: a full Windows reboot restored the automatic service and all configured standby owners without interactive logon. Forced termination generated SCM event 7031, restarted the service after the configured five-second delay, removed the old owned media set, and reconstructed eight service-owned media processes. |
 | Soak | **Requires 8–24 hours** with multi-port frame/FPS/drop/CPU/memory/orphan monitoring. |
-| Windows Service / Session 0 | **Not verified**; do not claim production readiness until the full matrix passes there. |
+| Windows Service / Session 0 | **Verified on the production host**: automatic startup, versioned display name, existing DPAPI account, disabled legacy task, host and media children in Session 0, zero non-Session-0 media, external health/UI recovery, lifecycle event logging, and SCM crash recovery. Physical SDI picture/audio observation and a multi-hour soak remain outstanding. |
 
 ## Files changed
 
@@ -207,6 +214,7 @@ Still requiring integration or hardware coverage:
 - 1.4.0 follow-up: bounded standby handoff, low-analysis RTSP open, first-frame cutover telemetry, four-corner standby identity layout, and Windows-compatible live clock rendering.
 - 1.5.0 follow-up: `DeckLinkAssetCatalog`, authenticated asset endpoint, reusable card/connector visual component, Outputs/Settings/Routes integration, safe importer, assembly-derived stylesheet cache key, focused matching/path-confinement regression, and deployment/licensing documentation.
 - 1.5.1 follow-up: native-color asset rendering, container-responsive Physical Cards layout, read-only Desktop Video installation discovery, official update comparison, explicit unavailable firmware handling, and focused release-parser regression.
+- 1.5.2 follow-up: exact-process exit serialization, per-port standby/live handoff locking, deterministic silent standby/audio fallback, hidden child processes, service lifecycle reporting, and a credential-explicit automatic Windows Service installer with SCM recovery.
 
 ## Commands and results
 
@@ -225,9 +233,11 @@ Current 1.5.0 results: Release build passed with 0 warnings/errors; 85/85 regres
 
 Current 1.5.1 local results: Release build passed with 0 warnings/errors; 86/86 regressions passed. Simulation startup returned healthy; Outputs and the versioned stylesheet returned 200; Razor prerender included the firmware/driver status region; all DeckLink image rules use native blend/filter/opacity and contain sizing. Read-only production inspection detected Desktop Video installation metadata and successful reachability to the official Blackmagic page. Browser-control initialization failed before connection, so the final rendered visual inspection remains pending production/operator observation.
 
+Current 1.5.2 results: Release build passed with 0 warnings/errors; 89/89 regressions and the vulnerable-package audit passed. A cold production backup preceded deployment. A full reboot restored the automatic service and eight silent standby outputs in Session 0 with no interactive logon or visible media windows. A forced host termination produced SCM crash/recovery evidence, restarted the service after the configured delay, removed the old process set, and rebuilt seven silent standby outputs plus one returned live route. The authenticated Dashboard, Outputs, and Logs pages rendered without unhandled-error markup and exposed the new service/process lifecycle records. Physical SDI silence cannot be proven from software telemetry and remains an operator-observation step.
+
 ## Recommended follow-up
 
 1. Add injectable process/time abstractions and end-to-end supervisor tests, including actual hanging/rapid-exit child processes.
 2. Add a full authenticated operator/admin integration matrix through the deployment reverse proxy.
 3. Consider decomposing `RouterCoordinator` only after hardware validation establishes stable operational boundaries.
-4. Run the exact hardware, reboot, failure-injection, soak, and Session 0 matrix above before broadcast deployment.
+4. Complete physical SDI picture/audio observation and an 8–24 hour multi-port soak before declaring full broadcast certification.

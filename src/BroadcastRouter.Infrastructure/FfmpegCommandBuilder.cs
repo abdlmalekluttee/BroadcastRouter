@@ -13,6 +13,9 @@ public sealed record FfmpegRouteOptions(
 
 public static class FfmpegCommandBuilder
 {
+    private const string LiveAudioFilter = "aresample=48000:async=1:first_pts=0";
+    private const string SilentAudioFilter = "aresample=48000:first_pts=0,asetpts=N/SR/TB,volume=0";
+
     public static ProcessStartInfo Build(
         FfmpegRouteOptions options,
         DiscoveredSource source,
@@ -29,7 +32,8 @@ public static class FfmpegCommandBuilder
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = true,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
         };
 
         Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats");
@@ -46,8 +50,11 @@ public static class FfmpegCommandBuilder
                 "-fpsprobesize", "0");
         Add(start, "-i", source.RtspUri.AbsoluteUri);
 
+        var sourceHasAudio = !string.IsNullOrWhiteSpace(source.Media?.AudioCodec);
         var audioLed = source.Media is { HasUsableVideo: false } media
-            && !string.IsNullOrWhiteSpace(media.AudioCodec);
+            && sourceHasAudio;
+        if (!audioLed && preset.IncludeAudio && !sourceHasAudio)
+            Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
         if (audioLed)
         {
             if (!preset.IncludeAudio)
@@ -59,6 +66,7 @@ public static class FfmpegCommandBuilder
                 "-vf", BuildVideoFilter(preset, sourceIsInterlaced: false),
                 "-pix_fmt", preset.Mode.PixelFormat,
                 "-map", "0:a:0",
+                "-af", LiveAudioFilter,
                 "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le",
                 "-shortest");
         }
@@ -70,7 +78,14 @@ public static class FfmpegCommandBuilder
                 "-vf", videoFilter,
                 "-pix_fmt", preset.Mode.PixelFormat);
             if (preset.IncludeAudio)
-                Add(start, "-map", "0:a:0?", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
+            {
+                if (sourceHasAudio)
+                    Add(start, "-map", "0:a:0", "-af", LiveAudioFilter,
+                        "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
+                else
+                    Add(start, "-map", "1:a:0", "-af", SilentAudioFilter,
+                        "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
+            }
             else Add(start, "-an");
         }
         AddDeckLinkOutput(start, options, port.FfmpegName);
@@ -92,7 +107,8 @@ public static class FfmpegCommandBuilder
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = true,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
         };
         Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats");
         var rate = preset.Interlaced
@@ -124,7 +140,8 @@ public static class FfmpegCommandBuilder
         // interpret the map as an input option for anullsrc and reject startup.
         if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
         Add(start, "-map", "0:v:0", "-vf", BuildVideoFilter(preset, sourceIsInterlaced: false), "-pix_fmt", preset.Mode.PixelFormat);
-        if (preset.IncludeAudio) Add(start, "-map", "1:a:0", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", "-shortest");
+        if (preset.IncludeAudio) Add(start, "-map", "1:a:0", "-af", SilentAudioFilter,
+            "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", "-shortest");
         else Add(start, "-an");
         AddDeckLinkOutput(start, options, port.FfmpegName);
         return start;
@@ -146,7 +163,8 @@ public static class FfmpegCommandBuilder
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = true,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
         };
         Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats");
         var rate = preset.Interlaced
@@ -215,7 +233,8 @@ public static class FfmpegCommandBuilder
 
         Add(start, "-filter_complex", filterGraph, "-map", "[outv]", "-pix_fmt", preset.Mode.PixelFormat);
         if (preset.IncludeAudio)
-            Add(start, "-map", $"{audioInput}:a:0", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
+            Add(start, "-map", $"{audioInput}:a:0", "-af", SilentAudioFilter,
+                "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
         else Add(start, "-an");
         AddDeckLinkOutput(start, options, port.FfmpegName);
         return start;

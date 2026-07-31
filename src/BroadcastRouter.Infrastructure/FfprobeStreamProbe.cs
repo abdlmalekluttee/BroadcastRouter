@@ -18,7 +18,8 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
         };
         Add(start, "-v", "error", "-rtsp_transport", "tcp", "-rw_timeout",
             ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture),
