@@ -29,6 +29,7 @@ public static class ExternalCommandRunner
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
             WorkingDirectory = Path.GetDirectoryName(executablePath) ?? AppContext.BaseDirectory
         };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);

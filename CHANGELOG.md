@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.5.2 — 2026-07-31
+
+- Serialize every owned FFmpeg stop/restart by logical owner and keep ownership registered until the exact process has exited, its output streams have drained, and its process tree has been reaped.
+- Move per-port standby replacement and live-route shutdown under the same physical-port gate, preventing a replacement from opening DeckLink while the prior video/audio owner is still closing.
+- Make standby and fallback audio explicitly zero-valued 48 kHz stereo PCM, and normalize live audio timestamps before DeckLink output to reduce startup buffer underruns.
+- Persist owned FFmpeg PID lifecycle events—start, stop request, forced tree termination, and exit code—so any future unexpected audio can be traced to an exact application-owned process.
+- Add an idempotent, credential-aware Windows Service installer with versioned display name, Automatic boot startup, Session 0 hosting, Log on as a service assignment, SCM crash recovery, and Application Event Log registration.
+- Log orderly service start and stop boundaries to SQLite and Windows Event Log; all FFmpeg, FFprobe, and preview children use no-window/hidden process startup.
+- Add real-process regression coverage proving a rapid restart cannot overlap the old owned process, plus service-installer and explicit standby-silence checks.
+
 ## 1.5.1 — 2026-07-31
 
 - Remove the CSS blend modes, contrast filters, and translucent image treatment that darkened DeckLink product and connector artwork; all supplied images now render at native color with uncropped `object-fit: contain` sizing on a consistent neutral canvas.

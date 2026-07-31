@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using System.Threading.RateLimiting;
@@ -14,9 +15,12 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Hosting.WindowsServices;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseWindowsService(options => options.ServiceName = "BroadcastRouter");
+if (OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService())
+    ConfigureWindowsEventLog(builder);
 
 var dataSetting = builder.Configuration["DataDirectory"] ?? "data";
 var dataDirectory = Path.IsPathRooted(dataSetting) ? dataSetting : Path.Combine(AppContext.BaseDirectory, dataSetting);
@@ -45,6 +49,7 @@ builder.Services.AddHttpClient<DeckLinkSoftwareInformationProvider>(client =>
 });
 builder.Services.AddSingleton<RouterCoordinator>();
 builder.Services.AddSingleton<BrowserPreviewSupervisor>();
+builder.Services.AddHostedService<ServiceLifecycleReporter>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<RouterCoordinator>());
 builder.Services.AddScoped<AuthorizedRouterCommands>();
 builder.Services.AddScoped<AuthorizedPreviewCommands>();
@@ -241,6 +246,21 @@ static bool FixedEquals(string supplied, string? configured)
     var left = SHA256.HashData(Encoding.UTF8.GetBytes(supplied));
     var right = SHA256.HashData(Encoding.UTF8.GetBytes(configured));
     return CryptographicOperations.FixedTimeEquals(left, right);
+}
+
+[SupportedOSPlatform("windows")]
+static void ConfigureWindowsEventLog(WebApplicationBuilder builder)
+{
+#pragma warning disable CA1416 // Guarded by OperatingSystem.IsWindows and service-mode detection at the only call site.
+    builder.Logging.AddEventLog(settings =>
+    {
+        settings.LogName = "Application";
+        settings.SourceName = "BroadcastRouter";
+        settings.Filter = (category, level) =>
+            category.StartsWith("BroadcastRouter", StringComparison.Ordinal)
+            && level >= LogLevel.Information;
+    });
+#pragma warning restore CA1416
 }
 
 static void WriteJson<T>(ZipArchive archive, string name, T value) =>

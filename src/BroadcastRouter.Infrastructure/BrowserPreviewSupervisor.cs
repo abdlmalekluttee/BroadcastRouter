@@ -43,6 +43,7 @@ public static class BrowserPreviewCommandBuilder
             FileName = tools.FfmpegPath,
             UseShellExecute = false,
             CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = false

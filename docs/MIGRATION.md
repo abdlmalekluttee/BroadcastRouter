@@ -22,4 +22,6 @@ Version 1.5.0 does not change the settings or database schema. The optional Deck
 
 Version 1.5.1 does not change the settings or database schema. It corrects DeckLink image rendering and physical-card responsiveness, and adds read-only Desktop Video installation/update metadata. Driver lookup and the bounded official update check are presentation-only; a failed or blocked check displays `Not Available` and cannot affect card discovery, output ownership, or playout.
 
+Version 1.5.2 does not change the settings or database schema. It serializes FFmpeg stop/restart ownership through full process exit, makes standby audio explicitly silent, adds exact PID lifecycle telemetry, and introduces the automatic credential-aware Windows Service installer. Create a cold backup, disable the old interactive-logon task, and install the service under the same DPAPI account. Reboot and repeat the Session 0/DeckLink validation matrix before broadcast acceptance.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

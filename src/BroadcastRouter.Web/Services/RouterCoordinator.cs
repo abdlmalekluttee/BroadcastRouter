@@ -1205,10 +1205,6 @@ public sealed class RouterCoordinator(
                     SetStandbyStatus(port.StableId, PortStandbyState.Running, process.ProcessId, "Standby screen on air", null);
                     continue;
                 }
-                await StopPortStandbyAsync(port.StableId, cancellationToken);
-                await LogAsync("Information", "PortStandby",
-                    $"Standby configuration changed for {DeckLinkDisplayName.Full(port)}; the standby process is being replaced immediately.",
-                    cancellationToken: cancellationToken);
             }
 
             var portGate = _portGates.GetOrAdd(port.StableId, static _ => new SemaphoreSlim(1, 1));
@@ -1219,6 +1215,28 @@ public sealed class RouterCoordinator(
                     activeRoute = _routes.Values.FirstOrDefault(route => string.Equals(route.PortId, port.StableId, StringComparison.OrdinalIgnoreCase)
                         && route.State is RouteState.Starting or RouteState.Running or RouteState.Reconnecting or RouteState.Fallback);
                 if (activeRoute is not null) continue;
+
+                // Re-read process ownership after acquiring the port gate. Settings saves,
+                // the one-second reconciler, and a live cutover can all reach this path.
+                // Stopping outside the gate allowed a replacement to start while the old
+                // FFmpeg child was still releasing DeckLink audio/video resources.
+                process = _supervisor?.Snapshot().FirstOrDefault(value => value.Source == owner && value.Running);
+                if (process is not null)
+                {
+                    string? appliedSignature;
+                    lock (_gate) _standbyConfigurationSignatures.TryGetValue(port.StableId, out appliedSignature);
+                    if (string.Equals(appliedSignature, desiredSignature, StringComparison.Ordinal))
+                    {
+                        SetStandbyStatus(port.StableId, PortStandbyState.Running, process.ProcessId, "Standby screen on air", null);
+                        continue;
+                    }
+
+                    await _supervisor!.StopAsync(owner, cancellationToken);
+                    ClearStandbyState(port.StableId);
+                    await LogAsync("Information", "PortStandby",
+                        $"Standby configuration changed for {DeckLinkDisplayName.Full(port)}; owned process {process.ProcessId} exited before replacement.",
+                        cancellationToken: cancellationToken);
+                }
                 EnsureSupervisor(settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
                 SetStandbyStatus(port.StableId, PortStandbyState.Starting, null, "Starting standby screen", null);
                 try
@@ -1532,30 +1550,38 @@ public sealed class RouterCoordinator(
                 _sourceReadySince.Remove(sourceId);
                 _cutoverStartedAt.Remove(sourceId);
             }
-            if (_supervisor is not null) await _supervisor.StopAsync(identity, cancellationToken);
-            if (route.PortId is not null && !keepReservation)
+            var portGate = route.PortId is null
+                ? null
+                : _portGates.GetOrAdd(route.PortId, static _ => new SemaphoreSlim(1, 1));
+            if (portGate is not null) await portGate.WaitAsync(cancellationToken);
+            try
             {
-                var release = _reservations.ReleaseWithResult(route.PortId, identity, forceRelease);
-                if (release == PortReleaseResult.OwnedByOther)
-                    throw new InvalidOperationException("The output reservation could not be released because another route now owns it.");
-                if (release == PortReleaseResult.Locked)
-                    throw new InvalidOperationException("The output reservation is locked and requires a forced stop.");
-                if (release == PortReleaseResult.AlreadyFree)
-                    await LogAsync("Warning", "Reservation", "A stale route referenced an output that was already free; stop reconciled the route without releasing another owner's lease.",
-                        sourceId, cancellationToken: cancellationToken);
+                if (_supervisor is not null) await _supervisor.StopAsync(identity, cancellationToken);
+                if (route.PortId is not null && !keepReservation)
+                {
+                    var release = _reservations.ReleaseWithResult(route.PortId, identity, forceRelease);
+                    if (release == PortReleaseResult.OwnedByOther)
+                        throw new InvalidOperationException("The output reservation could not be released because another route now owns it.");
+                    if (release == PortReleaseResult.Locked)
+                        throw new InvalidOperationException("The output reservation is locked and requires a forced stop.");
+                    if (release == PortReleaseResult.AlreadyFree)
+                        await LogAsync("Warning", "Reservation", "A stale route referenced an output that was already free; stop reconciled the route without releasing another owner's lease.",
+                            sourceId, cancellationToken: cancellationToken);
+                }
+                await ReplaceRouteAsync(route with
+                {
+                    State = preserve ? RouteState.WaitingForStream : RouteState.Released,
+                    PortId = keepReservation ? route.PortId : null,
+                    PortName = keepReservation ? route.PortName : null,
+                    DesiredPortId = preserve ? route.DesiredPortId : null,
+                    DesiredPortName = preserve ? route.DesiredPortName : null,
+                    AssignmentMode = preserve ? route.AssignmentMode : AssignmentMode.None,
+                    FailureCategory = null,
+                    FailureMessage = preserve ? "Waiting for the incoming stream to become active." : null,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                }, route.State, cancellationToken);
             }
-            await ReplaceRouteAsync(route with
-            {
-                State = preserve ? RouteState.WaitingForStream : RouteState.Released,
-                PortId = keepReservation ? route.PortId : null,
-                PortName = keepReservation ? route.PortName : null,
-                DesiredPortId = preserve ? route.DesiredPortId : null,
-                DesiredPortName = preserve ? route.DesiredPortName : null,
-                AssignmentMode = preserve ? route.AssignmentMode : AssignmentMode.None,
-                FailureCategory = null,
-                FailureMessage = preserve ? "Waiting for the incoming stream to become active." : null,
-                UpdatedAt = DateTimeOffset.UtcNow
-            }, route.State, cancellationToken);
+            finally { portGate?.Release(); }
         }
         finally { routeGate.Release(); }
     }
@@ -1684,8 +1710,35 @@ public sealed class RouterCoordinator(
         _supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions(ffmpegPath, true, TimeSpan.FromSeconds(10),
                 UseWindowsDeckLinkSafeTerminate: useWindowsDeckLinkSafeTerminate),
             TimeSpan.FromSeconds(Math.Clamp(_settings.Routing.GracefulStopSeconds, 1, 30)));
+        _supervisor.LifecycleChanged += OnProcessLifecycleChanged;
         _supervisorPath = ffmpegPath;
         _supervisorUsesWindowsDeckLinkSafeTerminate = useWindowsDeckLinkSafeTerminate;
+    }
+
+    private void OnProcessLifecycleChanged(RouteProcessLifecycleEvent value) =>
+        _ = PersistProcessLifecycleAsync(value);
+
+    private async Task PersistProcessLifecycleAsync(RouteProcessLifecycleEvent value)
+    {
+        try
+        {
+            var level = value.State == RouteProcessLifecycleState.ForcedTermination
+                || value.State == RouteProcessLifecycleState.Exited && value.ExitCode is not null and not 0
+                    ? "Warning"
+                    : "Information";
+            var exit = value.State == RouteProcessLifecycleState.Exited
+                ? $" Exit code: {value.ExitCode?.ToString() ?? "unavailable"}."
+                : "";
+            var message = $"Owned FFmpeg process {value.ProcessId}: {value.State}.{exit}";
+            logger.Log(level == "Warning" ? LogLevel.Warning : LogLevel.Information,
+                "{Category}: {Message}", "ProcessLifecycle", message);
+            await store.WriteLogAsync(level, "ProcessLifecycle", message, value.Source.Value);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("Process lifecycle telemetry could not be persisted: {Message}",
+                LogRedactor.Redact(ex.Message));
+        }
     }
 
     private TimeSpan RetryDelay(int count)
