@@ -1,10 +1,10 @@
 # BroadcastRouter production-safety review
 
 Review date: 2026-07-31
-Review branch: `codex/windows-service-audio-release`
-Current release branch: `codex/windows-service-audio-release` (1.5.2)
+Review branch: `codex/discovery-freeze-recovery`
+Current release branch: `codex/discovery-freeze-recovery` (1.5.3)
 Reviewed baseline: release `1.3.6`
-Resulting release version: `1.5.2`
+Resulting release version: `1.5.3`
 
 ## Executive summary
 
@@ -27,6 +27,8 @@ The Unreleased DeckLink visual-catalog follow-up adds exact normalized SDK-model
 The 1.5.1 presentation follow-up removes the blend/filter rules that visibly darkened product, connector, and physical-dimension assets and corrects nested minimum-width grids that clipped the Physical Cards editor. It also adds read-only Windows Desktop Video version/install-date discovery and a bounded six-hour comparison against Blackmagic Design's official Desktop Video page. The official SDK exposes no trustworthy per-card firmware version, so firmware and firmware-update values intentionally render as `Not Available`. Release build and 86/86 regressions pass; the local application and all asset endpoints returned healthy HTTP responses, while the in-app browser-control runtime again failed before visual connection.
 
 The 1.5.2 audio-release and service-hosting follow-up found that logical FFmpeg ownership was removed before the exact native process had exited. A replacement standby or live process could therefore open the same DeckLink connector while the old process still held audio/video resources, explaining stale program audio under standby. Per-owner and per-port serialization now retain ownership through exit and stream-drain completion; forced termination reaps the exact process tree before replacement; standby always maps explicit 48 kHz stereo silence; and each lifecycle event records PID and exit status. Production now runs as an automatic, recovery-enabled Windows Service in Session 0 under the existing DPAPI account. Reboot and forced-host failure tests restored the service and all eight owned media processes without interactive logon, visible windows, or orphaned FFmpeg. Release build and 89/89 regressions pass. Physical SDI silence still requires operator observation at the destination.
+
+The 1.5.3 incident follow-up correlates a rapid publisher restart with a live FFmpeg process that continued advancing DeckLink output while almost every new frame was duplicated. The prior watchdog checked only the age of FFmpeg progress and therefore could not distinguish healthy motion from a repeated frozen frame. A process-generation-aware duplicate-frame detector now recycles only sustained duplicate-dominated real-video routes; audio-led generated-black routes remain excluded. Source refresh is also immediate, serialized, source-only, and backend-confirmed instead of being coupled to the five-minute DeckLink/media-tool validation path. Startup discovery runs first, logs Wowza recovery, and manual refresh records receipt, duration, server reachability, and observed inventory. Release build and 91/91 regressions pass locally; rapid real-publisher toggling and physical SDI observation remain deployment checks.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. RTSP frame receipt, H.264/AAC fragmented-MP4 streaming, the VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified in a controlled lab; physical DeckLink picture/audio observation remains an environment-specific validation step.
 
@@ -215,6 +217,7 @@ Still requiring integration or hardware coverage:
 - 1.5.0 follow-up: `DeckLinkAssetCatalog`, authenticated asset endpoint, reusable card/connector visual component, Outputs/Settings/Routes integration, safe importer, assembly-derived stylesheet cache key, focused matching/path-confinement regression, and deployment/licensing documentation.
 - 1.5.1 follow-up: native-color asset rendering, container-responsive Physical Cards layout, read-only Desktop Video installation discovery, official update comparison, explicit unavailable firmware handling, and focused release-parser regression.
 - 1.5.2 follow-up: exact-process exit serialization, per-port standby/live handoff locking, deterministic silent standby/audio fallback, hidden child processes, service lifecycle reporting, and a credential-explicit automatic Windows Service installer with SCM recovery.
+- 1.5.3 follow-up: duplicate-dominated input freeze detection, per-process detector reset, immediate source-only discovery, backend-confirmed refresh UX, Wowza recovery/completion telemetry, persisted watchdog timeout, and focused regressions.
 
 ## Commands and results
 
@@ -234,6 +237,10 @@ Current 1.5.0 results: Release build passed with 0 warnings/errors; 85/85 regres
 Current 1.5.1 local results: Release build passed with 0 warnings/errors; 86/86 regressions passed. Simulation startup returned healthy; Outputs and the versioned stylesheet returned 200; Razor prerender included the firmware/driver status region; all DeckLink image rules use native blend/filter/opacity and contain sizing. Read-only production inspection detected Desktop Video installation metadata and successful reachability to the official Blackmagic page. Browser-control initialization failed before connection, so the final rendered visual inspection remains pending production/operator observation.
 
 Current 1.5.2 results: Release build passed with 0 warnings/errors; 89/89 regressions and the vulnerable-package audit passed. A cold production backup preceded deployment. A full reboot restored the automatic service and eight silent standby outputs in Session 0 with no interactive logon or visible media windows. A forced host termination produced SCM crash/recovery evidence, restarted the service after the configured delay, removed the old process set, and rebuilt seven silent standby outputs plus one returned live route. The authenticated Dashboard, Outputs, and Logs pages rendered without unhandled-error markup and exposed the new service/process lifecycle records. Physical SDI silence cannot be proven from software telemetry and remains an operator-observation step.
+
+Current 1.5.3 local results: Release build passed with 0 warnings/errors and 91/91 regressions passed. Duplicate-dominated output triggers only after the configured sustained interval, normal duplication does not trigger, and a new PID resets detector state. The Sources page invokes only `refresh-sources`, disables duplicate submission, and displays a backend-confirmed completion timestamp/count. Production deployment, rapid real-publisher toggling, reboot-with-live-publisher recovery, and physical SDI picture verification are recorded separately after execution.
+
+Current 1.5.3 production results: a cold full-folder backup preceded deployment to a new versioned directory, including the persisted database and 51 licensed/local DeckLink asset files. The first verification correctly rolled back because the privacy-safe package's localhost-only `AllowedHosts` rejected the LAN health hostname; the existing production host allowlist was then merged and documented before the final cold data sync. The automatic service now reports version 1.5.3, runs in Session 0, owns seven explicitly silent standby FFmpeg processes plus one live route and transient bounded probes, and has zero unowned media. Authenticated GUI inspection confirmed all output designations, both matched card images, the eight-second setting, and the source-refresh busy/receipt/completion states. A real manual refresh completed in 2.317 seconds with seven inventory records and one reachable server, with correlated structured logs. The live route remained Running at approximately 25 fps with zero drops/retries; the post-deployment Windows event audit found zero Critical/Error application events. Rapid encoder toggling, reboot-with-live-publisher recovery, and physical SDI picture/audio remain operator-observed tests.
 
 ## Recommended follow-up
 

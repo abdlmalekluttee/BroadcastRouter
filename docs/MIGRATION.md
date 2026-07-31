@@ -24,4 +24,6 @@ Version 1.5.1 does not change the settings or database schema. It corrects DeckL
 
 Version 1.5.2 does not change the settings or database schema. It serializes FFmpeg stop/restart ownership through full process exit, makes standby audio explicitly silent, adds exact PID lifecycle telemetry, and introduces the automatic credential-aware Windows Service installer. Create a cold backup, disable the old interactive-logon task, and install the service under the same DPAPI account. Reboot and repeat the Session 0/DeckLink validation matrix before broadcast acceptance.
 
+Version 1.5.3 does not change the database schema. Existing settings receive an eight-second frozen-input watchdog default during JSON deserialization. Source refresh is now independent from hardware validation, and stale live-video decoders are recycled without changing saved assignments, leases, or output-port designations. Verify the operator-selected timeout, exercise rapid publisher stop/start, and confirm audio-led sources remain stable before broadcast acceptance.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

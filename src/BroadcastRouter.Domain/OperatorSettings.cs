@@ -143,6 +143,7 @@ public sealed class RoutingPolicySettings
     public int ReservationGraceSeconds { get; set; } = 30;
     public int StableRestoreSeconds { get; set; } = 5;
     public int StallTimeoutSeconds { get; set; } = 10;
+    public int FrozenInputTimeoutSeconds { get; set; } = 8;
     public int FirstProgressTimeoutSeconds { get; set; } = 20;
     public int GracefulStopSeconds { get; set; } = 5;
     public int MaxRetryAttempts { get; set; }

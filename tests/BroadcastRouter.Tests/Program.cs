@@ -51,6 +51,7 @@ var tests = new (string Name, Action Body)[]
     ("Browser preview is tokenized with VU overlay", BrowserPreviewIsTokenizedWithVuOverlay),
     ("FFmpeg progress parsing", FfmpegProgressIsParsed),
     ("FFmpeg stall detection", FfmpegStallIsDetected),
+    ("FFmpeg duplicate-frame input freeze detection", FfmpegDuplicateFrameFreezeIsDetected),
     ("FFmpeg first-progress timeout", FfmpegFirstProgressTimeoutIsDetected),
     ("Windows job kills orphaned media process", WindowsJobKillsOrphanedProcess),
     ("Owned process stop and restart are serialized", OwnedProcessStopAndRestartAreSerialized),
@@ -88,6 +89,7 @@ var tests = new (string Name, Action Body)[]
     ("Output scan selection round trip", OutputScanSelectionRoundTrips),
     ("Manual route preset selection", ManualRoutePresetSelectionIsValidated),
     ("Source route action reflects current route", SourceRouteActionReflectsCurrentRoute),
+    ("Source refresh is backend-confirmed and source-only", SourceRefreshIsBackendConfirmed),
     ("Routing rule wildcard evaluation", RoutingRuleWildcardMatches),
     ("Routing regex validation", InvalidRoutingRegexIsRejected),
     ("Fallback command is uncompressed", FallbackCommandIsSafeAndUncompressed),
@@ -541,6 +543,22 @@ static void FfmpegStallIsDetected()
     var progress = new FfmpegProgressSnapshot(10, 25, TimeSpan.FromSeconds(1), 0, 0, 1, now.AddSeconds(-11), false);
     True(FfmpegStallDetector.IsStalled(true, progress, now, TimeSpan.FromSeconds(10)));
     True(!FfmpegStallDetector.IsStalled(false, progress, now, TimeSpan.FromSeconds(10)));
+}
+
+static void FfmpegDuplicateFrameFreezeIsDetected()
+{
+    var detector = new FfmpegInputFreezeDetector();
+    var now = DateTimeOffset.UtcNow;
+    var initial = new FfmpegProgressSnapshot(100, 25, TimeSpan.FromSeconds(4), 0, 0, 1, now, false);
+    True(!detector.Observe(101, initial, now, TimeSpan.FromSeconds(8)));
+    True(!detector.Observe(101, initial with { Frame = 125, DuplicatedFrames = 25 }, now.AddSeconds(1), TimeSpan.FromSeconds(8)));
+    True(!detector.Observe(101, initial with { Frame = 300, DuplicatedFrames = 200 }, now.AddSeconds(8), TimeSpan.FromSeconds(8)));
+    True(detector.Observe(101, initial with { Frame = 325, DuplicatedFrames = 225 }, now.AddSeconds(9), TimeSpan.FromSeconds(8)));
+
+    detector.Reset();
+    True(!detector.Observe(102, initial, now, TimeSpan.FromSeconds(8)));
+    True(!detector.Observe(102, initial with { Frame = 125, DuplicatedFrames = 1 }, now.AddSeconds(10), TimeSpan.FromSeconds(8)));
+    True(!detector.Observe(103, initial with { Frame = 150, DuplicatedFrames = 50 }, now.AddSeconds(20), TimeSpan.FromSeconds(8)));
 }
 
 static void FfmpegFirstProgressTimeoutIsDetected()
@@ -1139,6 +1157,21 @@ static void SourceRouteActionReflectsCurrentRoute()
     Equal(SourceRouteActionKind.Start, SourceRouteActionPolicy.Resolve(route with { State = RouteState.Released }));
 }
 
+static void SourceRefreshIsBackendConfirmed()
+{
+    var page = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+        "..", "..", "..", "..", "..", "src", "BroadcastRouter.Web", "Components", "Pages", "Sources.razor"));
+    var coordinator = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+        "..", "..", "..", "..", "..", "src", "BroadcastRouter.Web", "Services", "RouterCoordinator.cs"));
+    var pageText = File.ReadAllText(page);
+    var coordinatorText = File.ReadAllText(coordinator);
+    True(pageText.Contains("Commands.ExecuteAsync(\"refresh-sources\")", StringComparison.Ordinal));
+    True(pageText.Contains("Source discovery completed and confirmed by the server", StringComparison.Ordinal));
+    True(!pageText.Contains("Commands.ExecuteAsync(\"rescan\")", StringComparison.Ordinal));
+    True(coordinatorText.Contains("Immediate source discovery requested.", StringComparison.Ordinal));
+    True(coordinatorText.Contains("DiscoverAndProbeAsync(cancellationToken, force: true)", StringComparison.Ordinal));
+}
+
 static void RoutingRuleWildcardMatches()
 {
     var source = new SimulationDiscoveryProvider().DiscoverAsync(default).Result.Single();
@@ -1334,7 +1367,7 @@ static void AllGuiSettingsRoundTrip()
         {
             SimulationMode = true,
             MediaTools = new() { FfmpegPath = @"C:\Media\ffmpeg.exe", FfprobePath = @"C:\Media\ffprobe.exe", FfplayPath = @"C:\Media\ffplay.exe" },
-            Routing = new() { AutomaticRoutingEnabled = false, ReservationGraceSeconds = 31, StableRestoreSeconds = 6, FirstProgressTimeoutSeconds = 22, StallTimeoutSeconds = 11, GracefulStopSeconds = 7, MaxRetryAttempts = 9, RetryDelaysSeconds = [2, 4, 8] },
+            Routing = new() { AutomaticRoutingEnabled = false, ReservationGraceSeconds = 31, StableRestoreSeconds = 6, FirstProgressTimeoutSeconds = 22, StallTimeoutSeconds = 11, FrozenInputTimeoutSeconds = 13, GracefulStopSeconds = 7, MaxRetryAttempts = 9, RetryDelaysSeconds = [2, 4, 8] },
             Security = new() { BindAddress = "127.0.0.1", Port = 5085, RequireAuthentication = true, HttpsEnabled = true, AllowedNetworks = "127.0.0.1/32", TrustedProxies = "127.0.0.2", SessionTimeoutMinutes = 60 }
         };
         settings.WowzaServers.Add(new WowzaServerProfile
@@ -1394,6 +1427,7 @@ static void AllGuiSettingsRoundTrip()
         Equal(5085, loaded.Security.Port);
         Equal("127.0.0.2", loaded.Security.TrustedProxies);
         Equal(22, loaded.Routing.FirstProgressTimeoutSeconds);
+        Equal(13, loaded.Routing.FrozenInputTimeoutSeconds);
         Equal(9, loaded.Routing.MaxRetryAttempts);
         Equal(3, loaded.Routing.RetryDelaysSeconds.Length);
 

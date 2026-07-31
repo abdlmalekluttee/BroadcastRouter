@@ -61,3 +61,52 @@ public static class FfmpegStallDetector
         DateTimeOffset now, TimeSpan timeout) =>
         processRunning && (progress is null || progress.Frame <= 0) && timeout > TimeSpan.Zero && now - startedAt > timeout;
 }
+
+public sealed class FfmpegInputFreezeDetector(double minimumDuplicateRatio = 0.90, long minimumFrameAdvance = 5)
+{
+    private int? _processId;
+    private long _frame;
+    private long _duplicatedFrames;
+    private DateTimeOffset? _duplicateDominatedSince;
+
+    public bool Observe(int processId, FfmpegProgressSnapshot? progress, DateTimeOffset observedAt, TimeSpan timeout)
+    {
+        if (progress is null || progress.Completed || timeout <= TimeSpan.Zero)
+        {
+            Reset(processId, progress);
+            return false;
+        }
+
+        if (_processId != processId || progress.Frame < _frame || progress.DuplicatedFrames < _duplicatedFrames)
+        {
+            Reset(processId, progress);
+            return false;
+        }
+
+        var frameAdvance = progress.Frame - _frame;
+        var duplicatedAdvance = progress.DuplicatedFrames - _duplicatedFrames;
+        _frame = progress.Frame;
+        _duplicatedFrames = progress.DuplicatedFrames;
+
+        if (frameAdvance < minimumFrameAdvance) return false;
+        var duplicateRatio = duplicatedAdvance / (double)frameAdvance;
+        if (duplicatedAdvance <= 0 || duplicateRatio < minimumDuplicateRatio)
+        {
+            _duplicateDominatedSince = null;
+            return false;
+        }
+
+        _duplicateDominatedSince ??= observedAt;
+        return observedAt - _duplicateDominatedSince.Value >= timeout;
+    }
+
+    public void Reset() => Reset(null, null);
+
+    private void Reset(int? processId, FfmpegProgressSnapshot? progress)
+    {
+        _processId = processId;
+        _frame = progress?.Frame ?? 0;
+        _duplicatedFrames = progress?.DuplicatedFrames ?? 0;
+        _duplicateDominatedSince = null;
+    }
+}

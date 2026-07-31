@@ -504,6 +504,7 @@ public sealed class SqliteDataStore
         if (settings.Rules.Any(rule => !string.IsNullOrWhiteSpace(rule.FixedPortId) && !outputPortIds.Contains(rule.FixedPortId)))
             throw new InvalidOperationException("A routing rule references a connector that is not marked as an output port.");
         if (settings.Routing.ReservationGraceSeconds < 0 || settings.Routing.StableRestoreSeconds < 0 || settings.Routing.StallTimeoutSeconds <= 0
+            || settings.Routing.FrozenInputTimeoutSeconds <= 0
             || settings.Routing.FirstProgressTimeoutSeconds <= 0 || settings.Routing.GracefulStopSeconds <= 0 || settings.Routing.MaxRetryAttempts < 0)
             throw new InvalidOperationException("Routing and recovery timeouts contain an invalid value.");
         if (settings.Routing.RetryDelaysSeconds.Length == 0 || settings.Routing.RetryDelaysSeconds.Any(value => value < 0))
