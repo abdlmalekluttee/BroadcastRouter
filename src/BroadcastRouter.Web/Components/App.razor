@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
-    <link rel="stylesheet" href="app.css?v=1.4.0" />
+    <link rel="stylesheet" href="@($"app.css?v={AssetVersion}")" />
     <link rel="stylesheet" href="branding.css?v=1.2.3" />
     <link rel="icon" href="favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="images/broadcastrouter-logo-32.png" />
@@ -17,3 +17,7 @@
     <script src="_framework/blazor.web.js"></script>
 </body>
 </html>
+
+@code {
+    private static string AssetVersion => typeof(App).Assembly.GetName().Version?.ToString(3) ?? "1";
+}
