@@ -30,10 +30,12 @@ public sealed class RouterCoordinator(
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _routeGates = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _portGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _settingsMutationGate = new(1, 1);
+    private readonly SemaphoreSlim _discoveryGate = new(1, 1);
     private readonly Dictionary<string, PortStandbyStatus> _standbys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _standbyRetryAt = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _standbyConfigurationSignatures = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _processDiagnosticSignatures = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, FfmpegInputFreezeDetector> _inputFreezeDetectors = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SourceMediaModeState> _sourceMediaModes = new(StringComparer.Ordinal);
     private readonly HashSet<string> _pendingMediaModeRestarts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> _cutoverStartedAt = new(StringComparer.Ordinal);
@@ -46,7 +48,7 @@ public sealed class RouterCoordinator(
     private OperatorSettings _settings = new();
     private MediaToolValidation _validation = MediaToolValidation.NotConfigured;
     private volatile bool _emergencyStopped;
-    private volatile bool _forceDiscovery = true;
+    private int _forceDiscoveryRequested = 1;
     private volatile bool _forceToolValidation = true;
     private DateTimeOffset _lastDiscovery = DateTimeOffset.MinValue;
     private DateTimeOffset _lastToolValidation = DateTimeOffset.MinValue;
@@ -108,7 +110,7 @@ public sealed class RouterCoordinator(
                 _settings = Clone(submitted);
                 _ports.Clear();
                 foreach (var port in appliedPorts) _ports[port.StableId] = port;
-                _forceDiscovery = true;
+                Interlocked.Exchange(ref _forceDiscoveryRequested, 1);
                 _forceToolValidation |= requiresToolValidation;
             }
             await AuditPortConfigurationChangesAsync(current, submitted, currentPorts, actor,
@@ -183,9 +185,25 @@ public sealed class RouterCoordinator(
         if (action == "rescan")
         {
             _forceToolValidation = true;
-            _forceDiscovery = true;
+            Interlocked.Exchange(ref _forceDiscoveryRequested, 1);
             await LogAsync("Information", "Operator", "Hardware and source rescan requested.", cancellationToken: cancellationToken);
             Publish("Rescan requested");
+            return;
+        }
+        if (action == "refresh-sources")
+        {
+            var correlation = NewCorrelation();
+            await LogAsync("Information", "Operator", "Immediate source discovery requested.", correlationId: correlation,
+                cancellationToken: cancellationToken);
+            var result = await DiscoverAndProbeAsync(cancellationToken, force: true);
+            if (result is null) throw new InvalidOperationException("Source discovery did not run.");
+            var message = $"Source discovery completed in {result.Elapsed.TotalMilliseconds:F0} ms: "
+                + $"{result.ObservedSources} stream(s), {result.SuccessfulServers}/{result.EnabledServers} server(s) reachable.";
+            await LogAsync(result.EnabledServers > 0 && result.SuccessfulServers == 0 ? "Warning" : "Information",
+                "Discovery", message, correlationId: correlation, cancellationToken: cancellationToken);
+            Publish("Source discovery completed");
+            if (result.EnabledServers > 0 && result.SuccessfulServers == 0)
+                throw new InvalidOperationException("Source discovery completed, but no enabled Wowza server was reachable. Existing routes were retained.");
             return;
         }
         if (string.IsNullOrWhiteSpace(sourceId)) throw new ArgumentException("A source ID is required for this action.", nameof(sourceId));
@@ -231,7 +249,7 @@ public sealed class RouterCoordinator(
                 lock (_gate)
                 {
                     if (_sources.TryGetValue(sourceId, out var source)) _sources[sourceId] = source with { State = SourceState.Probing, Media = null };
-                    _forceDiscovery = true;
+                    Interlocked.Exchange(ref _forceDiscoveryRequested, 1);
                 }
                 break;
             case "lock":
@@ -315,11 +333,11 @@ public sealed class RouterCoordinator(
         {
             try
             {
-                await RefreshToolsAndPortsAsync(stoppingToken);
                 await MonitorProcessesAsync(stoppingToken);
+                await DiscoverAndProbeAsync(stoppingToken);
+                await RefreshToolsAndPortsAsync(stoppingToken);
                 await ReconcileRoutesAsync(stoppingToken);
                 await ReconcilePortStandbysAsync(stoppingToken);
-                await DiscoverAndProbeAsync(stoppingToken);
                 _reconciliationFailureLogGate.Reset();
                 Publish("Running");
             }
@@ -482,13 +500,17 @@ public sealed class RouterCoordinator(
                 cancellationToken: cancellationToken);
     }
 
-    private async Task DiscoverAndProbeAsync(CancellationToken cancellationToken)
+    private async Task<DiscoveryCycleResult?> DiscoverAndProbeAsync(CancellationToken cancellationToken, bool force = false)
     {
+        await _discoveryGate.WaitAsync(cancellationToken);
+        try
+        {
         var settings = GetSettings();
         var minimumPoll = settings.WowzaServers.Where(x => x.Enabled).Select(x => Math.Clamp(x.PollingIntervalSeconds, 1, 300)).DefaultIfEmpty(2).Min();
-        if (!_forceDiscovery && DateTimeOffset.UtcNow - _lastDiscovery < TimeSpan.FromSeconds(minimumPoll)) return;
-        _forceDiscovery = false;
+        var explicitlyRequested = Interlocked.Exchange(ref _forceDiscoveryRequested, 0) != 0;
+        if (!force && !explicitlyRequested && DateTimeOffset.UtcNow - _lastDiscovery < TimeSpan.FromSeconds(minimumPoll)) return null;
         _lastDiscovery = DateTimeOffset.UtcNow;
+        var elapsed = Stopwatch.StartNew();
 
         var observations = new List<DiscoveredSource>();
         var successfullyPolledServerIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -497,6 +519,8 @@ public sealed class RouterCoordinator(
         {
             foreach (var profile in settings.WowzaServers.Where(x => x.Enabled))
             {
+                ServerHealth? previousHealth;
+                lock (_gate) _servers.TryGetValue(profile.ServerId, out previousHealth);
                 try
                 {
                     var password = string.IsNullOrWhiteSpace(profile.ProtectedPassword) ? "" : WindowsDpapi.Unprotect(profile.ProtectedPassword);
@@ -507,6 +531,10 @@ public sealed class RouterCoordinator(
                     observations.AddRange(discovered);
                     successfullyPolledServerIds.Add(profile.ServerId);
                     lock (_gate) _servers[profile.ServerId] = new(profile.ServerId, profile.FriendlyName, true, true, discovered.Count, "Discovery succeeded.", DateTimeOffset.UtcNow);
+                    if (previousHealth is { Reachable: false })
+                        await LogAsync("Information", "WowzaDiscovery",
+                            $"{profile.ServerId} discovery recovered; {discovered.Count} incoming stream record(s) were received.",
+                            cancellationToken: cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -633,6 +661,11 @@ public sealed class RouterCoordinator(
 
         if (settings.SimulationMode)
             lock (_gate) _servers["SIM-WOWZA"] = new("SIM-WOWZA", "Simulated Wowza", true, true, observations.Count, "Simulation API healthy.", DateTimeOffset.UtcNow);
+        elapsed.Stop();
+        return new(observations.Count, settings.WowzaServers.Count(profile => profile.Enabled),
+            successfullyPolledServerIds.Count, elapsed.Elapsed);
+        }
+        finally { _discoveryGate.Release(); }
     }
 
     private async Task<ProbeOutcome> ProbeObservationAsync(DiscoveredSource source, OperatorSettings settings,
@@ -1378,6 +1411,16 @@ public sealed class RouterCoordinator(
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await ScheduleRetryAsync(route, "VideoStalled", "FFmpeg remained alive but stopped producing progress.", cancellationToken);
             }
+            else if (process.Running && IsInputFrozen(process, now))
+            {
+                await _supervisor.StopAsync(process.Source, cancellationToken);
+                await LogAsync("Warning", "InputLiveness",
+                    $"FFmpeg process {process.ProcessId} kept advancing with duplicate-dominated video; the decoder session will be recreated.",
+                    route.SourceId, cancellationToken: cancellationToken);
+                await ScheduleRetryAsync(route, "InputFrozen",
+                    "FFmpeg output remained active but almost every new frame was duplicated, indicating a stale input decoder session.",
+                    cancellationToken);
+            }
             else if (process.Running)
             {
                 var state = route.State == RouteState.Fallback ? RouteState.Fallback : progress?.Frame > 0 ? RouteState.Running : RouteState.Starting;
@@ -1445,6 +1488,29 @@ public sealed class RouterCoordinator(
                 else await ScheduleRetryAsync(route, category.ToString(), detail, cancellationToken);
             }
         }
+    }
+
+    private bool IsInputFrozen(RouteProcessSnapshot process, DateTimeOffset now)
+    {
+        DiscoveredSource? source;
+        lock (_gate) _sources.TryGetValue(process.Source.Value, out source);
+        if (source?.Media?.HasUsableVideo != true)
+        {
+            lock (_gate) _inputFreezeDetectors.Remove(process.Source.Value);
+            return false;
+        }
+
+        FfmpegInputFreezeDetector detector;
+        lock (_gate)
+        {
+            if (!_inputFreezeDetectors.TryGetValue(process.Source.Value, out detector!))
+            {
+                detector = new FfmpegInputFreezeDetector();
+                _inputFreezeDetectors[process.Source.Value] = detector;
+            }
+        }
+        return detector.Observe(process.ProcessId, process.Progress, now,
+            TimeSpan.FromSeconds(_settings.Routing.FrozenInputTimeoutSeconds));
     }
 
     private async Task ScheduleRetryAsync(RuntimeRoute route, string category, string detail, CancellationToken cancellationToken)
@@ -1980,4 +2046,6 @@ public sealed class RouterCoordinator(
 
     private sealed record ProbeOutcome(DiscoveredSource Source, StreamProbeResult? Probe,
         SourceMediaMode PreviousMode, SourceMediaMode CurrentMode, bool ModeChanged);
+    private sealed record DiscoveryCycleResult(int ObservedSources, int EnabledServers,
+        int SuccessfulServers, TimeSpan Elapsed);
 }

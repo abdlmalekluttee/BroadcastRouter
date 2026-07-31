@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.5.3 — 2026-07-31
+
+- Detect stale live-video decoder sessions that continue reporting FFmpeg output progress by measuring sustained duplicate-dominated frame advancement, then recreate only the affected owned route process.
+- Keep audio-led and sparse-video routes outside duplicate-frame freeze detection so intentionally generated black output cannot cause false recovery loops.
+- Run source discovery before periodic media-tool validation and add an immediate source-only refresh command that is serialized independently from DeckLink rescans.
+- Give the Sources page a disabled/busy state plus backend-confirmed completion timestamp and source count; unreachable refreshes now display an explicit error while retaining healthy routes.
+- Record manual discovery receipt/completion, duration, reachable-server count, observed-stream count, and Wowza recovery events in structured diagnostics.
+- Add regression coverage for duplicate-frame freeze detection, process-generation reset, source-only refresh wiring, backend confirmation, and the new persisted timeout setting.
+
 ## 1.5.2 — 2026-07-31
 
 - Serialize every owned FFmpeg stop/restart by logical owner and keep ownership registered until the exact process has exited, its output streams have drained, and its process tree has been reaped.

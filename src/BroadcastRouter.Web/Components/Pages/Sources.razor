@@ -8,7 +8,7 @@
 @implements IDisposable
 
 <PageTitle>Sources · BroadcastRouter</PageTitle>
-<div class="page-head"><div><h1>Sources</h1><p class="lead">Wowza-discovered publishers and explicitly configured RTSP inputs.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" @onclick='() => Commands.ExecuteAsync("rescan")'>Refresh discovery</button><a class="btn" href="/settings#manual">Add manual RTSP</a></div></Authorized></AuthorizeView></div>
+<div class="page-head"><div><h1>Sources</h1><p class="lead">Wowza-discovered publishers and explicitly configured RTSP inputs.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@discoveryBusy" @onclick="RefreshDiscovery">@(discoveryBusy ? "Refreshing…" : "Refresh discovery")</button><a class="btn" href="/settings#manual">Add manual RTSP</a></div></Authorized></AuthorizeView></div>
 @if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger" role="alert">@error</div> }
 @if (!string.IsNullOrWhiteSpace(commandMessage)) { <div class="notice" role="status">@commandMessage</div> }
 <div class="panel preview-panel">
@@ -74,6 +74,7 @@
     private string error = "";
     private string commandMessage = "";
     private bool previewBusy;
+    private bool discoveryBusy;
     private string? routeBusySource;
     protected override void OnInitialized() { snapshot = Coordinator.Snapshot; preview = PreviewSupervisor.Snapshot; Coordinator.Changed += Changed; PreviewSupervisor.Changed += PreviewChanged; }
     private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
@@ -94,6 +95,22 @@
         }
         catch(Exception ex) { error = ex.Message; }
         finally { routeBusySource = null; }
+    }
+    private async Task RefreshDiscovery()
+    {
+        if (discoveryBusy) return;
+        discoveryBusy = true;
+        try
+        {
+            error = "";
+            commandMessage = "Source discovery request received by the server…";
+            await Commands.ExecuteAsync("refresh-sources");
+            snapshot = Coordinator.Snapshot;
+            commandMessage = $"Source discovery completed and confirmed by the server at {snapshot.UpdatedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. "
+                + $"{snapshot.Sources.Count} incoming stream record(s) are visible.";
+        }
+        catch (Exception ex) { error = ex.Message; commandMessage = ""; }
+        finally { discoveryBusy = false; }
     }
     private async Task StartPreview(string id)
     {
