@@ -38,21 +38,28 @@ public static class ExternalCommandRunner
         {
             using var process = Process.Start(start);
             if (process is null) return new(false, null, "", "", false, "Process.Start returned no process.");
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(timeout);
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(deadline.Token);
+            var stderrTask = process.StandardError.ReadToEndAsync(deadline.Token);
             try
             {
                 await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
-                return new(true, process.ExitCode, await stdoutTask.ConfigureAwait(false), await stderrTask.ConfigureAwait(false), false, null);
+                return new(true, process.ExitCode, await SafeAwait(stdoutTask).ConfigureAwait(false),
+                    await SafeAwait(stderrTask).ConfigureAwait(false), false, null);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-                try { await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
-                return new(true, process.HasExited ? process.ExitCode : null,
+                await TerminateWithinAsync(process).ConfigureAwait(false);
+                return new(true, SafeExitCode(process),
                     await SafeAwait(stdoutTask).ConfigureAwait(false), await SafeAwait(stderrTask).ConfigureAwait(false), true, null);
+            }
+            catch (OperationCanceledException)
+            {
+                await TerminateWithinAsync(process).ConfigureAwait(false);
+                await SafeAwait(stdoutTask).ConfigureAwait(false);
+                await SafeAwait(stderrTask).ConfigureAwait(false);
+                throw;
             }
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
@@ -63,7 +70,22 @@ public static class ExternalCommandRunner
 
     private static async Task<string> SafeAwait(Task<string> task)
     {
-        try { return await task.ConfigureAwait(false); }
+        try { return await task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
         catch { return ""; }
+    }
+
+    private static async Task TerminateWithinAsync(Process process)
+    {
+        try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+        using var reapDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try { await process.WaitForExitAsync(reapDeadline.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (reapDeadline.IsCancellationRequested) { }
+        catch { }
+    }
+
+    private static int? SafeExitCode(Process process)
+    {
+        try { return process.HasExited ? process.ExitCode : null; }
+        catch (InvalidOperationException) { return null; }
     }
 }

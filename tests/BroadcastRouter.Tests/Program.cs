@@ -42,6 +42,8 @@ var tests = new (string Name, Action Body)[]
     ("Retry policy caps delay", RetryPolicyCapsAtMaximum),
     ("Retry attempt cap is opt-in", RetryAttemptCapIsOptIn),
     ("Repeated coordinator failures are log-throttled", RepeatedFailuresAreLogThrottled),
+    ("Coordinator liveness detects a blocked cycle", CoordinatorLivenessDetectsBlockedCycle),
+    ("Coordinator watchdog is registered and health-aware", CoordinatorWatchdogIsRegisteredAndHealthAware),
     ("Startup route recovery is single shot", StartupRouteRecoveryIsSingleShot),
     ("FFmpeg command uses argument list", FfmpegCommandUsesArgumentList),
     ("FFmpeg audio-led route generates continuous black video", FfmpegAudioLedRouteGeneratesBlackVideo),
@@ -55,6 +57,7 @@ var tests = new (string Name, Action Body)[]
     ("FFmpeg first-progress timeout", FfmpegFirstProgressTimeoutIsDetected),
     ("Windows job kills orphaned media process", WindowsJobKillsOrphanedProcess),
     ("Owned process stop and restart are serialized", OwnedProcessStopAndRestartAreSerialized),
+    ("Uncooperative owned process cleanup is bounded", UncooperativeOwnedProcessCleanupIsBounded),
     ("FFmpeg failure classification", FfmpegFailureIsClassified),
     ("DeckLink output failures are not mislabeled as network", DeckLinkOutputFailureIsClassified),
     ("FFprobe media parsing", FfprobeMediaIsParsed),
@@ -572,6 +575,36 @@ static void FfmpegFirstProgressTimeoutIsDetected()
     True(FfmpegStallDetector.IsFirstProgressTimedOut(true, noFrames, now.AddSeconds(-21), now, TimeSpan.FromSeconds(20)));
 }
 
+static void CoordinatorLivenessDetectsBlockedCycle()
+{
+    var now = DateTimeOffset.UtcNow;
+    var snapshot = new CoordinatorLivenessSnapshot(
+        now.AddHours(-1), now.AddSeconds(-119), now.AddSeconds(-120), "Standby reconciliation", 1_000);
+    True(CoordinatorLivenessPolicy.IsResponsive(snapshot, now, TimeSpan.FromMinutes(2)));
+    True(!CoordinatorLivenessPolicy.IsResponsive(snapshot with { LastProgressAt = now.AddSeconds(-121) },
+        now, TimeSpan.FromMinutes(2)));
+    True(CoordinatorLivenessPolicy.IsResponsive(snapshot with { LastProgressAt = now.AddSeconds(1) },
+        now, TimeSpan.FromMinutes(2)));
+    Throws<ArgumentOutOfRangeException>(() => CoordinatorLivenessPolicy.IsResponsive(snapshot, now, TimeSpan.Zero));
+}
+
+static void CoordinatorWatchdogIsRegisteredAndHealthAware()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Program.cs"));
+    var watchdog = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Services", "RouterCoordinatorWatchdog.cs"));
+    var supervisor = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Infrastructure", "FfmpegProcessSupervisor.cs"));
+    var commands = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Infrastructure", "ExternalCommandRunner.cs"));
+
+    True(program.Contains("AddHostedService<RouterCoordinatorWatchdog>()", StringComparison.Ordinal));
+    True(program.Contains("CoordinatorLivenessPolicy.IsResponsive", StringComparison.Ordinal));
+    True(watchdog.Contains("Environment.FailFast", StringComparison.Ordinal));
+    True(watchdog.Contains("CoordinatorWatchdog", StringComparison.Ordinal));
+    True(supervisor.Contains("ProcessReapTimeout", StringComparison.Ordinal));
+    True(supervisor.Contains("StreamDrainTimeout", StringComparison.Ordinal));
+    True(!commands.Contains("WaitForExitAsync(CancellationToken.None)", StringComparison.Ordinal));
+}
+
 static void WindowsJobKillsOrphanedProcess()
 {
     if (!OperatingSystem.IsWindows()) return;
@@ -657,6 +690,39 @@ static void OwnedProcessStopAndRestartAreSerialized()
         start.ArgumentList.Add("[Console]::Out.WriteLine('ready'); [Console]::In.ReadLine() | Out-Null; Start-Sleep -Milliseconds 600");
         return start;
     }
+}
+
+static void UncooperativeOwnedProcessCleanupIsBounded()
+{
+    if (!OperatingSystem.IsWindows()) return;
+
+    var owner = new SourceIdentity("SYSTEM", "test", "_definst_", "uncooperative-owner");
+    var supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions("unused.exe"), TimeSpan.FromMilliseconds(100));
+    try
+    {
+        var start = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-Command");
+        start.ArgumentList.Add("while ($true) { [Console]::Out.WriteLine('frame=1'); [Console]::Error.WriteLine('noise'); Start-Sleep -Milliseconds 5 }");
+        supervisor.StartOwnedProcessForTestingAsync(owner, start).GetAwaiter().GetResult();
+        var processId = supervisor.Snapshot().Single(value => value.Source == owner && value.Running).ProcessId;
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        supervisor.StopAsync(owner, CancellationToken.None).GetAwaiter().GetResult();
+        elapsed.Stop();
+        True(elapsed.Elapsed < TimeSpan.FromSeconds(7));
+        True(!supervisor.Snapshot().Any(value => value.Source == owner && value.Running));
+        try { True(System.Diagnostics.Process.GetProcessById(processId).HasExited); }
+        catch (ArgumentException) { }
+    }
+    finally { supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
 }
 
 static void FfmpegFailureIsClassified()

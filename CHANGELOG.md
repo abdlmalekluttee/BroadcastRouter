@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.5.4 — 2026-08-01
+
+- Fix a production coordinator stall that left the HTTP host healthy while automatic discovery, process monitoring, routing recovery, and standby reconciliation stopped advancing.
+- Bound native media-process quit signaling, forced-exit reaping, and stdout/stderr draining so an uncooperative FFmpeg, FFprobe, or diagnostic child cannot block the routing worker indefinitely.
+- Track the coordinator's current stage, last progress time, last completed cycle, and completed-cycle count independently from the browser.
+- Add a two-minute fail-closed coordinator watchdog that records the stalled stage and terminates the host so the configured Windows Service recovery policy can restart it and the Job Object can clean up owned children.
+- Make `/health` report `degraded` when the database is intact but the coordinator has stopped making progress.
+- Add liveness-policy, watchdog-registration, health-wiring, bounded-cleanup, and uncooperative-process regression coverage.
+
 ## 1.5.3 — 2026-07-31
 
 - Detect stale live-video decoder sessions that continue reporting FFmpeg output progress by measuring sustained duplicate-dominated frame advancement, then recreate only the affected owned route process.
