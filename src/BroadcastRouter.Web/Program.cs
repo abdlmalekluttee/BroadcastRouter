@@ -18,6 +18,12 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Hosting.WindowsServices;
 
+if (args is [DeckLinkIdentityProcessProbe.CommandArgument])
+{
+    Console.Out.Write(JsonSerializer.Serialize(DeckLinkSdkIdentityEnumerator.Enumerate()));
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseWindowsService(options => options.ServiceName = "BroadcastRouter");
 if (OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService())

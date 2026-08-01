@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.5 — 2026-08-01
+
+- Move native DeckLink SDK identity/reference enumeration into a short-lived, hidden, kill-on-close helper process so a blocked Desktop Video COM call cannot stall routing discovery or service shutdown.
+- Enforce a five-second helper deadline and a 30-second retry cooldown after failures while retaining the last confirmed reference state.
+- Add a regression that prevents direct native DeckLink enumeration from returning to the coordinator process.
+
 ## 1.5.4 — 2026-08-01
 
 - Fix a production coordinator stall that left the HTTP host healthy while automatic discovery, process monitoring, routing recovery, and standby reconciliation stopped advancing.

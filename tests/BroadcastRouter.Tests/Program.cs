@@ -82,6 +82,7 @@ var tests = new (string Name, Action Body)[]
     ("Atomic operator settings persistence", OperatorSettingsPersistAtomically),
     ("DeckLink sink enumeration parsing", DeckLinkSinksAreParsed),
     ("DeckLink persistent hardware identity", DeckLinkPersistentIdentityIsResolved),
+    ("DeckLink identity polling is isolated and bounded", DeckLinkIdentityPollingIsIsolatedAndBounded),
     ("DeckLink human identity labels", DeckLinkHumanIdentityLabelsAreStable),
     ("DeckLink visual asset catalog matching", DeckLinkVisualAssetCatalogMatchesSafely),
     ("DeckLink official software update parsing", DeckLinkOfficialSoftwareUpdateIsParsed),
@@ -603,6 +604,20 @@ static void CoordinatorWatchdogIsRegisteredAndHealthAware()
     True(supervisor.Contains("ProcessReapTimeout", StringComparison.Ordinal));
     True(supervisor.Contains("StreamDrainTimeout", StringComparison.Ordinal));
     True(!commands.Contains("WaitForExitAsync(CancellationToken.None)", StringComparison.Ordinal));
+}
+
+static void DeckLinkIdentityPollingIsIsolatedAndBounded()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var coordinator = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Services", "RouterCoordinator.cs"));
+    var program = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Program.cs"));
+    var probe = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Infrastructure", "DeckLinkIdentityProcessProbe.cs"));
+
+    True(coordinator.Contains("DeckLinkIdentityProcessProbe.EnumerateAsync", StringComparison.Ordinal));
+    True(!coordinator.Contains("DeckLinkSdkIdentityEnumerator.Enumerate()", StringComparison.Ordinal));
+    True(program.Contains("DeckLinkIdentityProcessProbe.CommandArgument", StringComparison.Ordinal));
+    True(probe.Contains("DefaultTimeout", StringComparison.Ordinal));
+    True(probe.Contains("containOnWindows: true", StringComparison.Ordinal));
 }
 
 static void WindowsJobKillsOrphanedProcess()

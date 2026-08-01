@@ -48,6 +48,8 @@ Source polling runs before periodic media-tool validation. Automatic polling and
 
 The coordinator records stage-level progress around supervision, discovery/probing, media-tool validation, routing, and standby work. Native child shutdown, forced reaping, and redirected-stream draining have independent finite deadlines. A separate hosted watchdog is not dependent on the coordinator task: after two minutes without progress it records the stalled stage and fails the host so Windows Service recovery restarts the application. The health endpoint reports `degraded` during the stale interval even if SQLite remains healthy. Process Job containment limits crash cleanup to application-owned children.
 
+DeckLink SDK identity and reference-lock queries are never executed in the service host. A hidden copy of the server executable performs the COM enumeration, returns bounded JSON over redirected output, and exits. The caller enforces a five-second deadline in a kill-on-close Job Object; timeout retains the last confirmed hardware state and delays the next attempt for 30 seconds without blocking coordinator progress.
+
 ## Embedded browser preview
 
 Preview is an administrator-only, application-owned operation and is independent of DeckLink route ownership. One preview may run at a time. A tokenized FFmpeg producer opens the selected RTSP source, scales it into a compact 720×450 canvas, renders a real `showvolume` peak/dB audio meter when audio is present, and emits fragmented H.264/AAC MP4 directly to an authenticated browser endpoint. A random per-session token prevents stale players from attaching to a replacement preview, and the endpoint is explicitly non-cacheable.
