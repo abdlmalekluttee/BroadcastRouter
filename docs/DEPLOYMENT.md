@@ -26,6 +26,7 @@
 
    The password is passed as a `SecureString`; the installer does not write it to a file or command line. The account receives only the required **Log on as a service** right. The service display name is `Broadcast Router – Version <version>`, startup is Automatic, and SCM recovery restarts it after 5, 15, then 60 seconds. Service/application lifecycle events are written to Windows Application Event Log and the structured application log.
    Keep those recovery actions enabled. Version 1.5.4 treats a coordinator that makes no progress for two minutes as a fatal service fault, records the blocked stage, and exits so SCM can restore discovery/routing automatically. Monitor `/health`; `degraded` now includes a stale routing coordinator as well as a failed database integrity check.
+   Version 1.5.5 additionally isolates DeckLink SDK identity/reference polling in a five-second helper process so a blocked Desktop Video COM call no longer stalls the coordinator in the first place.
 8. Reboot without signing in, confirm the server and owned FFmpeg children are in Session 0 with no windows, then perform the complete soak plan in `PRODUCTION-VALIDATION.md` before enabling automatic routing.
 
 Data and DPAPI credentials belong to the Windows account that runs the executable. Back up the `data` directory only while the app is stopped and protect the backup as a production secret. Sanitized diagnostics deliberately exclude the database. Copying DPAPI ciphertext to a different account does not make it decryptable.

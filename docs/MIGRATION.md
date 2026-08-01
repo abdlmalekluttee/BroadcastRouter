@@ -28,4 +28,6 @@ Version 1.5.3 does not change the database schema. Existing settings receive an 
 
 Version 1.5.4 does not change the settings or database schema. Native process shutdown and diagnostic cleanup now have finite reaping/draining limits, and an independent two-minute coordinator watchdog relies on the existing Windows Service recovery configuration. Confirm the service recovery actions remain configured, monitor `/health`, and perform one controlled watchdog/restart drill before broadcast acceptance.
 
+Version 1.5.5 does not change the settings or database schema. DeckLink identity/reference polling now runs in a bounded helper process. No operator action is required; verify that reference status remains visible and that a forced helper timeout produces one warning without changing port identity or stopping coordinator cycles.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

@@ -57,7 +57,7 @@ public sealed class RouterCoordinator(
     private volatile bool _forceToolValidation = true;
     private DateTimeOffset _lastDiscovery = DateTimeOffset.MinValue;
     private DateTimeOffset _lastToolValidation = DateTimeOffset.MinValue;
-    private DateTimeOffset _lastDeckLinkStatusCheck = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextDeckLinkReferenceStatusCheck = DateTimeOffset.MinValue;
     private TimeSpan _lastCpu;
     private DateTimeOffset _lastCpuAt = DateTimeOffset.UtcNow;
 
@@ -1899,16 +1899,19 @@ public sealed class RouterCoordinator(
 
     private async Task RefreshDeckLinkReferenceStatusAsync(CancellationToken cancellationToken)
     {
-        if (_settings.SimulationMode || DateTimeOffset.UtcNow - _lastDeckLinkStatusCheck < TimeSpan.FromSeconds(2)) return;
-        _lastDeckLinkStatusCheck = DateTimeOffset.UtcNow;
-        IReadOnlyList<DeckLinkHardwareIdentity> hardware;
-        try { hardware = DeckLinkSdkIdentityEnumerator.Enumerate(); }
-        catch (Exception ex)
+        var now = DateTimeOffset.UtcNow;
+        if (_settings.SimulationMode || now < _nextDeckLinkReferenceStatusCheck) return;
+        _nextDeckLinkReferenceStatusCheck = now + TimeSpan.FromSeconds(2);
+        var executable = Path.Combine(AppContext.BaseDirectory, "BroadcastRouter.Server.exe");
+        var probe = await DeckLinkIdentityProcessProbe.EnumerateAsync(executable, cancellationToken);
+        if (!probe.Success)
         {
-            await LogAsync("Warning", "DeckLinkReference", $"DeckLink reference-status query failed: {ex.Message}",
+            _nextDeckLinkReferenceStatusCheck = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
+            await LogAsync("Warning", "DeckLinkReference", $"DeckLink reference-status query failed: {probe.Error}",
                 cancellationToken: cancellationToken);
             return;
         }
+        var hardware = probe.Identities;
         var byHandle = hardware.Where(value => !string.IsNullOrWhiteSpace(value.DeviceHandle))
             .GroupBy(value => value.DeviceHandle, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() == 1)

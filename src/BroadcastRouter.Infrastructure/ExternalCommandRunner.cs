@@ -20,7 +20,8 @@ public static class ExternalCommandRunner
         string executablePath,
         IReadOnlyList<string> arguments,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool containOnWindows = false)
     {
         if (!File.Exists(executablePath)) return new(false, null, "", "", false, "Executable does not exist.");
         var start = new ProcessStartInfo(executablePath)
@@ -38,6 +39,18 @@ public static class ExternalCommandRunner
         {
             using var process = Process.Start(start);
             if (process is null) return new(false, null, "", "", false, "Process.Start returned no process.");
+            using var containment = containOnWindows && OperatingSystem.IsWindows()
+                ? WindowsKillOnCloseJob.Create()
+                : null;
+            if (containment is not null)
+            {
+                try { containment.Add(process); }
+                catch
+                {
+                    await TerminateWithinAsync(process).ConfigureAwait(false);
+                    throw;
+                }
+            }
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(timeout);
             var stdoutTask = process.StandardOutput.ReadToEndAsync(deadline.Token);
