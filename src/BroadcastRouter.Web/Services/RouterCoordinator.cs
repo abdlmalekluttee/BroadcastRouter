@@ -42,6 +42,11 @@ public sealed class RouterCoordinator(
     private readonly StartupRouteRecoveryTracker _startupRecovery = new();
     private readonly RepeatedFailureLogGate _reconciliationFailureLogGate = new();
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
+    private readonly object _livenessGate = new();
+    private DateTimeOffset _coordinatorProgressAt = DateTimeOffset.UtcNow;
+    private DateTimeOffset? _lastCompletedCycleAt;
+    private string _coordinatorStage = "Startup";
+    private long _completedCycles;
     private FfmpegProcessSupervisor? _supervisor;
     private string? _supervisorPath;
     private bool _supervisorUsesWindowsDeckLinkSafeTerminate;
@@ -64,6 +69,13 @@ public sealed class RouterCoordinator(
     public OperatorSettings GetSettings()
     {
         lock (_gate) return Clone(_settings);
+    }
+
+    public CoordinatorLivenessSnapshot GetLiveness()
+    {
+        lock (_livenessGate)
+            return new(_startedAt, _coordinatorProgressAt, _lastCompletedCycleAt,
+                _coordinatorStage, _completedCycles);
     }
 
     public async Task<SettingsApplyResult> SaveSettingsAsync(OperatorSettings settings, string actor = "system",
@@ -333,12 +345,18 @@ public sealed class RouterCoordinator(
         {
             try
             {
+                MarkCoordinatorProgress("Process supervision");
                 await MonitorProcessesAsync(stoppingToken);
+                MarkCoordinatorProgress("Source discovery and probing");
                 await DiscoverAndProbeAsync(stoppingToken);
+                MarkCoordinatorProgress("Media-tool and DeckLink validation");
                 await RefreshToolsAndPortsAsync(stoppingToken);
+                MarkCoordinatorProgress("Route reconciliation");
                 await ReconcileRoutesAsync(stoppingToken);
+                MarkCoordinatorProgress("Standby reconciliation");
                 await ReconcilePortStandbysAsync(stoppingToken);
                 _reconciliationFailureLogGate.Reset();
+                MarkCoordinatorProgress("Idle", completedCycle: true);
                 Publish("Running");
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
@@ -355,9 +373,23 @@ public sealed class RouterCoordinator(
                     await store.WriteLogAsync("Error", "Coordinator",
                         $"Reconciliation cycle failed: {ex.Message}.{suppressed}", cancellationToken: stoppingToken);
                 }
+                MarkCoordinatorProgress("Cycle fault handled", completedCycle: true);
                 Publish("Reconciliation degraded");
             }
             await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+        }
+    }
+
+    private void MarkCoordinatorProgress(string stage, bool completedCycle = false)
+    {
+        var now = DateTimeOffset.UtcNow;
+        lock (_livenessGate)
+        {
+            _coordinatorStage = stage;
+            _coordinatorProgressAt = now;
+            if (!completedCycle) return;
+            _lastCompletedCycleAt = now;
+            _completedCycles++;
         }
     }
 

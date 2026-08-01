@@ -6,6 +6,7 @@ using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using BroadcastRouter.Application;
 using Microsoft.AspNetCore.Authentication;
 using BroadcastRouter.Infrastructure;
 using BroadcastRouter.Web.Components;
@@ -51,6 +52,7 @@ builder.Services.AddSingleton<RouterCoordinator>();
 builder.Services.AddSingleton<BrowserPreviewSupervisor>();
 builder.Services.AddHostedService<ServiceLifecycleReporter>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<RouterCoordinator>());
+builder.Services.AddHostedService<RouterCoordinatorWatchdog>();
 builder.Services.AddScoped<AuthorizedRouterCommands>();
 builder.Services.AddScoped<AuthorizedPreviewCommands>();
 builder.Services.AddRazorComponents().AddInteractiveServerComponents(options => options.DetailedErrors = false);
@@ -177,10 +179,12 @@ var deckLinkAssetEndpoint = app.MapGet("/hardware-assets/decklink/{slug}/{kind}"
 });
 deckLinkAssetEndpoint.RequireAuthorization();
 
-app.MapGet("/health", async (SqliteDataStore store, CancellationToken cancellationToken) =>
+app.MapGet("/health", async (SqliteDataStore store, RouterCoordinator coordinator, CancellationToken cancellationToken) =>
 {
     var integrity = await store.IntegrityCheckAsync(cancellationToken);
-    return Results.Ok(new { status = integrity == "ok" ? "healthy" : "degraded" });
+    var coordinatorResponsive = CoordinatorLivenessPolicy.IsResponsive(
+        coordinator.GetLiveness(), DateTimeOffset.UtcNow, RouterCoordinatorWatchdog.MaximumSilence);
+    return Results.Ok(new { status = integrity == "ok" && coordinatorResponsive ? "healthy" : "degraded" });
 }).AllowAnonymous();
 
 app.MapPost("/auth/login", async (HttpContext context, IAntiforgery antiforgery) =>

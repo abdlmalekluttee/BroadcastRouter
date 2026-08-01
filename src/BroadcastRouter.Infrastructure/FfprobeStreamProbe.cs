@@ -165,8 +165,17 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
     private static async Task TerminateAsync(Process process, Task<string> stdoutTask, Task<string> stderrTask)
     {
         try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-        try { await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
-        try { await stdoutTask.ConfigureAwait(false); } catch { }
-        try { await stderrTask.ConfigureAwait(false); } catch { }
+        using var reapDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try { await process.WaitForExitAsync(reapDeadline.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (reapDeadline.IsCancellationRequested) { }
+        catch { }
+        await DrainWithinAsync(stdoutTask).ConfigureAwait(false);
+        await DrainWithinAsync(stderrTask).ConfigureAwait(false);
+    }
+
+    private static async Task DrainWithinAsync(Task<string> task)
+    {
+        try { await task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+        catch { }
     }
 }

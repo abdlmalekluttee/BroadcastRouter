@@ -26,4 +26,6 @@ Version 1.5.2 does not change the settings or database schema. It serializes FFm
 
 Version 1.5.3 does not change the database schema. Existing settings receive an eight-second frozen-input watchdog default during JSON deserialization. Source refresh is now independent from hardware validation, and stale live-video decoders are recycled without changing saved assignments, leases, or output-port designations. Verify the operator-selected timeout, exercise rapid publisher stop/start, and confirm audio-led sources remain stable before broadcast acceptance.
 
+Version 1.5.4 does not change the settings or database schema. Native process shutdown and diagnostic cleanup now have finite reaping/draining limits, and an independent two-minute coordinator watchdog relies on the existing Windows Service recovery configuration. Confirm the service recovery actions remain configured, monitor `/health`, and perform one controlled watchdog/restart drill before broadcast acceptance.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

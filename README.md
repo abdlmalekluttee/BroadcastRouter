@@ -25,7 +25,8 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that invent
 - a responsive dark operator UI for servers, sources, outputs, routes, rules, presets, logs, and settings;
 - saved output-preset selection for manual route creation and confirmed route reassignment;
 - an administrator-controlled 720×450 embedded browser preview with confidence audio, a real VU overlay, and live process statistics;
-- self-contained Windows releases and a credential-aware automatic Windows Service installer with crash recovery.
+- self-contained Windows releases and a credential-aware automatic Windows Service installer with crash recovery;
+- coordinator liveness monitoring that reports degraded health and invokes Windows Service recovery if discovery, process supervision, or reconciliation stops making progress.
 
 ## Validated production baseline
 
@@ -43,7 +44,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.3`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.4`.
 3. Run `BroadcastRouter.Server.exe` once as the dedicated Windows broadcast account to complete configuration and hardware validation.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
@@ -93,6 +94,8 @@ Standby audio is always application-generated zero-valued 48 kHz stereo PCM; liv
 For fast standby-to-live cuts, enable **Low latency** on the output preset and configure the source encoder for a keyframe interval no longer than two seconds. BroadcastRouter bounds RTSP analysis and standby shutdown, but a receiver cannot display predictive video until a decodable keyframe arrives. Each completed cutover records its measured first-DeckLink-frame latency in structured logs under the `Cutover` category.
 
 Live-video supervision also detects a stale decoder that keeps FFmpeg output progress alive by repeating almost every frame. After the configurable frozen-input timeout, only that owned route process is stopped and retried; the saved assignment and output-port configuration remain intact. Audio-led sources are excluded because their continuous black video is intentional. **Refresh discovery** on Sources is a source-only operation and displays the backend-confirmed completion time and inventory count without rescanning DeckLink hardware.
+
+The routing worker publishes an internal heartbeat before and after process supervision, discovery/probing, hardware validation, route reconciliation, and standby reconciliation. `/health` becomes `degraded` if that worker makes no progress for two minutes. The independent watchdog then writes the stalled stage and terminates the host so the configured Windows Service recovery action restarts it; the process Job Object removes only BroadcastRouter-owned media children. This protects against a responsive web interface masking a stalled routing engine.
 
 ## Build and test
 
