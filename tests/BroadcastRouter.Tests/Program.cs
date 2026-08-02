@@ -60,10 +60,13 @@ var tests = new (string Name, Action Body)[]
     ("Uncooperative owned process cleanup is bounded", UncooperativeOwnedProcessCleanupIsBounded),
     ("FFmpeg failure classification", FfmpegFailureIsClassified),
     ("DeckLink output failures are not mislabeled as network", DeckLinkOutputFailureIsClassified),
+    ("FFmpeg RTSP protocol loss is retryable input failure", FfmpegRtspProtocolLossIsRetryable),
+    ("Owned supervisor captures RTSP protocol loss", SupervisorCapturesRtspProtocolLoss),
     ("FFprobe media parsing", FfprobeMediaIsParsed),
     ("FFprobe scan type parsing", FfprobeScanTypeIsParsed),
     ("FFprobe accepts audio-led sparse video", FfprobeAcceptsAudioLedSparseVideo),
     ("FFprobe accepts delayed but continuous video", FfprobeAcceptsDelayedContinuousVideo),
+    ("Adaptive probe promotes long-GOP video", AdaptiveProbePromotesLongGopVideo),
     ("FFprobe ignores isolated video frames over live audio", FfprobeIgnoresIsolatedVideoFrames),
     ("FFprobe accepts audio-only input with packets", FfprobeAcceptsAudioOnlyInput),
     ("FFprobe rejects metadata-only video", FfprobeRequiresReadFrames),
@@ -758,6 +761,57 @@ static void DeckLinkOutputFailureIsClassified()
     Equal(FfmpegFailureCategory.Network, FfmpegErrorClassifier.Classify(1, "RTSP connection timed out: I/O error"));
 }
 
+static void FfmpegRtspProtocolLossIsRetryable()
+{
+    const string protocolLoss = "[in#0/rtsp] CSeq 96 expected, 0 received.";
+    True(FfmpegInputFailureDetector.TryClassify(protocolLoss, out var category));
+    Equal("RtspProtocolDesynchronized", category);
+    Equal(FfmpegFailureCategory.Network, FfmpegErrorClassifier.Classify(null,
+        "[decklink] There's no buffered audio. Audio will misbehave! | " + protocolLoss));
+    True(!FfmpegInputFailureDetector.TryClassify(
+        "[decklink] There's no buffered audio. Audio will misbehave!", out _));
+}
+
+static void SupervisorCapturesRtspProtocolLoss()
+{
+    var supervisor = new FfmpegProcessSupervisor(
+        new FfmpegRouteOptions("ffmpeg.exe"), TimeSpan.FromMilliseconds(250));
+    var owner = new SourceIdentity("SIM", "live", "_definst_", $"rtsp-loss-{Guid.NewGuid():N}");
+    var start = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+    {
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        RedirectStandardInput = true,
+        CreateNoWindow = true
+    };
+    start.ArgumentList.Add("-NoProfile");
+    start.ArgumentList.Add("-Command");
+    start.ArgumentList.Add("[Console]::Error.WriteLine('[in#0/rtsp] CSeq 96 expected, 0 received.'); "
+        + "[Console]::Out.WriteLine('frame=1'); [Console]::Out.WriteLine('progress=continue'); Start-Sleep -Seconds 5");
+
+    try
+    {
+        supervisor.StartOwnedProcessForTestingAsync(owner, start).GetAwaiter().GetResult();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
+        RouteProcessSnapshot? snapshot = null;
+        do
+        {
+            Thread.Sleep(25);
+            snapshot = supervisor.Snapshot().SingleOrDefault(value => value.Source == owner);
+        }
+        while (snapshot?.InputFailure is null && DateTimeOffset.UtcNow < deadline);
+
+        Equal("RtspProtocolDesynchronized", snapshot!.InputFailure!.Category);
+        True(snapshot.InputFailure.Detail.Contains("CSeq 96 expected, 0 received", StringComparison.Ordinal));
+    }
+    finally
+    {
+        supervisor.StopAsync(owner, CancellationToken.None).GetAwaiter().GetResult();
+        supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+}
+
 static void FfprobeMediaIsParsed()
 {
     const string json = """
@@ -808,6 +862,38 @@ static void FfprobeAcceptsDelayedContinuousVideo()
     var result = FfprobeStreamProbe.Parse(json);
     True(result.Opened && result.FramesReceived && result.AudioReceived);
     True(result.Media!.HasUsableVideo);
+}
+
+static void AdaptiveProbePromotesLongGopVideo()
+{
+    const string quickJson = """
+    {"streams":[
+      {"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_frames":"90","nb_read_packets":"90"},
+      {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"pix_fmt":"yuv420p","avg_frame_rate":"30/1","nb_read_frames":"1","nb_read_packets":"1"}
+    ]}
+    """;
+    const string extendedJson = """
+    {"streams":[
+      {"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_frames":"559","nb_read_packets":"559"},
+      {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"pix_fmt":"yuv420p","avg_frame_rate":"30/1","nb_read_frames":"137","nb_read_packets":"137"}
+    ]}
+    """;
+
+    var quick = FfprobeStreamProbe.Parse(quickJson);
+    var extended = FfprobeStreamProbe.Parse(extendedJson);
+    True(SourceProbeReadinessPolicy.NeedsExtendedVideoConfirmation(quick));
+    var selected = SourceProbeReadinessPolicy.PreferExtendedVideoEvidence(quick, extended);
+    True(selected.FramesReceived && selected.Media!.HasUsableVideo);
+
+    var audioLed = new SourceMediaModeState(SourceMediaMode.AudioLed, 0, 0, null);
+    var promoted = SourceProbeReadinessPolicy.ObserveMediaMode(audioLed, selected, videoConfirmationProbes: 1);
+    Equal(SourceMediaMode.Video, promoted.State.Mode);
+    True(promoted.ModeChanged);
+
+    var audioOnly = FfprobeStreamProbe.Parse(
+        """{"streams":[{"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_packets":"80"}]}""");
+    True(!SourceProbeReadinessPolicy.NeedsExtendedVideoConfirmation(audioOnly));
+    Equal(quick, SourceProbeReadinessPolicy.PreferExtendedVideoEvidence(quick, quick));
 }
 
 static void FfprobeIgnoresIsolatedVideoFrames()

@@ -37,6 +37,7 @@ public sealed class RouterCoordinator(
     private readonly Dictionary<string, string> _processDiagnosticSignatures = new(StringComparer.Ordinal);
     private readonly Dictionary<string, FfmpegInputFreezeDetector> _inputFreezeDetectors = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SourceMediaModeState> _sourceMediaModes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _lastExtendedVideoProbeAt = new(StringComparer.Ordinal);
     private readonly HashSet<string> _pendingMediaModeRestarts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> _cutoverStartedAt = new(StringComparer.Ordinal);
     private readonly StartupRouteRecoveryTracker _startupRecovery = new();
@@ -60,6 +61,9 @@ public sealed class RouterCoordinator(
     private DateTimeOffset _nextDeckLinkReferenceStatusCheck = DateTimeOffset.MinValue;
     private TimeSpan _lastCpu;
     private DateTimeOffset _lastCpuAt = DateTimeOffset.UtcNow;
+    private static readonly TimeSpan ExtendedVideoProbeInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ExtendedVideoProbeDuration = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan ExtendedVideoProbeTimeout = TimeSpan.FromSeconds(16);
 
     public event Action? Changed;
 
@@ -665,6 +669,10 @@ public sealed class RouterCoordinator(
             {
                 if (probed.State != SourceState.Ready)
                     await LogAsync("Warning", "Probe", $"Probe failed: {probe.FailureCategory}: {probe.Detail}", probed.Identity.Value, cancellationToken: cancellationToken);
+                else if (outcome.ExtendedVideoConfirmed)
+                    await LogAsync("Information", "Probe",
+                        "Extended keyframe acquisition confirmed sustained decoded video after the quick probe saw only sparse frames.",
+                        probed.Identity.Value, cancellationToken: cancellationToken);
                 else if (outcome.CurrentMode == SourceMediaMode.AudioLed
                          && (outcome.PreviousMode == SourceMediaMode.Unknown || outcome.ModeChanged))
                     await LogAsync("Information", "Probe", $"Audio-led source accepted: {probe.Detail}", probed.Identity.Value, cancellationToken: cancellationToken);
@@ -708,12 +716,13 @@ public sealed class RouterCoordinator(
             lock (_gate)
             {
                 _sourceMediaModes.Remove(source.Identity.Value);
+                _lastExtendedVideoProbeAt.Remove(source.Identity.Value);
                 _pendingMediaModeRestarts.Remove(source.Identity.Value);
             }
-            return new(source, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false);
+            return new(source, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false, false);
         }
         if (source.Media is not null)
-            return new(source, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false);
+            return new(source, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false, false);
 
         SourceMediaModeState previousMode;
         lock (_gate)
@@ -731,10 +740,27 @@ public sealed class RouterCoordinator(
                     : SourceMediaModeState.Unknown;
             }
         }
-        var rawProbe = settings.SimulationMode
+        var quickProbe = settings.SimulationMode
             ? await new SimulationStreamProbe().ProbeAsync(source.RtspUri, cancellationToken)
             : await new FfprobeStreamProbe(settings.MediaTools.FfprobePath, TimeSpan.FromSeconds(8)).ProbeAsync(source.RtspUri, cancellationToken);
-        var decision = SourceProbeReadinessPolicy.ObserveMediaMode(previousMode, rawProbe);
+        var rawProbe = quickProbe;
+        var extendedVideoConfirmed = false;
+        if (!settings.SimulationMode
+            && SourceProbeReadinessPolicy.NeedsExtendedVideoConfirmation(quickProbe)
+            && ShouldRunExtendedVideoProbe(source.Identity.Value))
+        {
+            var extended = await new FfprobeStreamProbe(
+                    settings.MediaTools.FfprobePath,
+                    ExtendedVideoProbeTimeout,
+                    ExtendedVideoProbeDuration)
+                .ProbeAsync(source.RtspUri, cancellationToken);
+            rawProbe = SourceProbeReadinessPolicy.PreferExtendedVideoEvidence(quickProbe, extended);
+            extendedVideoConfirmed = !ReferenceEquals(rawProbe, quickProbe)
+                && rawProbe.FramesReceived
+                && rawProbe.Media is { HasUsableVideo: true };
+        }
+        var decision = SourceProbeReadinessPolicy.ObserveMediaMode(previousMode, rawProbe,
+            videoConfirmationProbes: extendedVideoConfirmed ? 1 : 2);
         lock (_gate)
         {
             _sourceMediaModes[source.Identity.Value] = decision.State;
@@ -742,7 +768,20 @@ public sealed class RouterCoordinator(
         }
         var probe = decision.EffectiveProbe;
         return new(source with { State = SourceProbeReadinessPolicy.Resolve(probe), Media = probe.Media }, probe,
-            previousMode.Mode, decision.State.Mode, decision.ModeChanged);
+            previousMode.Mode, decision.State.Mode, decision.ModeChanged, extendedVideoConfirmed);
+    }
+
+    private bool ShouldRunExtendedVideoProbe(string sourceId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        lock (_gate)
+        {
+            if (_lastExtendedVideoProbeAt.TryGetValue(sourceId, out var last)
+                && now - last < ExtendedVideoProbeInterval)
+                return false;
+            _lastExtendedVideoProbeAt[sourceId] = now;
+            return true;
+        }
     }
 
     private async Task ReconcileRoutesAsync(CancellationToken cancellationToken)
@@ -1438,6 +1477,16 @@ public sealed class RouterCoordinator(
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await ScheduleRetryAsync(route, "NoFirstProgress", "FFmpeg started but produced no progress before the startup deadline.", cancellationToken);
             }
+            else if (process.Running && process.InputFailure is { } inputFailure)
+            {
+                await _supervisor.StopAsync(process.Source, cancellationToken);
+                await LogAsync("Warning", "InputLiveness",
+                    $"FFmpeg process {process.ProcessId} reported {inputFailure.Category}; only this owned route session will be recreated. {inputFailure.Detail}",
+                    route.SourceId, cancellationToken: cancellationToken);
+                await ScheduleRetryAsync(route, "InputSessionLost",
+                    $"The RTSP input session became unusable ({inputFailure.Category}) and will be recreated.",
+                    cancellationToken);
+            }
             else if (process.Running && FfmpegStallDetector.IsStalled(true, progress, now, TimeSpan.FromSeconds(_settings.Routing.StallTimeoutSeconds)))
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
@@ -2080,7 +2129,8 @@ public sealed class RouterCoordinator(
     }
 
     private sealed record ProbeOutcome(DiscoveredSource Source, StreamProbeResult? Probe,
-        SourceMediaMode PreviousMode, SourceMediaMode CurrentMode, bool ModeChanged);
+        SourceMediaMode PreviousMode, SourceMediaMode CurrentMode, bool ModeChanged,
+        bool ExtendedVideoConfirmed);
     private sealed record DiscoveryCycleResult(int ObservedSources, int EnabledServers,
         int SuccessfulServers, TimeSpan Elapsed);
 }

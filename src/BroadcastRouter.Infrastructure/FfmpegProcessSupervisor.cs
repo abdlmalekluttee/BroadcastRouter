@@ -12,7 +12,8 @@ public sealed record RouteProcessSnapshot(
     bool Running,
     FfmpegProgressSnapshot? Progress,
     IReadOnlyList<string> RecentErrors,
-    int? ExitCode);
+    int? ExitCode,
+    FfmpegInputFailure? InputFailure);
 
 public enum RouteProcessLifecycleState { Started, StopRequested, ForcedTermination, Exited }
 
@@ -202,7 +203,12 @@ public sealed class FfmpegProcessSupervisor(
         try
         {
             while (await managed.Process.StandardError.ReadLineAsync(managed.PumpCancellation.Token).ConfigureAwait(false) is { } line)
-                managed.AddError(LogRedactor.Redact(line));
+            {
+                var safe = LogRedactor.Redact(line);
+                managed.AddError(safe);
+                if (FfmpegInputFailureDetector.TryClassify(safe, out var category))
+                    managed.InputFailure = new(category, safe, DateTimeOffset.UtcNow);
+            }
         }
         catch (OperationCanceledException) when (managed.PumpCancellation.IsCancellationRequested) { }
     }
@@ -304,7 +310,8 @@ public sealed class FfmpegProcessSupervisor(
             if (!running) exitCode = managed.Process.ExitCode;
         }
         catch (InvalidOperationException) { running = false; }
-        return new(managed.Source, managed.Process.Id, managed.StartedAt, running, managed.Progress, managed.Errors.ToArray(), exitCode);
+        return new(managed.Source, managed.Process.Id, managed.StartedAt, running, managed.Progress,
+            managed.Errors.ToArray(), exitCode, managed.InputFailure);
     }
 
     private sealed class ManagedProcess(SourceIdentity source, Process process, DateTimeOffset startedAt)
@@ -316,6 +323,7 @@ public sealed class FfmpegProcessSupervisor(
         public FfmpegProgressParser Parser { get; } = new();
         public ConcurrentQueue<string> Errors { get; } = new();
         public FfmpegProgressSnapshot? Progress { get; set; }
+        public FfmpegInputFailure? InputFailure { get; set; }
         public Task? ProgressTask { get; set; }
         public Task? ErrorTask { get; set; }
         public Task? ExitTask { get; set; }

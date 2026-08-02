@@ -6,8 +6,13 @@ using BroadcastRouter.Domain;
 
 namespace BroadcastRouter.Infrastructure;
 
-public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) : IStreamProbe
+public sealed class FfprobeStreamProbe(
+    string executablePath,
+    TimeSpan timeout,
+    TimeSpan? sampleDuration = null) : IStreamProbe
 {
+    private readonly TimeSpan _sampleDuration = sampleDuration ?? TimeSpan.FromSeconds(2);
+
     public async Task<StreamProbeResult> ProbeAsync(Uri rtspUri, CancellationToken cancellationToken)
     {
         if (!File.Exists(executablePath))
@@ -21,9 +26,10 @@ public sealed class FfprobeStreamProbe(string executablePath, TimeSpan timeout) 
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden
         };
+        var interval = $"%+{_sampleDuration.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}";
         Add(start, "-v", "error", "-rtsp_transport", "tcp", "-rw_timeout",
             ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture),
-            "-read_intervals", "%+2", "-count_frames", "-count_packets",
+            "-read_intervals", interval, "-count_frames", "-count_packets",
             "-show_streams", "-show_format", "-of", "json", rtspUri.AbsoluteUri);
 
         using var process = Process.Start(start);

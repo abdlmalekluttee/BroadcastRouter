@@ -2,9 +2,9 @@
 
 Review date: 2026-08-01
 Review branch: `codex/coordinator-liveness-recovery`
-Current release branch: `codex/decklink-probe-isolation` (1.5.5)
+Current release branch: `codex/sos-long-gop-recovery` (1.5.6)
 Reviewed baseline: release `1.3.6`
-Resulting release version: `1.5.5`
+Resulting release version: `1.5.6`
 
 ## Executive summary
 
@@ -33,6 +33,8 @@ The 1.5.3 incident follow-up correlates a rapid publisher restart with a live FF
 The 1.5.4 soak incident proved that the web host and SQLite health check could remain responsive while the coordinator stopped completing cycles. Periodic media-tool confirmations ended more than eight hours before the operator incident; manual discovery still reached Wowza, but route supervision no longer advanced a newly started process beyond `Starting`. Normal service shutdown then consumed the full 30-second SCM budget, which is consistent with an unbounded native child reap or redirected-stream drain. All media quit, forced-exit, and stream-drain waits are now finite. Stage-level heartbeat state drives both a degraded health result and an independent two-minute fail-fast watchdog, allowing existing SCM recovery and Job containment to restore the complete routing host. Automated coverage increased to 94/94 before production deployment.
 
 The v1.5.4 production publisher test then produced a decisive watchdog record: the coordinator stopped in `Process supervision` while no route teardown was active. That stage synchronously called the DeckLink SDK COM enumerator every two seconds; unlike FFmpeg/FFprobe cleanup, a native driver call cannot be cancelled safely in-process. The watchdog recovered service automatically, but v1.5.5 removes the trigger by moving identity/reference enumeration to a kill-on-close helper process with a five-second deadline and failure cooldown. The service retains the last confirmed reference state instead of blocking all discovery and routing work.
+
+The 1.5.6 production incident follow-up correlated an audio-led route with a fatal RTSP control-session error. The normal two-second probe counted one H.264 frame and 90 audio packets, while a controlled 12-second probe counted 137 video frames and 559 audio packets. The quick window was ending before the long-GOP keyframe and incorrectly committed the route and preview to generated black. Later, `CSeq 96 expected, 0 received` stopped the real RTSP audio while generated video kept FFmpeg output progress alive, bypassing the ordinary stall and duplicate-frame watchdogs. A bounded, rate-limited extended confirmation now promotes sustained long-GOP video, and the supervisor captures fatal RTSP protocol desynchronization at stderr ingestion time so only that owned route is recycled with saved intent and output reservation retained.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. RTSP frame receipt, H.264/AAC fragmented-MP4 streaming, the VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified in a controlled lab; physical DeckLink picture/audio observation remains an environment-specific validation step.
 
@@ -118,6 +120,7 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-040 | High | Service availability | `Web/Program.cs`; `Web/Services/ServiceLifecycleReporter.cs`; `scripts/Install-WindowsService.ps1` | The host ran from an interactive scheduled task, depended on user logon, lacked Service Control Manager recovery, and could expose console windows. | **Fixed in 1.5.2.** The installer creates an automatic Windows Service under an explicitly supplied account, grants only service-logon rights, configures 5/15/60-second crash recovery, hides every child process, and records service/process lifecycle events. Production reboot and forced-host failure validation restored the service in Session 0 with the legacy task disabled. |
 | BR-041 | Critical | Coordinator availability | `Web/Services/RouterCoordinator.cs`; `Web/Services/RouterCoordinatorWatchdog.cs`; `Infrastructure/FfmpegProcessSupervisor.cs`; `Infrastructure/ExternalCommandRunner.cs`; `Infrastructure/FfprobeStreamProbe.cs` | During the production soak, the web host remained healthy but the coordinator stopped completing cycles for more than eight hours. Manual discovery reached Wowza, but routing/process state stopped advancing; shutdown also exhausted SCM's 30-second budget. Unbounded post-termination reaping and redirected-stream draining could hold the single coordinator task indefinitely, while `/health` checked only SQLite. | **Fixed in 1.5.4.** Native cleanup phases have independent finite deadlines; the coordinator records stage progress; `/health` degrades on stale progress; and an independent two-minute watchdog records the stage and terminates the host for SCM/Job-object recovery. Regressions: `Coordinator liveness detects a blocked cycle`, `Coordinator watchdog is registered and health-aware`, and `Uncooperative owned process cleanup is bounded`. |
 | BR-042 | Critical | DeckLink native polling | `Infrastructure/DeckLinkSdkIdentityEnumerator.cs`; `Infrastructure/DeckLinkIdentityProcessProbe.cs`; `Web/Services/RouterCoordinator.cs`; `Web/Program.cs` | The v1.5.4 live publisher test caused the new watchdog to record a 120-second stall in `Process supervision`. That stage executed the Desktop Video COM iterator synchronously in the service host every two seconds; a blocked driver call has no managed cancellation boundary. | **Fixed in 1.5.5.** The native SDK call runs only in a hidden helper process with a five-second deadline and kill-on-close containment. Failure retains the last confirmed reference state and applies a 30-second retry cooldown; the coordinator never calls the COM enumerator directly. Regression: `DeckLink identity polling is isolated and bounded`. |
+| BR-043 | High | Long-GOP and RTSP input recovery | `Infrastructure/FfprobeStreamProbe.cs`; `Infrastructure/FfmpegInputFailureDetector.cs`; `Infrastructure/FfmpegProcessSupervisor.cs`; `Web/Services/RouterCoordinator.cs` | A two-second probe saw one H.264 frame over live audio and committed generated-black mode although a 12-second sample received sustained video. When the long-lived route later reported an RTSP `CSeq` mismatch, synthetic black kept output progress alive and the audio failure was never recycled. | **Fixed in 1.5.6.** Ambiguous video receives a rate-limited bounded extended confirmation. Fatal RTSP protocol desynchronization is captured independently of output progress and schedules route-scoped recovery while retaining saved intent and port reservation. Regressions: `Adaptive probe promotes long-GOP video` and `FFmpeg RTSP protocol loss is retryable input failure`. |
 
 ## GUI review
 
@@ -140,7 +143,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89. Version 1.5.6: 98/98 tests.
 
 Added coverage:
 
@@ -226,6 +229,7 @@ Still requiring integration or hardware coverage:
 - 1.5.3 follow-up: duplicate-dominated input freeze detection, per-process detector reset, immediate source-only discovery, backend-confirmed refresh UX, Wowza recovery/completion telemetry, persisted watchdog timeout, and focused regressions.
 - 1.5.4 follow-up: bounded child quit/reap/drain operations, stage-level coordinator heartbeat, stale-coordinator health degradation, independent SCM recovery watchdog, and uncooperative-process regressions.
 - 1.5.5 follow-up: out-of-process DeckLink SDK identity/reference polling, five-second helper termination, kill-on-close containment, stale-state retention, and timeout cooldown.
+- 1.5.6 follow-up: adaptive long-GOP confirmation, strong extended-video promotion, fatal RTSP `CSeq` capture, input/output failure separation, and route-scoped recovery with saved ownership retained.
 
 ## Commands and results
 

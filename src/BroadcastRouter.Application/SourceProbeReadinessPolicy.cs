@@ -20,6 +20,19 @@ public sealed record SourceMediaModeDecision(
 
 public static class SourceProbeReadinessPolicy
 {
+    public static bool NeedsExtendedVideoConfirmation(StreamProbeResult probe) =>
+        probe.Opened
+        && probe.AudioReceived
+        && !probe.FramesReceived
+        && probe.Media is { VideoCodec: not null, HasUsableVideo: false };
+
+    public static StreamProbeResult PreferExtendedVideoEvidence(
+        StreamProbeResult quickProbe,
+        StreamProbeResult extendedProbe) =>
+        extendedProbe.FramesReceived && extendedProbe.Media is { HasUsableVideo: true }
+            ? extendedProbe
+            : quickProbe;
+
     public static bool ShouldRestoreVideo(int consecutiveSustainedVideoProbes, int requiredProbes = 2) =>
         requiredProbes > 0 && consecutiveSustainedVideoProbes >= requiredProbes;
 

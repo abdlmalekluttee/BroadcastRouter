@@ -30,4 +30,6 @@ Version 1.5.4 does not change the settings or database schema. Native process sh
 
 Version 1.5.5 does not change the settings or database schema. DeckLink identity/reference polling now runs in a bounded helper process. No operator action is required; verify that reference status remains visible and that a forced helper timeout produces one warning without changing port identity or stopping coordinator cycles.
 
+Version 1.5.6 does not change the settings or database schema. Ambiguous audio/video sources receive a bounded extended keyframe-acquisition probe, and a fatal RTSP `CSeq` desynchronization recycles only the affected owned route process while retaining saved intent and output ownership. Validate one long-GOP source plus one genuinely audio-led source after deployment.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

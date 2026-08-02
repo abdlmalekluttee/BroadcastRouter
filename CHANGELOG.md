@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.5.6 — 2026-08-02
+
+- Add bounded adaptive long-GOP confirmation: an ambiguous two-second audio/video probe receives one rate-limited 12-second keyframe-acquisition pass before the source is committed to generated-black audio-led mode.
+- Treat a sustained extended observation as strong video evidence while retaining the existing sparse-video hysteresis for genuine audio-led services.
+- Detect fatal RTSP `CSeq` protocol desynchronization directly in the owned FFmpeg stderr stream and recreate only that affected route session while retaining its saved output reservation.
+- Classify RTSP protocol desynchronization as a retryable network/input failure instead of allowing accompanying DeckLink buffer warnings to mask it as an output-only diagnostic.
+- Add production-derived regressions for a quick probe with one video frame versus an extended probe with sustained video, and for mixed DeckLink-buffer/RTSP-protocol errors.
+
 ## 1.5.5 — 2026-08-01
 
 - Move native DeckLink SDK identity/reference enumeration into a short-lived, hidden, kill-on-close helper process so a blocked Desktop Video COM call cannot stall routing discovery or service shutdown.

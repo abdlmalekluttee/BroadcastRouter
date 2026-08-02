@@ -14,6 +14,7 @@ public static class FfmpegErrorClassifier
         var text = standardError.ToLowerInvariant();
         if (ContainsAny(text, "401 unauthorized", "403 forbidden", "authentication failed")) return FfmpegFailureCategory.Authentication;
         if (ContainsAny(text, "404 not found", "server returned 404")) return FfmpegFailureCategory.RtspNotFound;
+        if (FfmpegInputFailureDetector.TryClassify(standardError, out _)) return FfmpegFailureCategory.Network;
         if (ContainsAny(text, "device or resource busy", "already in use")) return FfmpegFailureCategory.DeckLinkBusy;
         if (text.Contains("decklink") && ContainsAny(text, "not found", "no such device", "unavailable")) return FfmpegFailureCategory.DeckLinkUnavailable;
         if (ContainsAny(text, "unsupported video mode", "display mode not supported", "pixel format is not supported")) return FfmpegFailureCategory.DeckLinkFormat;
