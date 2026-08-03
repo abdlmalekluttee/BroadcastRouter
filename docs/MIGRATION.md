@@ -34,4 +34,6 @@ Version 1.5.6 does not change the settings or database schema. Ambiguous audio/v
 
 Version 1.5.7 does not change the settings or database schema. It completes RTSP recovery by distinguishing fallback and live process purpose, reaping fallback ownership before live restart, and isolating per-route supervision failures. Existing source inventory, output designations, aliases, standby settings, and saved routes are reused unchanged. Validate one controlled RTSP interruption and confirm the route progresses `Fallback` → `Reserved` → `Starting` → `Running` without a service restart.
 
+Version 1.5.8 does not change the settings or database schema. It routes an active saved entry through retry/fallback when its live process disappears before reconciliation, preventing a direct `Running` → `Reserved` transition. Repeat the controlled owned-PID termination drill and require zero invalid-transition or duplicate-owner errors.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.
