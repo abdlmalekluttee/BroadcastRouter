@@ -40,8 +40,8 @@
         <tbody>
         @foreach (var route in snapshot.Routes)
         {
-            var source = snapshot.Sources.FirstOrDefault(x => x.Identity.Value == route.SourceId);
-            <tr>
+            sourcesById.TryGetValue(route.SourceId, out var source);
+            <tr @key="route.SourceId">
                 <td><span class="primary-text">@route.SourceName</span><span class="secondary-text">@route.SourceId</span></td>
                 <td>@FormatMedia(source?.Media)</td>
                 <td><span class="primary-text">@RoutePortName(route)</span><span class="secondary-text">@route.PresetId @(route.Locked ? "· locked" : "")</span></td>
@@ -65,15 +65,26 @@
 
 @code {
     private RouterSnapshot snapshot = null!;
+    private IReadOnlyDictionary<string, DiscoveredSource> sourcesById = new Dictionary<string, DiscoveredSource>();
+    private IReadOnlyDictionary<string, DeckLinkPort> portsById = new Dictionary<string, DeckLinkPort>();
+    private HashSet<string> occupiedPorts = new(StringComparer.OrdinalIgnoreCase);
     private string error = "";
     private bool busy;
-    private int FreePorts => snapshot.Ports.Count(p => !snapshot.Routes.Any(r => r.PortId == p.StableId && r.State is not RouteState.Released));
+    private int FreePorts => snapshot.Ports.Count(port => !occupiedPorts.Contains(port.StableId));
     private string RoutePortName(RuntimeRoute route) => route.PortId is { Length: > 0 } portId
-        && snapshot.Ports.FirstOrDefault(port => port.StableId.Equals(portId, StringComparison.OrdinalIgnoreCase)) is { } port
+        && portsById.TryGetValue(portId, out var port)
         ? DeckLinkDisplayName.Full(port) : route.PortName ?? "—";
     private string FormatUptime => FormatDuration(DateTimeOffset.UtcNow - snapshot.StartedAt);
-    protected override void OnInitialized() { snapshot = Coordinator.Snapshot; Coordinator.Changed += OnChanged; }
-    private void OnChanged() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
+    protected override void OnInitialized() { SetSnapshot(Coordinator.Snapshot); Coordinator.Changed += OnChanged; }
+    private void OnChanged() => _ = InvokeAsync(() => { SetSnapshot(Coordinator.Snapshot); StateHasChanged(); });
+    private void SetSnapshot(RouterSnapshot value)
+    {
+        snapshot = value;
+        sourcesById = value.Sources.ToDictionary(source => source.Identity.Value, StringComparer.Ordinal);
+        portsById = value.Ports.ToDictionary(port => port.StableId, StringComparer.OrdinalIgnoreCase);
+        occupiedPorts = value.Routes.Where(route => route.PortId is not null && route.State is not RouteState.Released)
+            .Select(route => route.PortId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
     private async Task Run(string action, string? source = null) { if (busy) return; if (action == "emergency-stop" && !await JS.InvokeAsync<bool>("confirm", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes. Continue?")) return; try { busy = true; error = ""; await Commands.ExecuteAsync(action, source); } catch(Exception ex) { error = ex.Message; } finally { busy = false; } }
     public void Dispose() => Coordinator.Changed -= OnChanged;
     private static string FormatMedia(MediaProperties? media) => media is null ? "Unknown" : $"{media.Width}×{media.Height} {FormatRate(media)} · {media.VideoCodec}";

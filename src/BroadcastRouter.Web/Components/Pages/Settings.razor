@@ -132,7 +132,7 @@
         TrustedProxies = value.TrustedProxies, SessionTimeoutMinutes = value.SessionTimeoutMinutes };
     private void BackendChanged()
     {
-        var revision = Coordinator.GetSettings().ConfigurationRevision;
+        var revision = Coordinator.SettingsRevision;
         if (settings is null || revision == settings.ConfigurationRevision) return;
         _ = InvokeAsync(() => { message = $"Backend configuration changed to revision {revision} while this page was open. Reload before saving; stale values will not overwrite the backend."; messageClass = "warning"; StateHasChanged(); });
     }

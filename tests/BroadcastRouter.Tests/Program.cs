@@ -42,6 +42,9 @@ var tests = new (string Name, Action Body)[]
     ("Retry policy caps delay", RetryPolicyCapsAtMaximum),
     ("Retry attempt cap is opt-in", RetryAttemptCapIsOptIn),
     ("Repeated coordinator failures are log-throttled", RepeatedFailuresAreLogThrottled),
+    ("Faulted snapshot subscriber does not block others", FaultedSnapshotSubscriberDoesNotBlockOthers),
+    ("Route telemetry updates skip persistence", RouteTelemetryUpdatesSkipPersistence),
+    ("Durable route changes require persistence", DurableRouteChangesRequirePersistence),
     ("Coordinator liveness detects a blocked cycle", CoordinatorLivenessDetectsBlockedCycle),
     ("Coordinator watchdog is registered and health-aware", CoordinatorWatchdogIsRegisteredAndHealthAware),
     ("Startup route recovery is single shot", StartupRouteRecoveryIsSingleShot),
@@ -57,6 +60,7 @@ var tests = new (string Name, Action Body)[]
     ("FFmpeg first-progress timeout", FfmpegFirstProgressTimeoutIsDetected),
     ("Windows job kills orphaned media process", WindowsJobKillsOrphanedProcess),
     ("Owned process stop and restart are serialized", OwnedProcessStopAndRestartAreSerialized),
+    ("Fallback ownership is reaped before live recovery", FallbackOwnershipIsReapedBeforeLiveRecovery),
     ("Uncooperative owned process cleanup is bounded", UncooperativeOwnedProcessCleanupIsBounded),
     ("FFmpeg failure classification", FfmpegFailureIsClassified),
     ("DeckLink output failures are not mislabeled as network", DeckLinkOutputFailureIsClassified),
@@ -642,6 +646,56 @@ static void WindowsJobKillsOrphanedProcess()
     True(process.WaitForExit(5000));
 }
 
+static void FaultedSnapshotSubscriberDoesNotBlockOthers()
+{
+    var calls = new List<string>();
+    Action handlers = () => calls.Add("first");
+    handlers += () => throw new InvalidOperationException("disposed circuit");
+    handlers += () => calls.Add("last");
+
+    var failures = ChangeNotificationDispatcher.Dispatch(handlers);
+
+    Equal(2, calls.Count);
+    Equal("first", calls[0]);
+    Equal("last", calls[1]);
+    Equal(1, failures.Count);
+}
+
+static void RouteTelemetryUpdatesSkipPersistence()
+{
+    var route = PersistencePolicyRoute();
+    var telemetry = route with
+    {
+        Frame = 2500,
+        Fps = 25,
+        Speed = 1,
+        DroppedFrames = 3,
+        DuplicatedFrames = 4,
+        UpdatedAt = route.UpdatedAt.AddSeconds(1)
+    };
+    True(!RouteTelemetryPersistencePolicy.RequiresPersistence(route, telemetry));
+}
+
+static void DurableRouteChangesRequirePersistence()
+{
+    var route = PersistencePolicyRoute();
+    True(RouteTelemetryPersistencePolicy.RequiresPersistence(route, route with { State = RouteState.Reconnecting }));
+    True(RouteTelemetryPersistencePolicy.RequiresPersistence(route, route with { PortId = "PORT-B" }));
+    True(RouteTelemetryPersistencePolicy.RequiresPersistence(route, route with { PresetId = "HD50" }));
+    True(RouteTelemetryPersistencePolicy.RequiresPersistence(route, route with { Locked = true }));
+    True(RouteTelemetryPersistencePolicy.RequiresPersistence(route, route with { RestartCount = 1 }));
+    True(RouteTelemetryPersistencePolicy.RequiresPersistence(route, route with { FailureCategory = "Network" }));
+    True(RouteTelemetryPersistencePolicy.RequiresPersistence(route, route with { RetryAt = route.UpdatedAt.AddSeconds(2) }));
+    True(RouteTelemetryPersistencePolicy.RequiresPersistence(route, route with { DesiredPortId = "PORT-B" }));
+    True(RouteTelemetryPersistencePolicy.RequiresPersistence(route, route with { ReserveWhileOffline = false }));
+}
+
+static RuntimeRoute PersistencePolicyRoute() => new(
+    "SIM/live/_definst_/policy.stream", "policy.stream", "PORT-A", "Output A", "HD25",
+    RouteState.Running, AssignmentMode.Manual, false, 10, 0, 100, 25, 1, 0, 0,
+    DateTimeOffset.Parse("2026-01-01T00:00:00Z"), DateTimeOffset.Parse("2026-01-01T00:00:01Z"),
+    null, null, DesiredPortId: "PORT-A", DesiredPortName: "Output A");
+
 static void FfmpegVideoOnlyRouteGeneratesSilence()
 {
     var source = new SimulationDiscoveryProvider().DiscoverAsync(default).Result.Single();
@@ -706,6 +760,46 @@ static void OwnedProcessStopAndRestartAreSerialized()
         start.ArgumentList.Add("-NoProfile");
         start.ArgumentList.Add("-Command");
         start.ArgumentList.Add("[Console]::Out.WriteLine('ready'); [Console]::In.ReadLine() | Out-Null; Start-Sleep -Milliseconds 600");
+        return start;
+    }
+}
+
+static void FallbackOwnershipIsReapedBeforeLiveRecovery()
+{
+    if (!OperatingSystem.IsWindows()) return;
+
+    var owner = new SourceIdentity("SYSTEM", "test", "_definst_", "fallback-handoff-owner");
+    var supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions("unused.exe"), TimeSpan.FromSeconds(2));
+    try
+    {
+        supervisor.StartOwnedProcessForTestingAsync(owner, WaitingProcess(),
+            purpose: RouteProcessPurpose.Fallback).GetAwaiter().GetResult();
+        var fallback = supervisor.Snapshot().Single(value => value.Source == owner && value.Running);
+        Equal(RouteProcessPurpose.Fallback, fallback.Purpose);
+
+        supervisor.StopForOutputHandoffAsync(owner, CancellationToken.None).GetAwaiter().GetResult();
+        supervisor.StartOwnedProcessForTestingAsync(owner, WaitingProcess()).GetAwaiter().GetResult();
+
+        var live = supervisor.Snapshot().Single(value => value.Source == owner && value.Running);
+        Equal(RouteProcessPurpose.Live, live.Purpose);
+        True(live.ProcessId != fallback.ProcessId);
+    }
+    finally { supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+
+    static System.Diagnostics.ProcessStartInfo WaitingProcess()
+    {
+        var start = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-Command");
+        start.ArgumentList.Add("[Console]::Out.WriteLine('frame=1'); [Console]::In.ReadLine() | Out-Null");
         return start;
     }
 }

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.5.7 — 2026-08-03
+
+- Fix saved-route recovery after an RTSP session failure by reaping the generated fallback owner before starting replacement live playout.
+- Tag every owned FFmpeg process as live, fallback, or port standby so generated fallback progress can never be mistaken for recovered source video.
+- Remove terminal stale process ownership even when teardown diagnostics fail, and isolate process-monitoring faults per source so one route cannot degrade the complete coordinator loop.
+- Stop per-second frame/FPS telemetry from rewriting durable SQLite route rows; state, ownership, assignment, retry, failure, and startup changes remain persistent.
+- Poll enabled Wowza servers concurrently while preserving deterministic merge and failure-retention behavior.
+- Isolate snapshot subscribers, observe status-hub delivery failures, move process metric syscalls outside the routing lock, bound exited-process history, and reduce repeated settings/render work.
+- Add Windows process-handoff, notification isolation, and durable-versus-telemetry persistence regressions.
+
 ## 1.5.6 — 2026-08-02
 
 - Add bounded adaptive long-GOP confirmation: an ambiguous two-second audio/video probe receives one rate-limited 12-second keyframe-acquisition pass before the source is committed to generated-black audio-led mode.

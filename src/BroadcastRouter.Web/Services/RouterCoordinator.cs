@@ -44,6 +44,7 @@ public sealed class RouterCoordinator(
     private readonly RepeatedFailureLogGate _reconciliationFailureLogGate = new();
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private readonly object _livenessGate = new();
+    private readonly object _metricsGate = new();
     private DateTimeOffset _coordinatorProgressAt = DateTimeOffset.UtcNow;
     private DateTimeOffset? _lastCompletedCycleAt;
     private string _coordinatorStage = "Startup";
@@ -72,8 +73,13 @@ public sealed class RouterCoordinator(
 
     public OperatorSettings GetSettings()
     {
-        lock (_gate) return Clone(_settings);
+        OperatorSettings settings;
+        lock (_gate) settings = _settings;
+        return Clone(settings);
     }
+
+    public long SettingsRevision { get { lock (_gate) return _settings.ConfigurationRevision; } }
+    public bool RequiresAuthentication { get { lock (_gate) return _settings.Security.RequireAuthentication; } }
 
     public CoordinatorLivenessSnapshot GetLiveness()
     {
@@ -553,29 +559,25 @@ public sealed class RouterCoordinator(
         if (settings.SimulationMode) observations.AddRange(BuildSimulationSources());
         else
         {
-            foreach (var profile in settings.WowzaServers.Where(x => x.Enabled))
+            var enabledProfiles = settings.WowzaServers.Where(x => x.Enabled).ToArray();
+            var polls = await Task.WhenAll(enabledProfiles.Select(profile => PollWowzaServerAsync(profile, cancellationToken)));
+            foreach (var poll in polls)
             {
-                ServerHealth? previousHealth;
-                lock (_gate) _servers.TryGetValue(profile.ServerId, out previousHealth);
-                try
+                lock (_gate) _servers[poll.Profile.ServerId] = poll.Health;
+                if (poll.Error is null)
                 {
-                    var password = string.IsNullOrWhiteSpace(profile.ProtectedPassword) ? "" : WindowsDpapi.Unprotect(profile.ProtectedPassword);
-                    var server = ToConfiguration(profile);
-                    using var client = httpClientFactory.CreateClient(profile.ValidateTlsCertificate ? "WowzaValidated" : "WowzaInsecure");
-                    var provider = new WowzaDiscoveryProvider(client, server, new StaticCredentialResolver(new CredentialValue(profile.Username, password)));
-                    var discovered = await provider.DiscoverAsync(cancellationToken);
-                    observations.AddRange(discovered);
-                    successfullyPolledServerIds.Add(profile.ServerId);
-                    lock (_gate) _servers[profile.ServerId] = new(profile.ServerId, profile.FriendlyName, true, true, discovered.Count, "Discovery succeeded.", DateTimeOffset.UtcNow);
-                    if (previousHealth is { Reachable: false })
+                    observations.AddRange(poll.Discovered);
+                    successfullyPolledServerIds.Add(poll.Profile.ServerId);
+                    if (poll.Recovered)
                         await LogAsync("Information", "WowzaDiscovery",
-                            $"{profile.ServerId} discovery recovered; {discovered.Count} incoming stream record(s) were received.",
+                            $"{poll.Profile.ServerId} discovery recovered; {poll.Discovered.Count} incoming stream record(s) were received.",
                             cancellationToken: cancellationToken);
                 }
-                catch (Exception ex)
+                else
                 {
-                    lock (_gate) _servers[profile.ServerId] = new(profile.ServerId, profile.FriendlyName, false, false, 0, LogRedactor.Redact(ex.Message), DateTimeOffset.UtcNow);
-                    await LogAsync("Warning", "WowzaDiscovery", $"{profile.ServerId} discovery failed: {ex.Message}. Healthy routes were retained.", cancellationToken: cancellationToken);
+                    await LogAsync("Warning", "WowzaDiscovery",
+                        $"{poll.Profile.ServerId} discovery failed: {poll.Error}. Healthy routes were retained.",
+                        cancellationToken: cancellationToken);
                 }
             }
         }
@@ -784,6 +786,40 @@ public sealed class RouterCoordinator(
         }
     }
 
+    private async Task<WowzaPollResult> PollWowzaServerAsync(WowzaServerProfile profile,
+        CancellationToken cancellationToken)
+    {
+        ServerHealth? previousHealth;
+        lock (_gate) _servers.TryGetValue(profile.ServerId, out previousHealth);
+        try
+        {
+            var password = string.IsNullOrWhiteSpace(profile.ProtectedPassword)
+                ? ""
+                : WindowsDpapi.Unprotect(profile.ProtectedPassword);
+            var server = ToConfiguration(profile);
+            using var client = httpClientFactory.CreateClient(profile.ValidateTlsCertificate
+                ? "WowzaValidated"
+                : "WowzaInsecure");
+            var provider = new WowzaDiscoveryProvider(client, server,
+                new StaticCredentialResolver(new CredentialValue(profile.Username, password)));
+            var discovered = await provider.DiscoverAsync(cancellationToken);
+            var health = new ServerHealth(profile.ServerId, profile.FriendlyName, true, true,
+                discovered.Count, "Discovery succeeded.", DateTimeOffset.UtcNow);
+            return new(profile, discovered, health, previousHealth is { Reachable: false }, null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var error = LogRedactor.Redact(ex.Message);
+            var health = new ServerHealth(profile.ServerId, profile.FriendlyName, false, false, 0,
+                error, DateTimeOffset.UtcNow);
+            return new(profile, [], health, false, error);
+        }
+    }
+
     private async Task ReconcileRoutesAsync(CancellationToken cancellationToken)
     {
         if (_emergencyStopped) return;
@@ -935,9 +971,11 @@ public sealed class RouterCoordinator(
             var ownsLease = _reservations.Snapshot().Any(value =>
                 value.PortId.Equals(port.StableId, StringComparison.OrdinalIgnoreCase)
                 && value.Source.Value == route.SourceId);
-            var ownsProcess = _settings.SimulationMode
-                || (_supervisor?.Snapshot().Any(value => value.Source.Value == route.SourceId && value.Running) ?? false);
-            if (active && (route.State is RouteState.Starting or RouteState.Running) && ownsLease && ownsProcess)
+            var ownedProcess = _settings.SimulationMode
+                ? null
+                : _supervisor?.Snapshot().FirstOrDefault(value => value.Source.Value == route.SourceId && value.Running);
+            var ownsLiveProcess = _settings.SimulationMode || ownedProcess?.Purpose == RouteProcessPurpose.Live;
+            if (active && (route.State is RouteState.Starting or RouteState.Running) && ownsLease && ownsLiveProcess)
                 return;
             if (active && (route.State is RouteState.Reconnecting or RouteState.Fallback)
                 && route.RetryAt is not null && route.RetryAt > DateTimeOffset.UtcNow)
@@ -980,6 +1018,12 @@ public sealed class RouterCoordinator(
 
             if (!shouldReserve && route.PortId is not null)
                 _reservations.Release(route.PortId, identity, force: true);
+
+            // A reconnecting saved route may currently own its generated fallback.
+            // Reap that exact owner before the live FFmpeg process is started; otherwise
+            // the supervisor correctly rejects the replacement as duplicate ownership.
+            if (active && ownedProcess is not null && _supervisor is not null)
+                await _supervisor.StopForOutputHandoffAsync(identity, cancellationToken);
 
             var assigned = route with
             {
@@ -1466,18 +1510,21 @@ public sealed class RouterCoordinator(
         if (_supervisor is null) return;
         foreach (var process in _supervisor.Snapshot())
         {
-            RuntimeRoute? route;
-            lock (_gate) _routes.TryGetValue(process.Source.Value, out route);
-            if (route is null) continue;
-            var progress = process.Progress;
-            var now = DateTimeOffset.UtcNow;
+            try
+            {
+                RuntimeRoute? route;
+                lock (_gate) _routes.TryGetValue(process.Source.Value, out route);
+                if (route is null) continue;
+                var progress = process.Progress;
+                var now = DateTimeOffset.UtcNow;
             if (FfmpegStallDetector.IsFirstProgressTimedOut(process.Running, progress, process.StartedAt, now,
                     TimeSpan.FromSeconds(_settings.Routing.FirstProgressTimeoutSeconds)))
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await ScheduleRetryAsync(route, "NoFirstProgress", "FFmpeg started but produced no progress before the startup deadline.", cancellationToken);
             }
-            else if (process.Running && process.InputFailure is { } inputFailure)
+            else if (process.Purpose == RouteProcessPurpose.Live
+                     && process.Running && process.InputFailure is { } inputFailure)
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await LogAsync("Warning", "InputLiveness",
@@ -1487,12 +1534,13 @@ public sealed class RouterCoordinator(
                     $"The RTSP input session became unusable ({inputFailure.Category}) and will be recreated.",
                     cancellationToken);
             }
-            else if (process.Running && FfmpegStallDetector.IsStalled(true, progress, now, TimeSpan.FromSeconds(_settings.Routing.StallTimeoutSeconds)))
+            else if (process.Purpose == RouteProcessPurpose.Live
+                     && process.Running && FfmpegStallDetector.IsStalled(true, progress, now, TimeSpan.FromSeconds(_settings.Routing.StallTimeoutSeconds)))
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await ScheduleRetryAsync(route, "VideoStalled", "FFmpeg remained alive but stopped producing progress.", cancellationToken);
             }
-            else if (process.Running && IsInputFrozen(process, now))
+            else if (process.Purpose == RouteProcessPurpose.Live && process.Running && IsInputFrozen(process, now))
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await LogAsync("Warning", "InputLiveness",
@@ -1504,7 +1552,15 @@ public sealed class RouterCoordinator(
             }
             else if (process.Running)
             {
-                var state = route.State == RouteState.Fallback ? RouteState.Fallback : progress?.Frame > 0 ? RouteState.Running : RouteState.Starting;
+                var state = process.Purpose == RouteProcessPurpose.Fallback
+                    ? RouteState.Fallback
+                    : progress?.Frame > 0 ? RouteState.Running : RouteState.Starting;
+                if (state == RouteState.Running && route.State is not (RouteState.Starting or RouteState.Running))
+                {
+                    var starting = route with { State = RouteState.Starting, UpdatedAt = DateTimeOffset.UtcNow };
+                    await ReplaceRouteAsync(starting, route.State, cancellationToken);
+                    route = starting;
+                }
                 DateTimeOffset? cutoverStarted = null;
                 if (state == RouteState.Running && route.State != RouteState.Running)
                 {
@@ -1567,6 +1623,17 @@ public sealed class RouterCoordinator(
                 if (IsPermanent(category))
                     await ReplaceRouteAsync(route with { State = RouteState.Failed, FailureCategory = category.ToString(), FailureMessage = detail, UpdatedAt = DateTimeOffset.UtcNow }, route.State, cancellationToken);
                 else await ScheduleRetryAsync(route, category.ToString(), detail, cancellationToken);
+            }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                await LogAsync("Error", "ProcessSupervision",
+                    $"Owned FFmpeg process {process.ProcessId} could not be reconciled; other routes will continue. {LogRedactor.Redact(ex.Message)}",
+                    process.Source.Value, cancellationToken: cancellationToken);
             }
         }
     }
@@ -1833,18 +1900,26 @@ public sealed class RouterCoordinator(
     private async Task ReplaceRouteAsync(RuntimeRoute route, RouteState? previousState, CancellationToken cancellationToken, bool persistHistory = true)
     {
         RouteState? persistedPrevious;
+        RuntimeRoute? currentRoute;
         lock (_gate)
         {
             if (_routes.TryGetValue(route.SourceId, out var current))
             {
                 if (previousState is not null && current.State != previousState) return;
                 persistedPrevious = current.State;
+                currentRoute = current;
             }
-            else persistedPrevious = previousState;
+            else
+            {
+                persistedPrevious = previousState;
+                currentRoute = null;
+            }
             if (persistedPrevious is not null && !_stateMachine.CanTransition(persistedPrevious.Value, route.State))
                 throw new InvalidOperationException($"Invalid route transition {persistedPrevious} -> {route.State} for {route.SourceId}.");
             _routes[route.SourceId] = route;
         }
+        if (!persistHistory && currentRoute is not null
+            && !RouteTelemetryPersistencePolicy.RequiresPersistence(currentRoute, route)) return;
         await store.SaveRouteAsync(route, persistHistory ? persistedPrevious : route.State, cancellationToken);
     }
 
@@ -1899,26 +1974,43 @@ public sealed class RouterCoordinator(
 
     private void Publish(string status)
     {
+        var now = DateTimeOffset.UtcNow;
+        TimeSpan cpuTime;
+        long workingSet;
+        using (var process = Process.GetCurrentProcess())
+        {
+            cpuTime = process.TotalProcessorTime;
+            workingSet = process.WorkingSet64;
+        }
+        double cpu;
+        lock (_metricsGate)
+        {
+            var interval = Math.Max(.001, (now - _lastCpuAt).TotalSeconds);
+            cpu = Math.Clamp((cpuTime - _lastCpu).TotalSeconds / (interval * Environment.ProcessorCount) * 100, 0, 100);
+            _lastCpu = cpuTime;
+            _lastCpuAt = now;
+        }
+
         RouterSnapshot snapshot;
         lock (_gate)
         {
-            var now = DateTimeOffset.UtcNow;
-            using var process = Process.GetCurrentProcess();
-            var cpuTime = process.TotalProcessorTime;
-            var interval = Math.Max(.001, (now - _lastCpuAt).TotalSeconds);
-            var cpu = Math.Clamp((cpuTime - _lastCpu).TotalSeconds / (interval * Environment.ProcessorCount) * 100, 0, 100);
-            _lastCpu = cpuTime;
-            _lastCpuAt = now;
             snapshot = new(_sources.Values.OrderBy(x => x.Identity.Value).ToArray(), _ports.Values.OrderBy(x => x.CardIndex).ThenBy(x => x.SubdeviceIndex).ToArray(),
                 _routes.Values.OrderByDescending(x => x.Priority).ThenBy(x => x.SourceName).ToArray(),
                 _waiting.Snapshot().Select(x => new QueueItemSnapshot(x.Source.Value, x.Priority, x.Reason, x.Sequence)).ToArray(),
-                _servers.Values.OrderBy(x => x.FriendlyName).ToArray(), _validation, _startedAt, now, cpu, process.WorkingSet64,
+                _servers.Values.OrderBy(x => x.FriendlyName).ToArray(), _validation, _startedAt, now, cpu, workingSet,
                 _settings.SimulationMode, _emergencyStopped, status,
                 _standbys.Values.OrderBy(value => value.PortId, StringComparer.OrdinalIgnoreCase).ToArray());
             Snapshot = snapshot;
         }
-        try { Changed?.Invoke(); } catch { }
-        _ = hub.Clients.All.SendAsync("SnapshotChanged", snapshot.UpdatedAt);
+        foreach (var failure in ChangeNotificationDispatcher.Dispatch(Changed))
+            logger.LogWarning(failure, "A snapshot subscriber failed; remaining subscribers were still notified.");
+        _ = NotifyStatusHubAsync(snapshot.UpdatedAt);
+    }
+
+    private async Task NotifyStatusHubAsync(DateTimeOffset updatedAt)
+    {
+        try { await hub.Clients.All.SendAsync("SnapshotChanged", updatedAt).ConfigureAwait(false); }
+        catch (Exception ex) { logger.LogDebug(ex, "Status hub snapshot notification failed."); }
     }
 
     private async Task AuditPortConfigurationChangesAsync(OperatorSettings previous, OperatorSettings current,
@@ -2042,6 +2134,13 @@ public sealed class RouterCoordinator(
             && Math.Abs(mode.FramesPerSecond - preset.FrameRateNumerator / (double)Math.Max(1, preset.FrameRateDenominator)) < .02
             && mode.PixelFormat.Equals(preset.PixelFormat, StringComparison.OrdinalIgnoreCase));
     }
+
+    private sealed record WowzaPollResult(
+        WowzaServerProfile Profile,
+        IReadOnlyList<DiscoveredSource> Discovered,
+        ServerHealth Health,
+        bool Recovered,
+        string? Error);
     private static bool IsPermanent(FfmpegFailureCategory category) => category is FfmpegFailureCategory.Authentication or FfmpegFailureCategory.Codec
         or FfmpegFailureCategory.UnsupportedMedia or FfmpegFailureCategory.DeckLinkFormat or FfmpegFailureCategory.Configuration;
     private static string NewCorrelation() => Guid.NewGuid().ToString("N")[..12];
