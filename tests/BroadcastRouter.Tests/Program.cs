@@ -36,6 +36,8 @@ var tests = new (string Name, Action Body)[]
     ("Route transition validation", InvalidStateJumpIsRejected),
     ("Fallback and reconnect recovery can reacquire a reservation", RecoveryCanReacquireReservation),
     ("Missing live owner enters retry before reservation", MissingLiveOwnerEntersRetryBeforeReservation),
+    ("Saved routes retry without waiting for discovery", SavedRoutesRetryWithoutDiscovery),
+    ("Owned video progress outranks a stale probe", OwnedVideoProgressOutranksStaleProbe),
     ("Automatic assignment", AutomaticAssignmentUsesOnePort),
     ("Automatic assignment ignores input-only ports", AutomaticAssignmentIgnoresInputOnlyPorts),
     ("Saved routing priority and protection", SavedRoutingPriorityAndProtection),
@@ -136,6 +138,58 @@ foreach (var test in tests)
 
 Console.WriteLine($"{tests.Length - failures.Count}/{tests.Length} tests passed.");
 return failures.Count == 0 ? 0 : 1;
+
+static void SavedRoutesRetryWithoutDiscovery()
+{
+    var now = DateTimeOffset.UtcNow;
+    var source = new DiscoveredSource(
+        new SourceIdentity("WOWZA", "live", "_definst_", "rapid.stream"),
+        "Rapid stream", new Uri("rtsp://127.0.0.1/live/rapid.stream"),
+        SourceState.PublisherDisconnected, 0,
+        new MediaProperties("h264", "aac", 1920, 1080, 25, 3_000_000, 48_000, 2, true));
+    var saved = new RuntimeRoute(
+        SourceId: source.Identity.Value,
+        SourceName: source.FriendlyName,
+        PortId: "PORT-1",
+        PortName: "Output 1",
+        PresetId: "1080p25",
+        State: RouteState.Fallback,
+        AssignmentMode: AssignmentMode.Manual,
+        Locked: true,
+        Priority: 0,
+        RestartCount: 1,
+        Frame: null,
+        Fps: null,
+        Speed: null,
+        DroppedFrames: 0,
+        DuplicatedFrames: 0,
+        StartedAt: now,
+        UpdatedAt: now,
+        FailureCategory: "InputSessionLost",
+        FailureMessage: "Rapid interruption",
+        RetryAt: now,
+        DesiredPortId: "PORT-1",
+        DesiredPortName: "Output 1");
+    True(RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(saved, source));
+    True(!RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(
+        saved with { AssignmentMode = AssignmentMode.Automatic }, source));
+    True(!RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(
+        saved, source with { State = SourceState.Disabled }));
+}
+
+static void OwnedVideoProgressOutranksStaleProbe()
+{
+    var video = new DiscoveredSource(
+        new SourceIdentity("WOWZA", "live", "_definst_", "rapid.stream"),
+        "Rapid stream", new Uri("rtsp://127.0.0.1/live/rapid.stream"),
+        SourceState.RtspUnavailable, 0,
+        new MediaProperties("h264", "aac", 1920, 1080, 25, 3_000_000, 48_000, 2, true));
+    True(RapidStreamRecoveryPolicy.IsEffectivelyActive(video, ownedLiveVideoIsAdvancing: true));
+    True(!RapidStreamRecoveryPolicy.IsEffectivelyActive(video, ownedLiveVideoIsAdvancing: false));
+    True(!RapidStreamRecoveryPolicy.IsEffectivelyActive(
+        video with { Media = video.Media! with { HasUsableVideo = false } },
+        ownedLiveVideoIsAdvancing: true));
+}
 
 static void MissingLiveOwnerEntersRetryBeforeReservation()
 {
@@ -1625,6 +1679,9 @@ static void SettingsRejectInvalidGuiValues()
         settings.DeckLinkPortOverrides[0].StandbyPresetId = settings.Presets[0].Id;
         settings.DeckLinkPortOverrides[0].StandbyLabel = "unsafe:label";
         Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
+        settings.DeckLinkPortOverrides[0].StandbyLabel = "Safe label";
+        settings.Routing.InputReadTimeoutMilliseconds = 499;
+        Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
     });
 }
 
@@ -1706,7 +1763,7 @@ static void AllGuiSettingsRoundTrip()
         {
             SimulationMode = true,
             MediaTools = new() { FfmpegPath = @"C:\Media\ffmpeg.exe", FfprobePath = @"C:\Media\ffprobe.exe", FfplayPath = @"C:\Media\ffplay.exe" },
-            Routing = new() { AutomaticRoutingEnabled = false, ReservationGraceSeconds = 31, StableRestoreSeconds = 6, FirstProgressTimeoutSeconds = 22, StallTimeoutSeconds = 11, FrozenInputTimeoutSeconds = 13, GracefulStopSeconds = 7, MaxRetryAttempts = 9, RetryDelaysSeconds = [2, 4, 8] },
+            Routing = new() { AutomaticRoutingEnabled = false, InputReadTimeoutMilliseconds = 1250, ReservationGraceSeconds = 31, StableRestoreSeconds = 6, FirstProgressTimeoutSeconds = 22, StallTimeoutSeconds = 11, FrozenInputTimeoutSeconds = 13, GracefulStopSeconds = 7, MaxRetryAttempts = 9, RetryDelaysSeconds = [2, 4, 8] },
             Security = new() { BindAddress = "127.0.0.1", Port = 5085, RequireAuthentication = true, HttpsEnabled = true, AllowedNetworks = "127.0.0.1/32", TrustedProxies = "127.0.0.2", SessionTimeoutMinutes = 60 }
         };
         settings.WowzaServers.Add(new WowzaServerProfile
@@ -1767,6 +1824,7 @@ static void AllGuiSettingsRoundTrip()
         Equal("127.0.0.2", loaded.Security.TrustedProxies);
         Equal(22, loaded.Routing.FirstProgressTimeoutSeconds);
         Equal(13, loaded.Routing.FrozenInputTimeoutSeconds);
+        Equal(1250, loaded.Routing.InputReadTimeoutMilliseconds);
         Equal(9, loaded.Routing.MaxRetryAttempts);
         Equal(3, loaded.Routing.RetryDelaysSeconds.Length);
 
@@ -1891,6 +1949,7 @@ static void DefaultConfigurationIsProductionSafe()
     True(!settings.SimulationMode);
     True(string.IsNullOrWhiteSpace(settings.MediaTools.FfmpegPath));
     True(settings.Security.BindAddress == "127.0.0.1");
+    Equal(1000, settings.Routing.InputReadTimeoutMilliseconds);
 }
 
 static void WithSqliteStore(Action<SqliteDataStore> body)

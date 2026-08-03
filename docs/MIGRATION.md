@@ -40,4 +40,6 @@ Version 1.5.9 does not change the settings or database schema. It adds fast, rou
 
 Version 1.5.10 does not change the settings or database schema. It closes the production gap where DeckLink video/audio starvation warnings arrived outside the 1.5.9 pairing window and the live retry waited behind long FFprobe work. Repeat the drill and require either post-startup starvation warning to trigger exact-PID recovery, with the replacement live process launched from the 250 ms supervision path after its retry delay.
 
+Version 1.5.11 adds `Routing.InputReadTimeoutMilliseconds`; existing settings receive the 1000 ms default during JSON deserialization and no database migration is required. Values from 500 through 30000 ms are accepted. Re-run the rapid reset drill and confirm saved routes retry their known RTSP URI without waiting for a later discovery cycle, while unsaved automatic routes still require a confirmed ready source.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

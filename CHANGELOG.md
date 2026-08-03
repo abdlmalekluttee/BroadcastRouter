@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.11 — 2026-08-04
+
+- Add a validated, GUI-configurable RTSP read timeout (1000 ms by default) so an owned route detects a broken TCP media session without waiting for the slower discovery probe.
+- Let saved manual/preconfigured routes retry their known RTSP address while discovery still reports a transient offline state; automatic unsaved routes remain fail-closed.
+- Treat advancing real-video output from the exact owned live process as stronger evidence than an overlapping stale FFprobe result, preventing a slow probe from tearing down a recovered route.
+
 ## 1.5.10 — 2026-08-03
 
 - Treat either DeckLink video-frame starvation or audio-buffer starvation as an immediate fatal route condition after the five-second startup grace; production showed the paired warnings can arrive outside the 1.5.9 correlation window.

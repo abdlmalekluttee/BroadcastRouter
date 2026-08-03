@@ -52,6 +52,7 @@ public sealed class RouterCoordinator(
     private FfmpegProcessSupervisor? _supervisor;
     private string? _supervisorPath;
     private bool _supervisorUsesWindowsDeckLinkSafeTerminate;
+    private int _supervisorInputReadTimeoutMilliseconds;
     private OperatorSettings _settings = new();
     private MediaToolValidation _validation = MediaToolValidation.NotConfigured;
     private volatile bool _emergencyStopped;
@@ -446,7 +447,7 @@ public sealed class RouterCoordinator(
             {
                 DiscoveredSource? source;
                 lock (_gate) _sources.TryGetValue(route.SourceId, out source);
-                if (source?.State != SourceState.Ready) continue;
+                if (!RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(route, source)) continue;
                 await RestartReservedRouteAsync(route, cancellationToken);
             }
         }
@@ -1029,13 +1030,23 @@ public sealed class RouterCoordinator(
                 return;
             }
 
-            var active = source.State == SourceState.Ready;
             var ownsLease = _reservations.Snapshot().Any(value =>
                 value.PortId.Equals(port.StableId, StringComparison.OrdinalIgnoreCase)
                 && value.Source.Value == route.SourceId);
             var ownedProcess = _settings.SimulationMode
                 ? null
                 : _supervisor?.Snapshot().FirstOrDefault(value => value.Source.Value == route.SourceId && value.Running);
+            // A healthy owned decoder is stronger evidence than an overlapping FFprobe timeout.
+            // This prevents a slow discovery sample from tearing down a route that has already
+            // reconnected and is producing actual source video.
+            var ownedLiveVideoIsAdvancing = ownedProcess is
+                {
+                    Purpose: RouteProcessPurpose.Live,
+                    Running: true,
+                    Progress.Frame: > 0
+                }
+                && source.Media?.HasUsableVideo == true;
+            var active = RapidStreamRecoveryPolicy.IsEffectivelyActive(source, ownedLiveVideoIsAdvancing);
             var ownsLiveProcess = _settings.SimulationMode || ownedProcess?.Purpose == RouteProcessPurpose.Live;
             if (active && (route.State is RouteState.Starting or RouteState.Running) && ownsLease && ownsLiveProcess)
                 return;
@@ -1048,6 +1059,10 @@ public sealed class RouterCoordinator(
             }
             if (active && (route.State is RouteState.Reconnecting or RouteState.Fallback)
                 && route.RetryAt is not null && route.RetryAt > DateTimeOffset.UtcNow)
+                return;
+            if (!active && DesiredRoutePolicy.HasSavedAssignment(route)
+                && route.State is RouteState.Reconnecting or RouteState.Fallback
+                && route.RetryAt is not null)
                 return;
             if (!active && (route.State is RouteState.Starting or RouteState.Running or RouteState.Reconnecting or RouteState.Fallback))
             {
@@ -2013,16 +2028,21 @@ public sealed class RouterCoordinator(
 
     private void EnsureSupervisor(string ffmpegPath, bool useWindowsDeckLinkSafeTerminate)
     {
+        var inputReadTimeoutMilliseconds = Math.Clamp(
+            _settings.Routing.InputReadTimeoutMilliseconds, 500, 30000);
         if (_supervisor is not null
             && string.Equals(_supervisorPath, ffmpegPath, StringComparison.OrdinalIgnoreCase)
-            && _supervisorUsesWindowsDeckLinkSafeTerminate == useWindowsDeckLinkSafeTerminate) return;
+            && _supervisorUsesWindowsDeckLinkSafeTerminate == useWindowsDeckLinkSafeTerminate
+            && _supervisorInputReadTimeoutMilliseconds == inputReadTimeoutMilliseconds) return;
         if (_supervisor is not null) _supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        _supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions(ffmpegPath, true, TimeSpan.FromSeconds(10),
+        _supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions(ffmpegPath, true,
+                TimeSpan.FromMilliseconds(inputReadTimeoutMilliseconds),
                 UseWindowsDeckLinkSafeTerminate: useWindowsDeckLinkSafeTerminate),
             TimeSpan.FromSeconds(Math.Clamp(_settings.Routing.GracefulStopSeconds, 1, 30)));
         _supervisor.LifecycleChanged += OnProcessLifecycleChanged;
         _supervisorPath = ffmpegPath;
         _supervisorUsesWindowsDeckLinkSafeTerminate = useWindowsDeckLinkSafeTerminate;
+        _supervisorInputReadTimeoutMilliseconds = inputReadTimeoutMilliseconds;
     }
 
     private void OnProcessLifecycleChanged(RouteProcessLifecycleEvent value) =>

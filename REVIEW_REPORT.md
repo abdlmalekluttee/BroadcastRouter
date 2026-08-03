@@ -2,9 +2,9 @@
 
 Review date: 2026-08-01
 Review branch: `codex/coordinator-liveness-recovery`
-Current release branch: `codex/immediate-stream-starvation-recovery` (1.5.10)
+Current release branch: `codex/faster-rapid-reset-recovery` (1.5.11)
 Reviewed baseline: release `1.3.6`
-Resulting release version: `1.5.10`
+Resulting release version: `1.5.11`
 
 ## Executive summary
 
@@ -43,6 +43,8 @@ The first v1.5.7 production acceptance drill deliberately terminated the exact o
 The 1.5.9 incident follow-up found a different alive-but-unusable state after a sub-second Wowza stream reset. FFmpeg's `fps` filter continued advancing progress, so ordinary progress-age and duplicate-count checks reported health even while DeckLink logged both video-frame starvation and no buffered audio. A dedicated 250 ms supervision loop now treats only that paired post-startup signature as fatal, serializes against the normal route reconciler, reaps the exact owned PID with the bounded handoff deadline, and starts the port's configured silent standby before retrying live playout. Isolated/startup warnings remain diagnostic-only to avoid a false restart while DeckLink queues are priming.
 
 The first 1.5.9 production reset drill showed the video and audio starvation lines can be emitted outside the three-second pairing window. The PID therefore stayed alive and frozen, and after an exact-PID recovery drill the replacement launch still waited about 13 seconds behind the coordinator's discovery/probing work. Version 1.5.10 treats either warning as fatal after the five-second startup grace, preserves the first fatal category, and services due fallback-to-live retries from the same 250 ms route-serialized loop.
+
+The first 1.5.10 production drill reaped the exact old PID and kept the service healthy, but replacement live playout still appeared after roughly 11.2 seconds. The synchronized log showed an overlapping eight-second FFprobe timeout had marked the source offline, so the saved route waited for a later discovery result. Version 1.5.11 makes the RTSP input read deadline configurable with a 1000 ms default, allows saved routes to retry their already-known URI during that transient state, and prevents stale probe state from overriding advancing real video from the owned replacement process.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. RTSP frame receipt, H.264/AAC fragmented-MP4 streaming, the VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified in a controlled lab; physical DeckLink picture/audio observation remains an environment-specific validation step.
 
@@ -133,6 +135,7 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-045 | High | Missing live owner race | `Application/MissingRouteProcessRecoveryPolicy.cs`; `Web/Services/RouterCoordinator.cs` | A live PID could exit after the process-supervision snapshot but before saved-route reconciliation. The route still said `Running`, so the saved route attempted an invalid direct transition to `Reserved` before the next cycle recovered it. | **Fixed in 1.5.8.** An active `Starting`/`Running` route without a live owner enters retry/fallback first. Regression: `Missing live owner enters retry before reservation`. |
 | BR-046 | Critical | Rapid reset leaves alive FFmpeg frozen and silent | `Infrastructure/FfmpegMediaStarvationDetector.cs`; `Infrastructure/FfmpegProcessSupervisor.cs`; `Web/Services/RouterCoordinator.cs` | FFmpeg could continue synthetic output progress after a sub-second upstream reset while DeckLink simultaneously starved for video and audio, so the route appeared `Running` indefinitely. | **Partially fixed in 1.5.9; completed in 1.5.10.** Fatal post-startup starvation is consumed by an independent 250 ms route-scoped supervisor; recovery uses exact-PID handoff and configured per-port standby. Regressions cover detection, startup false-positive rejection, and supervisor capture. |
 | BR-047 | Critical | Starvation correlation and retry latency gap | `Infrastructure/FfmpegMediaStarvationDetector.cs`; `Infrastructure/FfmpegProcessSupervisor.cs`; `Web/Services/RouterCoordinator.cs` | Production emitted the DeckLink video/audio warnings outside the 1.5.9 three-second pairing window; after route failure, live retry could also wait behind long discovery/probe work. | **Fixed in 1.5.10.** Either post-startup starvation warning is immediately fatal, the first signal remains sticky, and due restarts execute on the serialized 250 ms path. Startup warnings inside five seconds remain ignored. |
+| BR-048 | Critical | Saved recovery blocked by stale discovery state | `Domain/OperatorSettings.cs`; `Application/RapidStreamRecoveryPolicy.cs`; `Web/Services/RouterCoordinator.cs` | The 1.5.10 live drill measured an 11.2-second replacement because an overlapping FFprobe timeout marked the source offline and prevented the due saved-route retry. | **Fixed in 1.5.11.** The owned RTSP read deadline defaults to 1000 ms, saved routes may retry their known URI before discovery catches up, and advancing real video from the owned replacement outranks stale probe state. |
 
 ## GUI review
 
@@ -155,7 +158,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89. Version 1.5.6: 98/98. Version 1.5.7: 102/102. Version 1.5.8: 103/103. Version 1.5.9: 106/106 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89. Version 1.5.6: 98/98. Version 1.5.7: 102/102. Version 1.5.8: 103/103. Version 1.5.9: 106/106. Version 1.5.11: 108/108 tests.
 
 Added coverage:
 
@@ -246,6 +249,7 @@ Still requiring integration or hardware coverage:
 - 1.5.8 follow-up: missing-live-owner detection between supervision and saved-route reconciliation, verified by exact-PID production recovery drilling.
 - 1.5.9 follow-up: sub-second Wowza-reset recovery using paired DeckLink starvation detection, independent 250 ms route supervision, exact-PID handoff, and configured per-port standby.
 - 1.5.10 follow-up: production correction for non-adjacent starvation warnings and slow fallback-to-live retry scheduling.
+- 1.5.11 follow-up: production correction for stale discovery state blocking a due saved-route retry, with a configurable one-second RTSP read deadline.
 
 ## Commands and results
 
