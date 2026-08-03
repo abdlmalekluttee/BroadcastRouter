@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.10 — 2026-08-03
+
+- Treat either DeckLink video-frame starvation or audio-buffer starvation as an immediate fatal route condition after the five-second startup grace; production showed the paired warnings can arrive outside the 1.5.9 correlation window.
+- Keep the first fatal input signal sticky so later stderr lines cannot replace the root-cause category before the 250 ms supervisor consumes it.
+- Move due fallback-to-live retries into the fast supervision loop and serialize every reserved-route restart, avoiding discovery/FFprobe delays that previously stretched recovery to roughly 13 seconds.
+
 ## 1.5.9 — 2026-08-03
 
 - Detect the paired DeckLink video-frame/audio-buffer starvation signature emitted when a rapid Wowza reset leaves FFmpeg alive but frozen, while ignoring isolated and startup-priming warnings.

@@ -38,4 +38,6 @@ Version 1.5.8 does not change the settings or database schema. It routes an acti
 
 Version 1.5.9 does not change the settings or database schema. It adds fast, route-scoped recovery when a live FFmpeg process reports paired DeckLink video/audio starvation after a rapid upstream reset. Repeat the rapid `resetStream` drill against one controlled source, require the configured silent per-port standby during recovery, and verify the exact old PID exits before replacement live playout begins.
 
+Version 1.5.10 does not change the settings or database schema. It closes the production gap where DeckLink video/audio starvation warnings arrived outside the 1.5.9 pairing window and the live retry waited behind long FFprobe work. Repeat the drill and require either post-startup starvation warning to trigger exact-PID recovery, with the replacement live process launched from the 250 ms supervision path after its retry delay.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

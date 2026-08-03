@@ -246,7 +246,7 @@ public sealed class RouterCoordinator(
             case "restore":
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
                 if (DesiredRoutePolicy.HasSavedAssignment(route)) await ReconcileSavedRouteAsync(sourceId, cancellationToken);
-                else if (route?.PortId is not null) await RestartReservedRouteAsync(route, cancellationToken);
+                else if (route?.PortId is not null) await RestartReservedRouteAsync(route, cancellationToken, force: true);
                 else await EnsureRouteAsync(sourceId, portId, presetId, manual: true, cancellationToken);
                 break;
             case "stop":
@@ -438,6 +438,16 @@ public sealed class RouterCoordinator(
                         observed.Source.Value, cancellationToken: cancellationToken);
                 }
                 finally { routeGate.Release(); }
+            }
+
+            foreach (var route in RoutesCopy().Where(value =>
+                         value.State is RouteState.Reconnecting or RouteState.Fallback
+                         && value.RetryAt is not null && value.RetryAt <= DateTimeOffset.UtcNow))
+            {
+                DiscoveredSource? source;
+                lock (_gate) _sources.TryGetValue(route.SourceId, out source);
+                if (source?.State != SourceState.Ready) continue;
+                await RestartReservedRouteAsync(route, cancellationToken);
             }
         }
     }
@@ -1764,22 +1774,32 @@ public sealed class RouterCoordinator(
         await ReplaceRouteAsync(retry, route.State, cancellationToken);
     }
 
-    private async Task RestartReservedRouteAsync(RuntimeRoute route, CancellationToken cancellationToken)
+    private async Task RestartReservedRouteAsync(RuntimeRoute route, CancellationToken cancellationToken, bool force = false)
     {
-        if (route.PortId is null) return;
-        DiscoveredSource? source;
-        DeckLinkPort? port;
-        OutputPresetProfile? preset;
-        lock (_gate)
+        var routeGate = _routeGates.GetOrAdd(route.SourceId, static _ => new SemaphoreSlim(1, 1));
+        await routeGate.WaitAsync(cancellationToken);
+        try
         {
-            _sources.TryGetValue(route.SourceId, out source);
-            _ports.TryGetValue(route.PortId, out port);
-            preset = _settings.Presets.FirstOrDefault(x => x.Id == route.PresetId);
+            RuntimeRoute? current;
+            DiscoveredSource? source;
+            DeckLinkPort? port;
+            OutputPresetProfile? preset;
+            lock (_gate)
+            {
+                _routes.TryGetValue(route.SourceId, out current);
+                _sources.TryGetValue(route.SourceId, out source);
+                port = current?.PortId is null ? null : _ports.GetValueOrDefault(current.PortId);
+                preset = current is null ? null : _settings.Presets.FirstOrDefault(x => x.Id == current.PresetId);
+            }
+            if (current?.PortId is null || source is null || port is null || preset is null) return;
+            if (!force && (current.State is not (RouteState.Reconnecting or RouteState.Fallback)
+                || current.RetryAt is null || current.RetryAt > DateTimeOffset.UtcNow)) return;
+            if (_simulationFaults.ContainsKey(current.SourceId)) return;
+            if (_supervisor is not null && current.State == RouteState.Fallback)
+                await _supervisor.StopForOutputHandoffAsync(source.Identity, cancellationToken);
+            await StartRouteWithRecoveryAsync(current, source, port, preset, cancellationToken);
         }
-        if (source is null || port is null || preset is null) return;
-        if (_simulationFaults.ContainsKey(route.SourceId)) return;
-        if (_supervisor is not null && route.State == RouteState.Fallback) await _supervisor.StopAsync(source.Identity, cancellationToken);
-        await StartRouteAsync(route, source, port, preset, cancellationToken);
+        finally { routeGate.Release(); }
     }
 
     private async Task StartFallbackAsync(RuntimeRoute route, CancellationToken cancellationToken)

@@ -67,9 +67,9 @@ var tests = new (string Name, Action Body)[]
     ("DeckLink output failures are not mislabeled as network", DeckLinkOutputFailureIsClassified),
     ("FFmpeg RTSP protocol loss is retryable input failure", FfmpegRtspProtocolLossIsRetryable),
     ("Owned supervisor captures RTSP protocol loss", SupervisorCapturesRtspProtocolLoss),
-    ("Paired DeckLink media starvation is fatal after startup", PairedDeckLinkMediaStarvationIsDetected),
-    ("Transient DeckLink media starvation is ignored", TransientDeckLinkMediaStarvationIsIgnored),
-    ("Owned supervisor captures paired DeckLink media starvation", SupervisorCapturesDeckLinkMediaStarvation),
+    ("Post-startup DeckLink media starvation is fatal", PostStartupDeckLinkMediaStarvationIsDetected),
+    ("DeckLink startup starvation is ignored", DeckLinkStartupStarvationIsIgnored),
+    ("Owned supervisor captures DeckLink media starvation", SupervisorCapturesDeckLinkMediaStarvation),
     ("FFprobe media parsing", FfprobeMediaIsParsed),
     ("FFprobe scan type parsing", FfprobeScanTypeIsParsed),
     ("FFprobe accepts audio-led sparse video", FfprobeAcceptsAudioLedSparseVideo),
@@ -920,30 +920,27 @@ static void SupervisorCapturesRtspProtocolLoss()
     }
 }
 
-static void PairedDeckLinkMediaStarvationIsDetected()
+static void PostStartupDeckLinkMediaStarvationIsDetected()
 {
     var detector = new FfmpegMediaStarvationDetector();
     var startedAt = DateTimeOffset.UtcNow;
     var observedAt = startedAt.AddSeconds(30);
-    True(!detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
-        observedAt, startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out _));
     True(detector.Observe("[decklink] There's no buffered audio. Audio will misbehave!",
-        observedAt.AddMilliseconds(600), startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out var detail));
-    True(detail.Contains("simultaneous", StringComparison.OrdinalIgnoreCase));
+        observedAt, startedAt, TimeSpan.FromSeconds(5), out var audioCategory, out _));
+    Equal("DeckLinkAudioStarved", audioCategory);
+    True(detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
+        observedAt, startedAt, TimeSpan.FromSeconds(5), out var videoCategory, out _));
+    Equal("DeckLinkVideoStarved", videoCategory);
 }
 
-static void TransientDeckLinkMediaStarvationIsIgnored()
+static void DeckLinkStartupStarvationIsIgnored()
 {
     var detector = new FfmpegMediaStarvationDetector();
     var startedAt = DateTimeOffset.UtcNow;
     True(!detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
-        startedAt.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out _));
+        startedAt.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5), out _, out _));
     True(!detector.Observe("[decklink] There's no buffered audio. Audio will misbehave!",
-        startedAt.AddSeconds(1.2), startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out _));
-    True(!detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
-        startedAt.AddSeconds(10), startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out _));
-    True(!detector.Observe("[decklink] There's no buffered audio. Audio will misbehave!",
-        startedAt.AddSeconds(14), startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out _));
+        startedAt.AddSeconds(1.2), startedAt, TimeSpan.FromSeconds(5), out _, out _));
 }
 
 static void SupervisorCapturesDeckLinkMediaStarvation()
@@ -978,7 +975,7 @@ static void SupervisorCapturesDeckLinkMediaStarvation()
         }, TimeSpan.FromSeconds(12));
 
         True(captured);
-        Equal("DeckLinkMediaStarved", snapshot!.InputFailure!.Category);
+        Equal("DeckLinkVideoStarved", snapshot!.InputFailure!.Category);
     }
     finally
     {
