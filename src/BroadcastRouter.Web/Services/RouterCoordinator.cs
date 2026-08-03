@@ -977,6 +977,13 @@ public sealed class RouterCoordinator(
             var ownsLiveProcess = _settings.SimulationMode || ownedProcess?.Purpose == RouteProcessPurpose.Live;
             if (active && (route.State is RouteState.Starting or RouteState.Running) && ownsLease && ownsLiveProcess)
                 return;
+            if (MissingRouteProcessRecoveryPolicy.RequiresRetry(active, route.State, ownsLiveProcess))
+            {
+                await ScheduleRetryAsync(route, "ProcessExited",
+                    "The live FFmpeg owner exited before route reconciliation; fallback and a fresh live session will be started.",
+                    cancellationToken);
+                return;
+            }
             if (active && (route.State is RouteState.Reconnecting or RouteState.Fallback)
                 && route.RetryAt is not null && route.RetryAt > DateTimeOffset.UtcNow)
                 return;

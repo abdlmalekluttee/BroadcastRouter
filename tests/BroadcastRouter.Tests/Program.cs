@@ -35,6 +35,7 @@ var tests = new (string Name, Action Body)[]
     ("Priority waiting queue", HigherPriorityDequeuesFirst),
     ("Route transition validation", InvalidStateJumpIsRejected),
     ("Fallback and reconnect recovery can reacquire a reservation", RecoveryCanReacquireReservation),
+    ("Missing live owner enters retry before reservation", MissingLiveOwnerEntersRetryBeforeReservation),
     ("Automatic assignment", AutomaticAssignmentUsesOnePort),
     ("Automatic assignment ignores input-only ports", AutomaticAssignmentIgnoresInputOnlyPorts),
     ("Saved routing priority and protection", SavedRoutingPriorityAndProtection),
@@ -132,6 +133,15 @@ foreach (var test in tests)
 
 Console.WriteLine($"{tests.Length - failures.Count}/{tests.Length} tests passed.");
 return failures.Count == 0 ? 0 : 1;
+
+static void MissingLiveOwnerEntersRetryBeforeReservation()
+{
+    True(MissingRouteProcessRecoveryPolicy.RequiresRetry(true, RouteState.Running, false));
+    True(MissingRouteProcessRecoveryPolicy.RequiresRetry(true, RouteState.Starting, false));
+    True(!MissingRouteProcessRecoveryPolicy.RequiresRetry(true, RouteState.Running, true));
+    True(!MissingRouteProcessRecoveryPolicy.RequiresRetry(true, RouteState.Fallback, false));
+    True(!MissingRouteProcessRecoveryPolicy.RequiresRetry(false, RouteState.Running, false));
+}
 
 static void SourceIdentityIsUnambiguous()
 {

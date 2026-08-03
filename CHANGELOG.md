@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.8 — 2026-08-03
+
+- Detect an active `Starting`/`Running` route whose live FFmpeg owner disappeared between supervision and saved-route reconciliation, and enter route-scoped retry/fallback before reservation recovery.
+- Prevent the invalid direct `Running -> Reserved` transition observed during the v1.5.7 production PID-loss drill.
+- Add a focused missing-live-owner recovery policy regression.
+
 ## 1.5.7 — 2026-08-03
 
 - Fix saved-route recovery after an RTSP session failure by reaping the generated fallback owner before starting replacement live playout.
