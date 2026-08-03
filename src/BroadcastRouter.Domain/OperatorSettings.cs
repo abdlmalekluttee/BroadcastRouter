@@ -140,6 +140,7 @@ public sealed class RoutingRuleProfile
 public sealed class RoutingPolicySettings
 {
     public bool AutomaticRoutingEnabled { get; set; } = true;
+    public int InputReadTimeoutMilliseconds { get; set; } = 1000;
     public int ReservationGraceSeconds { get; set; } = 30;
     public int StableRestoreSeconds { get; set; } = 5;
     public int StallTimeoutSeconds { get; set; } = 10;
