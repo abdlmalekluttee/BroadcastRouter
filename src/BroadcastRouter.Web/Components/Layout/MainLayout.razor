@@ -16,7 +16,7 @@
             <div><strong>@snapshot.StatusMessage</strong><small> Updated @snapshot.UpdatedAt.ToLocalTime().ToString("HH:mm:ss")</small></div>
             <div class="system-stats"><span>CPU @snapshot.CpuPercent.ToString("0.0")%</span><span>RAM @FormatBytes(snapshot.WorkingSetBytes)</span><span>@snapshot.Routes.Count(x => x.State == RouteState.Running) live</span>
                 <AuthorizeView><Authorized>
-                    @if (Coordinator.GetSettings().Security.RequireAuthentication)
+                    @if (Coordinator.RequiresAuthentication)
                     {
                         <form method="post" action="/auth/logout"><AntiforgeryToken /><button class="btn small" type="submit">Sign out</button></form>
                     }
