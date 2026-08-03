@@ -35,6 +35,8 @@ public sealed class FfmpegProcessSupervisor(
     private static readonly TimeSpan ProcessReapTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan StreamDrainTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan QuitSignalTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan MediaStarvationStartupGrace = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan MediaStarvationPairingWindow = TimeSpan.FromSeconds(3);
     internal const int RetainedExitedOwners = 256;
     private readonly ConcurrentDictionary<string, ManagedProcess> _running = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RouteProcessSnapshot> _last = new(StringComparer.Ordinal);
@@ -62,6 +64,14 @@ public sealed class FfmpegProcessSupervisor(
     {
         cancellationToken.ThrowIfCancellationRequested();
         return StartProcessAsync(owner, RouteProcessPurpose.PortStandby,
+            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken);
+    }
+
+    public Task StartRecoveryStandbyAsync(SourceIdentity source, DeckLinkPort port, OutputPreset preset,
+        PortStandbyConfiguration configuration, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return StartProcessAsync(source, RouteProcessPurpose.Fallback,
             FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken);
     }
 
@@ -230,10 +240,14 @@ public sealed class FfmpegProcessSupervisor(
         {
             while (await managed.Process.StandardError.ReadLineAsync(managed.PumpCancellation.Token).ConfigureAwait(false) is { } line)
             {
+                var observedAt = DateTimeOffset.UtcNow;
                 var safe = LogRedactor.Redact(line);
                 managed.AddError(safe);
                 if (FfmpegInputFailureDetector.TryClassify(safe, out var category))
-                    managed.InputFailure = new(category, safe, DateTimeOffset.UtcNow);
+                    managed.InputFailure = new(category, safe, observedAt);
+                else if (managed.MediaStarvationDetector.Observe(safe, observedAt, managed.StartedAt,
+                             MediaStarvationStartupGrace, MediaStarvationPairingWindow, out var starvationDetail))
+                    managed.InputFailure = new("DeckLinkMediaStarved", starvationDetail, observedAt);
             }
         }
         catch (OperationCanceledException) when (managed.PumpCancellation.IsCancellationRequested) { }
@@ -359,6 +373,7 @@ public sealed class FfmpegProcessSupervisor(
         public Process Process { get; } = process;
         public DateTimeOffset StartedAt { get; } = startedAt;
         public FfmpegProgressParser Parser { get; } = new();
+        public FfmpegMediaStarvationDetector MediaStarvationDetector { get; } = new();
         public ConcurrentQueue<string> Errors { get; } = new();
         public FfmpegProgressSnapshot? Progress { get; set; }
         public FfmpegInputFailure? InputFailure { get; set; }

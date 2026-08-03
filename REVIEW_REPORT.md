@@ -2,9 +2,9 @@
 
 Review date: 2026-08-01
 Review branch: `codex/coordinator-liveness-recovery`
-Current release branch: `codex/missing-live-process-recovery` (1.5.8)
+Current release branch: `codex/rapid-stream-restart-recovery` (1.5.9)
 Reviewed baseline: release `1.3.6`
-Resulting release version: `1.5.8`
+Resulting release version: `1.5.9`
 
 ## Executive summary
 
@@ -39,6 +39,8 @@ The 1.5.6 production incident follow-up correlated an audio-led route with a fat
 The 1.5.7 follow-up found that the route-scoped RTSP retry could successfully start generated fallback, then attempt replacement live playout without first stopping that same logical owner's fallback PID. The supervisor correctly rejected duplicate ownership; the persisted route became `Reconnecting`, while fallback progress was then mistaken for live progress and attempted an invalid direct transition to `Running`. That exception aborted every coordinator cycle. Process-purpose tagging, fallback-to-live reaping, terminal-owner cleanup, and per-route supervision isolation now close the recovery loop. The same release removes unnecessary per-second route-row writes and shortens discovery delay across multiple Wowza servers.
 
 The first v1.5.7 production acceptance drill deliberately terminated the exact owned live PID. Recovery completed, but the child exited after the supervision snapshot and before saved-route reconciliation; the still-`Running` entry attempted `Running -> Reserved` and lost one coordinator cycle. Version 1.5.8 detects this missing-live-owner window and schedules route-scoped retry/fallback before reservation recovery. The identical drill is a mandatory release gate.
+
+The 1.5.9 incident follow-up found a different alive-but-unusable state after a sub-second Wowza stream reset. FFmpeg's `fps` filter continued advancing progress, so ordinary progress-age and duplicate-count checks reported health even while DeckLink logged both video-frame starvation and no buffered audio. A dedicated 250 ms supervision loop now treats only that paired post-startup signature as fatal, serializes against the normal route reconciler, reaps the exact owned PID with the bounded handoff deadline, and starts the port's configured silent standby before retrying live playout. Isolated/startup warnings remain diagnostic-only to avoid a false restart while DeckLink queues are priming.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. RTSP frame receipt, H.264/AAC fragmented-MP4 streaming, the VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified in a controlled lab; physical DeckLink picture/audio observation remains an environment-specific validation step.
 
@@ -127,6 +129,7 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-043 | High | Long-GOP and RTSP input recovery | `Infrastructure/FfprobeStreamProbe.cs`; `Infrastructure/FfmpegInputFailureDetector.cs`; `Infrastructure/FfmpegProcessSupervisor.cs`; `Web/Services/RouterCoordinator.cs` | A two-second probe saw one H.264 frame over live audio and committed generated-black mode although a 12-second sample received sustained video. When the long-lived route later reported an RTSP `CSeq` mismatch, synthetic black kept output progress alive and the audio failure was never recycled. | **Fixed in 1.5.6.** Ambiguous video receives a rate-limited bounded extended confirmation. Fatal RTSP protocol desynchronization is captured independently of output progress and schedules route-scoped recovery while retaining saved intent and port reservation. Regressions: `Adaptive probe promotes long-GOP video` and `FFmpeg RTSP protocol loss is retryable input failure`. |
 | BR-044 | Critical | Fallback-to-live recovery | `Infrastructure/FfmpegProcessSupervisor.cs`; `Web/Services/RouterCoordinator.cs` | A retry fallback retained the same source-owner slot when saved-route reconciliation attempted live restart. Duplicate ownership moved the route back to reconnecting, and fallback frame progress then caused an invalid `Reconnecting -> Running` transition that aborted subsequent coordinator cycles. | **Fixed in 1.5.7.** Owned processes carry a live/fallback/standby purpose; fallback is stopped and reaped before live start; terminal stale owners cannot remain registered; fallback progress remains fallback; and a supervision error is isolated to its source. Regression: `Fallback ownership is reaped before live recovery`. |
 | BR-045 | High | Missing live owner race | `Application/MissingRouteProcessRecoveryPolicy.cs`; `Web/Services/RouterCoordinator.cs` | A live PID could exit after the process-supervision snapshot but before saved-route reconciliation. The route still said `Running`, so the saved route attempted an invalid direct transition to `Reserved` before the next cycle recovered it. | **Fixed in 1.5.8.** An active `Starting`/`Running` route without a live owner enters retry/fallback first. Regression: `Missing live owner enters retry before reservation`. |
+| BR-046 | Critical | Rapid reset leaves alive FFmpeg frozen and silent | `Infrastructure/FfmpegMediaStarvationDetector.cs`; `Infrastructure/FfmpegProcessSupervisor.cs`; `Web/Services/RouterCoordinator.cs` | FFmpeg could continue synthetic output progress after a sub-second upstream reset while DeckLink simultaneously starved for video and audio, so the route appeared `Running` indefinitely. | **Fixed in 1.5.9.** Paired post-startup starvation becomes a fatal owned-session signal consumed by an independent 250 ms route-scoped supervisor; recovery uses exact-PID handoff and configured per-port standby. Regressions cover paired detection, false-positive rejection, and supervisor capture. |
 
 ## GUI review
 
@@ -149,7 +152,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89. Version 1.5.6: 98/98. Version 1.5.7: 102/102. Version 1.5.8: 103/103 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89. Version 1.5.6: 98/98. Version 1.5.7: 102/102. Version 1.5.8: 103/103. Version 1.5.9: 106/106 tests.
 
 Added coverage:
 
@@ -238,6 +241,7 @@ Still requiring integration or hardware coverage:
 - 1.5.6 follow-up: adaptive long-GOP confirmation, strong extended-video promotion, fatal RTSP `CSeq` capture, input/output failure separation, and route-scoped recovery with saved ownership retained.
 - 1.5.7 follow-up: explicit media-process purpose, serialized fallback-to-live ownership, stale-owner cleanup, per-route supervision isolation, durable/telemetry persistence separation, concurrent server polling, and UI notification/render hardening.
 - 1.5.8 follow-up: missing-live-owner detection between supervision and saved-route reconciliation, verified by exact-PID production recovery drilling.
+- 1.5.9 follow-up: sub-second Wowza-reset recovery using paired DeckLink starvation detection, independent 250 ms route supervision, exact-PID handoff, and configured per-port standby.
 
 ## Commands and results
 

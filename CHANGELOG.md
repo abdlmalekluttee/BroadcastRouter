@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.5.9 — 2026-08-03
+
+- Detect the paired DeckLink video-frame/audio-buffer starvation signature emitted when a rapid Wowza reset leaves FFmpeg alive but frozen, while ignoring isolated and startup-priming warnings.
+- Run fatal live-session supervision every 250 ms independently of slower Wowza discovery and FFprobe work, serialize recovery with route reconciliation, and reap only the exact owned PID using the bounded output-handoff stop.
+- Put the affected port's configured silent standby screen on air during route recovery instead of falling back to a preset-level black frame.
+- Add production-derived regressions for paired starvation, startup/transient false-positive rejection, and owned-supervisor capture.
+
 ## 1.5.8 — 2026-08-03
 
 - Detect an active `Starting`/`Running` route whose live FFmpeg owner disappeared between supervision and saved-route reconciliation, and enter route-scoped retry/fallback before reservation recovery.

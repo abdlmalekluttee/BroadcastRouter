@@ -351,42 +351,94 @@ public sealed class RouterCoordinator(
         await store.WriteConfigurationAuditAsync(new(0, DateTimeOffset.UtcNow, "ServiceRestart", "HOST", "", "",
             "Stopped", "Running", "system", "BroadcastRouter host startup", "Configuration loaded from SQLite"), stoppingToken);
 
-        while (!stoppingToken.IsCancellationRequested)
+        var fastInputSupervision = RunFastInputSupervisionAsync(stoppingToken);
+        try
         {
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                MarkCoordinatorProgress("Process supervision");
-                await MonitorProcessesAsync(stoppingToken);
-                MarkCoordinatorProgress("Source discovery and probing");
-                await DiscoverAndProbeAsync(stoppingToken);
-                MarkCoordinatorProgress("Media-tool and DeckLink validation");
-                await RefreshToolsAndPortsAsync(stoppingToken);
-                MarkCoordinatorProgress("Route reconciliation");
-                await ReconcileRoutesAsync(stoppingToken);
-                MarkCoordinatorProgress("Standby reconciliation");
-                await ReconcilePortStandbysAsync(stoppingToken);
-                _reconciliationFailureLogGate.Reset();
-                MarkCoordinatorProgress("Idle", completedCycle: true);
-                Publish("Running");
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception ex)
-            {
-                var signature = $"{ex.GetType().FullName}:{ex.Message}";
-                var decision = _reconciliationFailureLogGate.Evaluate(signature, DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1));
-                if (decision.ShouldLog)
+                try
                 {
-                    var suppressed = decision.SuppressedCount > 0
-                        ? $" {decision.SuppressedCount} identical failure(s) were suppressed during the previous minute."
-                        : "";
-                    logger.LogError(ex, "Router reconciliation cycle failed.{Suppressed}", suppressed);
-                    await store.WriteLogAsync("Error", "Coordinator",
-                        $"Reconciliation cycle failed: {ex.Message}.{suppressed}", cancellationToken: stoppingToken);
+                    MarkCoordinatorProgress("Process supervision");
+                    await MonitorProcessesAsync(stoppingToken);
+                    MarkCoordinatorProgress("Source discovery and probing");
+                    await DiscoverAndProbeAsync(stoppingToken);
+                    MarkCoordinatorProgress("Media-tool and DeckLink validation");
+                    await RefreshToolsAndPortsAsync(stoppingToken);
+                    MarkCoordinatorProgress("Route reconciliation");
+                    await ReconcileRoutesAsync(stoppingToken);
+                    MarkCoordinatorProgress("Standby reconciliation");
+                    await ReconcilePortStandbysAsync(stoppingToken);
+                    _reconciliationFailureLogGate.Reset();
+                    MarkCoordinatorProgress("Idle", completedCycle: true);
+                    Publish("Running");
                 }
-                MarkCoordinatorProgress("Cycle fault handled", completedCycle: true);
-                Publish("Reconciliation degraded");
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+                catch (Exception ex)
+                {
+                    var signature = $"{ex.GetType().FullName}:{ex.Message}";
+                    var decision = _reconciliationFailureLogGate.Evaluate(signature, DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1));
+                    if (decision.ShouldLog)
+                    {
+                        var suppressed = decision.SuppressedCount > 0
+                            ? $" {decision.SuppressedCount} identical failure(s) were suppressed during the previous minute."
+                            : "";
+                        logger.LogError(ex, "Router reconciliation cycle failed.{Suppressed}", suppressed);
+                        await store.WriteLogAsync("Error", "Coordinator",
+                            $"Reconciliation cycle failed: {ex.Message}.{suppressed}", cancellationToken: stoppingToken);
+                    }
+                    MarkCoordinatorProgress("Cycle fault handled", completedCycle: true);
+                    Publish("Reconciliation degraded");
+                }
+                await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
             }
-            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+        }
+        finally
+        {
+            try { await fastInputSupervision; }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        }
+    }
+
+    private async Task RunFastInputSupervisionAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+        {
+            var supervisor = _supervisor;
+            if (supervisor is null || _settings.SimulationMode) continue;
+            foreach (var observed in supervisor.Snapshot().Where(value =>
+                         value.Purpose == RouteProcessPurpose.Live && value.Running && value.InputFailure is not null))
+            {
+                var routeGate = _routeGates.GetOrAdd(observed.Source.Value, static _ => new SemaphoreSlim(1, 1));
+                if (!await routeGate.WaitAsync(0, cancellationToken)) continue;
+                try
+                {
+                    // Re-read both ownership and route state after acquiring the route gate.
+                    // This prevents a stale snapshot from stopping a replacement process.
+                    var current = supervisor.Snapshot().FirstOrDefault(value =>
+                        value.Source == observed.Source && value.ProcessId == observed.ProcessId
+                        && value.Purpose == RouteProcessPurpose.Live && value.Running);
+                    if (current?.InputFailure is not { } failure) continue;
+                    RuntimeRoute? route;
+                    lock (_gate) _routes.TryGetValue(observed.Source.Value, out route);
+                    if (route is null || route.State is not (RouteState.Starting or RouteState.Running)) continue;
+
+                    await supervisor.StopForOutputHandoffAsync(observed.Source, cancellationToken);
+                    await LogAsync("Warning", "InputLiveness",
+                        $"FFmpeg process {observed.ProcessId} reported {failure.Category}; the exact owned session was reaped within the fast supervision path. {failure.Detail}",
+                        route.SourceId, cancellationToken: cancellationToken);
+                    await ScheduleRetryAsync(route, "InputSessionLost",
+                        $"The live media session became unusable ({failure.Category}) and was recreated.", cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    await LogAsync("Error", "FastInputSupervision",
+                        $"Rapid recovery for owned FFmpeg process {observed.ProcessId} failed; the normal reconciler will retry. {LogRedactor.Redact(ex.Message)}",
+                        observed.Source.Value, cancellationToken: cancellationToken);
+                }
+                finally { routeGate.Release(); }
+            }
         }
     }
 
@@ -1519,6 +1571,10 @@ public sealed class RouterCoordinator(
         {
             try
             {
+                var routeGate = _routeGates.GetOrAdd(process.Source.Value, static _ => new SemaphoreSlim(1, 1));
+                await routeGate.WaitAsync(cancellationToken);
+                try
+                {
                 RuntimeRoute? route;
                 lock (_gate) _routes.TryGetValue(process.Source.Value, out route);
                 if (route is null) continue;
@@ -1529,17 +1585,6 @@ public sealed class RouterCoordinator(
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await ScheduleRetryAsync(route, "NoFirstProgress", "FFmpeg started but produced no progress before the startup deadline.", cancellationToken);
-            }
-            else if (process.Purpose == RouteProcessPurpose.Live
-                     && process.Running && process.InputFailure is { } inputFailure)
-            {
-                await _supervisor.StopAsync(process.Source, cancellationToken);
-                await LogAsync("Warning", "InputLiveness",
-                    $"FFmpeg process {process.ProcessId} reported {inputFailure.Category}; only this owned route session will be recreated. {inputFailure.Detail}",
-                    route.SourceId, cancellationToken: cancellationToken);
-                await ScheduleRetryAsync(route, "InputSessionLost",
-                    $"The RTSP input session became unusable ({inputFailure.Category}) and will be recreated.",
-                    cancellationToken);
             }
             else if (process.Purpose == RouteProcessPurpose.Live
                      && process.Running && FfmpegStallDetector.IsStalled(true, progress, now, TimeSpan.FromSeconds(_settings.Routing.StallTimeoutSeconds)))
@@ -1631,6 +1676,8 @@ public sealed class RouterCoordinator(
                     await ReplaceRouteAsync(route with { State = RouteState.Failed, FailureCategory = category.ToString(), FailureMessage = detail, UpdatedAt = DateTimeOffset.UtcNow }, route.State, cancellationToken);
                 else await ScheduleRetryAsync(route, category.ToString(), detail, cancellationToken);
             }
+                }
+                finally { routeGate.Release(); }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1740,14 +1787,28 @@ public sealed class RouterCoordinator(
         if (route.PortId is null) return;
         DeckLinkPort? port;
         OutputPresetProfile? preset;
+        DeckLinkPortOverride? portConfiguration;
         lock (_gate)
         {
             _ports.TryGetValue(route.PortId, out port);
             preset = _settings.Presets.FirstOrDefault(x => x.Id == route.PresetId);
+            portConfiguration = _settings.DeckLinkPortOverrides.FirstOrDefault(value =>
+                value.StableId.Equals(route.PortId, StringComparison.OrdinalIgnoreCase));
         }
         if (port is null || preset is null) throw new InvalidOperationException("The reserved port or output preset is unavailable.");
         EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
-        await _supervisor!.StartFallbackAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(), preset.StandbyMode, preset.StandbyValue, cancellationToken);
+        if (portConfiguration?.StandbyEnabled == true)
+        {
+            await _supervisor!.StartRecoveryStandbyAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(),
+                new PortStandbyConfiguration(portConfiguration.StandbyPattern,
+                    EmptyToNull(portConfiguration.StandbyLogoPath), portConfiguration.StandbyLabel,
+                    portConfiguration.StandbyShowClock), cancellationToken);
+        }
+        else
+        {
+            await _supervisor!.StartFallbackAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(),
+                preset.StandbyMode, preset.StandbyValue, cancellationToken);
+        }
     }
 
     private async Task StopRouteAsync(string sourceId, bool forceRelease, CancellationToken cancellationToken,
