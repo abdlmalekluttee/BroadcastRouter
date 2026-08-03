@@ -44,7 +44,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.9`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.10`.
 3. Run `BroadcastRouter.Server.exe` once as the dedicated Windows broadcast account to complete configuration and hardware validation.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.

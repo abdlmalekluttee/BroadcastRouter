@@ -36,7 +36,6 @@ public sealed class FfmpegProcessSupervisor(
     private static readonly TimeSpan StreamDrainTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan QuitSignalTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan MediaStarvationStartupGrace = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan MediaStarvationPairingWindow = TimeSpan.FromSeconds(3);
     internal const int RetainedExitedOwners = 256;
     private readonly ConcurrentDictionary<string, ManagedProcess> _running = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RouteProcessSnapshot> _last = new(StringComparer.Ordinal);
@@ -244,10 +243,10 @@ public sealed class FfmpegProcessSupervisor(
                 var safe = LogRedactor.Redact(line);
                 managed.AddError(safe);
                 if (FfmpegInputFailureDetector.TryClassify(safe, out var category))
-                    managed.InputFailure = new(category, safe, observedAt);
+                    managed.InputFailure ??= new(category, safe, observedAt);
                 else if (managed.MediaStarvationDetector.Observe(safe, observedAt, managed.StartedAt,
-                             MediaStarvationStartupGrace, MediaStarvationPairingWindow, out var starvationDetail))
-                    managed.InputFailure = new("DeckLinkMediaStarved", starvationDetail, observedAt);
+                             MediaStarvationStartupGrace, out var starvationCategory, out var starvationDetail))
+                    managed.InputFailure ??= new(starvationCategory, starvationDetail, observedAt);
             }
         }
         catch (OperationCanceledException) when (managed.PumpCancellation.IsCancellationRequested) { }
