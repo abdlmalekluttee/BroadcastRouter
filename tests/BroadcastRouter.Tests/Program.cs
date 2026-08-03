@@ -67,6 +67,9 @@ var tests = new (string Name, Action Body)[]
     ("DeckLink output failures are not mislabeled as network", DeckLinkOutputFailureIsClassified),
     ("FFmpeg RTSP protocol loss is retryable input failure", FfmpegRtspProtocolLossIsRetryable),
     ("Owned supervisor captures RTSP protocol loss", SupervisorCapturesRtspProtocolLoss),
+    ("Paired DeckLink media starvation is fatal after startup", PairedDeckLinkMediaStarvationIsDetected),
+    ("Transient DeckLink media starvation is ignored", TransientDeckLinkMediaStarvationIsIgnored),
+    ("Owned supervisor captures paired DeckLink media starvation", SupervisorCapturesDeckLinkMediaStarvation),
     ("FFprobe media parsing", FfprobeMediaIsParsed),
     ("FFprobe scan type parsing", FfprobeScanTypeIsParsed),
     ("FFprobe accepts audio-led sparse video", FfprobeAcceptsAudioLedSparseVideo),
@@ -909,6 +912,73 @@ static void SupervisorCapturesRtspProtocolLoss()
         True(snapshot!.InputFailure is not null);
         Equal("RtspProtocolDesynchronized", snapshot!.InputFailure!.Category);
         True(snapshot.InputFailure.Detail.Contains("CSeq 96 expected, 0 received", StringComparison.Ordinal));
+    }
+    finally
+    {
+        supervisor.StopAsync(owner, CancellationToken.None).GetAwaiter().GetResult();
+        supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+}
+
+static void PairedDeckLinkMediaStarvationIsDetected()
+{
+    var detector = new FfmpegMediaStarvationDetector();
+    var startedAt = DateTimeOffset.UtcNow;
+    var observedAt = startedAt.AddSeconds(30);
+    True(!detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
+        observedAt, startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out _));
+    True(detector.Observe("[decklink] There's no buffered audio. Audio will misbehave!",
+        observedAt.AddMilliseconds(600), startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out var detail));
+    True(detail.Contains("simultaneous", StringComparison.OrdinalIgnoreCase));
+}
+
+static void TransientDeckLinkMediaStarvationIsIgnored()
+{
+    var detector = new FfmpegMediaStarvationDetector();
+    var startedAt = DateTimeOffset.UtcNow;
+    True(!detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
+        startedAt.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out _));
+    True(!detector.Observe("[decklink] There's no buffered audio. Audio will misbehave!",
+        startedAt.AddSeconds(1.2), startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out _));
+    True(!detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
+        startedAt.AddSeconds(10), startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out _));
+    True(!detector.Observe("[decklink] There's no buffered audio. Audio will misbehave!",
+        startedAt.AddSeconds(14), startedAt, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3), out _));
+}
+
+static void SupervisorCapturesDeckLinkMediaStarvation()
+{
+    var supervisor = new FfmpegProcessSupervisor(
+        new FfmpegRouteOptions("ffmpeg.exe"), TimeSpan.FromMilliseconds(250));
+    var owner = new SourceIdentity("SIM", "live", "_definst_", $"decklink-starvation-{Guid.NewGuid():N}");
+    var start = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+    {
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        RedirectStandardInput = true,
+        CreateNoWindow = true
+    };
+    start.ArgumentList.Add("-NoProfile");
+    start.ArgumentList.Add("-Command");
+    start.ArgumentList.Add("[Console]::Out.WriteLine('frame=1'); [Console]::Out.WriteLine('progress=continue'); "
+        + "Start-Sleep -Seconds 6; "
+        + "[Console]::Error.WriteLine('[decklink] There are not enough buffered video frames. Video may misbehave!'); "
+        + "[Console]::Error.WriteLine(\"[decklink] There's no buffered audio. Audio will misbehave!\"); "
+        + "Start-Sleep -Seconds 15");
+
+    try
+    {
+        supervisor.StartOwnedProcessForTestingAsync(owner, start).GetAwaiter().GetResult();
+        RouteProcessSnapshot? snapshot = null;
+        var captured = SpinWait.SpinUntil(() =>
+        {
+            snapshot = supervisor.Snapshot().SingleOrDefault(value => value.Source == owner);
+            return snapshot?.InputFailure is not null;
+        }, TimeSpan.FromSeconds(12));
+
+        True(captured);
+        Equal("DeckLinkMediaStarved", snapshot!.InputFailure!.Category);
     }
     finally
     {

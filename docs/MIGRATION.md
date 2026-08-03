@@ -36,4 +36,6 @@ Version 1.5.7 does not change the settings or database schema. It completes RTSP
 
 Version 1.5.8 does not change the settings or database schema. It routes an active saved entry through retry/fallback when its live process disappears before reconciliation, preventing a direct `Running` → `Reserved` transition. Repeat the controlled owned-PID termination drill and require zero invalid-transition or duplicate-owner errors.
 
+Version 1.5.9 does not change the settings or database schema. It adds fast, route-scoped recovery when a live FFmpeg process reports paired DeckLink video/audio starvation after a rapid upstream reset. Repeat the rapid `resetStream` drill against one controlled source, require the configured silent per-port standby during recovery, and verify the exact old PID exits before replacement live playout begins.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.
