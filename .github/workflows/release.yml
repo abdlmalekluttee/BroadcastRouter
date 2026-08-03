@@ -33,4 +33,32 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem .\artifacts\*.zip).FullName (Get-ChildItem .\artifacts\*.sha256).FullName --verify-tag --generate-notes --title "BroadcastRouter $env:GITHUB_REF_NAME"
+        run: |
+          $assets = @(
+            (Get-ChildItem .\artifacts\*.zip).FullName
+            (Get-ChildItem .\artifacts\*.sha256).FullName
+          )
+
+          $null = gh release view $env:GITHUB_REF_NAME 2>$null
+          $releaseExists = $LASTEXITCODE -eq 0
+
+          if (-not $releaseExists) {
+            gh release create $env:GITHUB_REF_NAME `
+              --verify-tag `
+              --generate-notes `
+              --title "BroadcastRouter $env:GITHUB_REF_NAME"
+
+            if ($LASTEXITCODE -ne 0) {
+              # A manual publisher may have created the release after our first
+              # existence check. Continue only if that release now exists.
+              $null = gh release view $env:GITHUB_REF_NAME 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                throw "Unable to create or locate release $env:GITHUB_REF_NAME."
+              }
+            }
+          }
+
+          gh release upload $env:GITHUB_REF_NAME $assets --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to upload release assets for $env:GITHUB_REF_NAME."
+          }

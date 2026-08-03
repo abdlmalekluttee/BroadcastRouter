@@ -892,20 +892,21 @@ static void SupervisorCapturesRtspProtocolLoss()
     start.ArgumentList.Add("-NoProfile");
     start.ArgumentList.Add("-Command");
     start.ArgumentList.Add("[Console]::Error.WriteLine('[in#0/rtsp] CSeq 96 expected, 0 received.'); "
-        + "[Console]::Out.WriteLine('frame=1'); [Console]::Out.WriteLine('progress=continue'); Start-Sleep -Seconds 5");
+        + "[Console]::Out.WriteLine('frame=1'); [Console]::Out.WriteLine('progress=continue'); Start-Sleep -Seconds 15");
 
     try
     {
         supervisor.StartOwnedProcessForTestingAsync(owner, start).GetAwaiter().GetResult();
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
         RouteProcessSnapshot? snapshot = null;
-        do
+        var captured = SpinWait.SpinUntil(() =>
         {
-            Thread.Sleep(25);
             snapshot = supervisor.Snapshot().SingleOrDefault(value => value.Source == owner);
-        }
-        while (snapshot?.InputFailure is null && DateTimeOffset.UtcNow < deadline);
+            return snapshot?.InputFailure is not null;
+        }, TimeSpan.FromSeconds(10));
 
+        True(captured);
+        True(snapshot is not null);
+        True(snapshot!.InputFailure is not null);
         Equal("RtspProtocolDesynchronized", snapshot!.InputFailure!.Category);
         True(snapshot.InputFailure.Detail.Contains("CSeq 96 expected, 0 received", StringComparison.Ordinal));
     }
