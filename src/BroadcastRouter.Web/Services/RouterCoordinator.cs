@@ -408,7 +408,7 @@ public sealed class RouterCoordinator(
             var supervisor = _supervisor;
             if (supervisor is null || _settings.SimulationMode) continue;
             foreach (var observed in supervisor.Snapshot().Where(value =>
-                         value.Purpose == RouteProcessPurpose.Live && value.Running && value.InputFailure is not null))
+                         value.Purpose == RouteProcessPurpose.Live && value.Running))
             {
                 var routeGate = _routeGates.GetOrAdd(observed.Source.Value, static _ => new SemaphoreSlim(1, 1));
                 if (!await routeGate.WaitAsync(0, cancellationToken)) continue;
@@ -419,17 +419,32 @@ public sealed class RouterCoordinator(
                     var current = supervisor.Snapshot().FirstOrDefault(value =>
                         value.Source == observed.Source && value.ProcessId == observed.ProcessId
                         && value.Purpose == RouteProcessPurpose.Live && value.Running);
-                    if (current?.InputFailure is not { } failure) continue;
+                    if (current is null) continue;
                     RuntimeRoute? route;
                     lock (_gate) _routes.TryGetValue(observed.Source.Value, out route);
                     if (route is null || route.State is not (RouteState.Starting or RouteState.Running)) continue;
 
+                    var failure = current.InputFailure;
+                    var frozen = failure is null && IsInputFrozen(current, DateTimeOffset.UtcNow);
+                    if (failure is null && !frozen) continue;
+
                     await supervisor.StopForOutputHandoffAsync(observed.Source, cancellationToken);
-                    await LogAsync("Warning", "InputLiveness",
-                        $"FFmpeg process {observed.ProcessId} reported {failure.Category}; the exact owned session was reaped within the fast supervision path. {failure.Detail}",
-                        route.SourceId, cancellationToken: cancellationToken);
-                    await ScheduleRetryAsync(route, "InputSessionLost",
-                        $"The live media session became unusable ({failure.Category}) and was recreated.", cancellationToken);
+                    if (failure is not null)
+                    {
+                        await LogAsync("Warning", "InputLiveness",
+                            $"FFmpeg process {observed.ProcessId} reported {failure.Category}; the exact owned session was reaped within the fast supervision path. {failure.Detail}",
+                            route.SourceId, cancellationToken: cancellationToken);
+                        await ScheduleRetryAsync(route, "InputSessionLost",
+                            $"The live media session became unusable ({failure.Category}) and was recreated.", cancellationToken);
+                    }
+                    else
+                    {
+                        await LogAsync("Warning", "InputLiveness",
+                            $"FFmpeg process {observed.ProcessId} produced a duplicate-dominated burst; the stale decoder was reaped within the fast supervision path.",
+                            route.SourceId, cancellationToken: cancellationToken);
+                        await ScheduleRetryAsync(route, "InputFrozen",
+                            "A rapid duplicate-frame burst indicated a short RTSP interruption; the decoder session was recreated.", cancellationToken);
+                    }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception ex)
@@ -1751,8 +1766,9 @@ public sealed class RouterCoordinator(
                 _inputFreezeDetectors[process.Source.Value] = detector;
             }
         }
+        var allowRapidBurst = source.Media.FramesPerSecond is >= 10;
         return detector.Observe(process.ProcessId, process.Progress, now,
-            TimeSpan.FromSeconds(_settings.Routing.FrozenInputTimeoutSeconds));
+            TimeSpan.FromSeconds(_settings.Routing.FrozenInputTimeoutSeconds), allowRapidBurst);
     }
 
     private async Task ScheduleRetryAsync(RuntimeRoute route, string category, string detail, CancellationToken cancellationToken)

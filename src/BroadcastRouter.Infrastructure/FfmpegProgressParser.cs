@@ -62,14 +62,18 @@ public static class FfmpegStallDetector
         processRunning && (progress is null || progress.Frame <= 0) && timeout > TimeSpan.Zero && now - startedAt > timeout;
 }
 
-public sealed class FfmpegInputFreezeDetector(double minimumDuplicateRatio = 0.90, long minimumFrameAdvance = 5)
+public sealed class FfmpegInputFreezeDetector(
+    double minimumDuplicateRatio = 0.90,
+    long minimumFrameAdvance = 5,
+    long rapidBurstDuplicateThreshold = 12)
 {
     private int? _processId;
     private long _frame;
     private long _duplicatedFrames;
     private DateTimeOffset? _duplicateDominatedSince;
 
-    public bool Observe(int processId, FfmpegProgressSnapshot? progress, DateTimeOffset observedAt, TimeSpan timeout)
+    public bool Observe(int processId, FfmpegProgressSnapshot? progress, DateTimeOffset observedAt, TimeSpan timeout,
+        bool allowRapidBurst = true)
     {
         if (progress is null || progress.Completed || timeout <= TimeSpan.Zero)
         {
@@ -95,6 +99,14 @@ public sealed class FfmpegInputFreezeDetector(double minimumDuplicateRatio = 0.9
             _duplicateDominatedSince = null;
             return false;
         }
+
+        // FFmpeg's fps filter duplicates the last decoded frame when the RTSP
+        // session disappears without closing its TCP socket. A half-second
+        // burst at normal broadcast rates is enough evidence to recreate the
+        // decoder immediately. Low-frame-rate sources opt out at the caller and
+        // continue using the duration-based detector below.
+        if (allowRapidBurst && duplicatedAdvance >= rapidBurstDuplicateThreshold)
+            return true;
 
         _duplicateDominatedSince ??= observedAt;
         return observedAt - _duplicateDominatedSince.Value >= timeout;

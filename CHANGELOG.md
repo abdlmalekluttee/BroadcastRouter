@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.13 — 2026-08-04
+
+- Remove the unsupported generic `rw_timeout` argument after the exact production FFmpeg build proved it exits immediately with `Option rw_timeout not found`; retain the validated RTSP demuxer `timeout` option.
+- Move duplicate-frame burst detection into the 250 ms supervision path so a normal-rate source that freezes for roughly half a second is reaped and returned through silent standby/retry without waiting for the slower reconciliation cycle.
+- Keep low-frame-rate inputs on the duration-based freeze detector so intentional sparse video does not cause rapid false-positive restarts.
+
 ## 1.5.12 — 2026-08-04
 
 - Apply the configured input deadline to both FFmpeg's RTSP `timeout` and generic established-socket `rw_timeout`; the first 1.5.11 live drill proved the RTSP option alone did not terminate the frozen session.

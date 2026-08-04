@@ -2,9 +2,9 @@
 
 Review date: 2026-08-01
 Review branch: `codex/coordinator-liveness-recovery`
-Current release branch: `codex/rtsp-io-timeout-saved-retry` (1.5.12)
+Current release branch: `codex/rapid-reset-safe-timeout` (1.5.13)
 Reviewed baseline: release `1.3.6`
-Resulting release version: `1.5.12`
+Resulting release version: `1.5.13`
 
 ## Executive summary
 
@@ -46,7 +46,7 @@ The first 1.5.9 production reset drill showed the video and audio starvation lin
 
 The first 1.5.10 production drill reaped the exact old PID and kept the service healthy, but replacement live playout still appeared after roughly 11.2 seconds. The synchronized log showed an overlapping eight-second FFprobe timeout had marked the source offline, so the saved route waited for a later discovery result. Version 1.5.11 makes the RTSP input read deadline configurable with a 1000 ms default, allows saved routes to retry their already-known URI during that transient state, and prevents stale probe state from overriding advancing real video from the owned replacement process.
 
-The first 1.5.11 production drill showed that FFmpeg's RTSP `timeout` option did not bound reads on the already-established media socket. Discovery then stopped the old PID after roughly 6.5 seconds and demoted the saved route to `WaitingForStream`; replacement took about 25 seconds. Version 1.5.12 also sets the generic `rw_timeout`, converts transient saved-route loss to fallback/retry, and gives the replacement a bounded startup grace.
+The first 1.5.11 production drill showed that discovery-based recovery was too slow for a rapid reset. Version 1.5.12 attempted to add generic `rw_timeout`, but the exact production FFmpeg build rejected that input option and immediately recycled every route. Version 1.5.13 removes the rejected argument, keeps the verified RTSP `timeout`, preserves saved-route fallback/retry, and detects a normal-rate duplicate-frame burst in the 250 ms supervision path.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. RTSP frame receipt, H.264/AAC fragmented-MP4 streaming, the VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified in a controlled lab; physical DeckLink picture/audio observation remains an environment-specific validation step.
 
@@ -138,7 +138,7 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-046 | Critical | Rapid reset leaves alive FFmpeg frozen and silent | `Infrastructure/FfmpegMediaStarvationDetector.cs`; `Infrastructure/FfmpegProcessSupervisor.cs`; `Web/Services/RouterCoordinator.cs` | FFmpeg could continue synthetic output progress after a sub-second upstream reset while DeckLink simultaneously starved for video and audio, so the route appeared `Running` indefinitely. | **Partially fixed in 1.5.9; completed in 1.5.10.** Fatal post-startup starvation is consumed by an independent 250 ms route-scoped supervisor; recovery uses exact-PID handoff and configured per-port standby. Regressions cover detection, startup false-positive rejection, and supervisor capture. |
 | BR-047 | Critical | Starvation correlation and retry latency gap | `Infrastructure/FfmpegMediaStarvationDetector.cs`; `Infrastructure/FfmpegProcessSupervisor.cs`; `Web/Services/RouterCoordinator.cs` | Production emitted the DeckLink video/audio warnings outside the 1.5.9 three-second pairing window; after route failure, live retry could also wait behind long discovery/probe work. | **Fixed in 1.5.10.** Either post-startup starvation warning is immediately fatal, the first signal remains sticky, and due restarts execute on the serialized 250 ms path. Startup warnings inside five seconds remain ignored. |
 | BR-048 | Critical | Saved recovery blocked by stale discovery state | `Domain/OperatorSettings.cs`; `Application/RapidStreamRecoveryPolicy.cs`; `Web/Services/RouterCoordinator.cs` | The 1.5.10 live drill measured an 11.2-second replacement because an overlapping FFprobe timeout marked the source offline and prevented the due saved-route retry. | **Fixed in 1.5.11.** The owned RTSP read deadline defaults to 1000 ms, saved routes may retry their known URI before discovery catches up, and advancing real video from the owned replacement outranks stale probe state. |
-| BR-049 | Critical | Established RTSP read and route-state retry gap | `Infrastructure/FfmpegCommandBuilder.cs`; `Application/RapidStreamRecoveryPolicy.cs`; `Web/Services/RouterCoordinator.cs` | The first 1.5.11 live drill proved RTSP `timeout` alone did not stop an established frozen socket; discovery later demoted the saved route to `WaitingForStream`, discarding the due retry. | **Fixed in 1.5.12.** Both `rw_timeout` and RTSP `timeout` are set, transient saved-route loss enters fallback/retry, and replacement startup receives a bounded grace. |
+| BR-049 | Critical | Rapid RTSP reset and saved-route retry gap | `Infrastructure/FfmpegCommandBuilder.cs`; `Infrastructure/FfmpegProgressParser.cs`; `Application/RapidStreamRecoveryPolicy.cs`; `Web/Services/RouterCoordinator.cs` | A rapid reset could leave FFmpeg advancing with duplicate video while discovery later demoted the saved route to `WaitingForStream`. The 1.5.12 attempt to add `rw_timeout` regressed production because the exact FFmpeg build rejects that option. | **Fixed in 1.5.13.** Use only the validated RTSP `timeout`, preserve saved routes in fallback/retry, and detect normal-rate duplicate bursts in the 250 ms supervision path while exempting low-frame-rate sources from burst classification. |
 
 ## GUI review
 
@@ -161,7 +161,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89. Version 1.5.6: 98/98. Version 1.5.7: 102/102. Version 1.5.8: 103/103. Version 1.5.9: 106/106. Version 1.5.11: 108/108. Version 1.5.12: 110/110 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89. Version 1.5.6: 98/98. Version 1.5.7: 102/102. Version 1.5.8: 103/103. Version 1.5.9: 106/106. Version 1.5.11: 108/108. Version 1.5.12: 110/110. Version 1.5.13: 111/111 tests.
 
 Added coverage:
 

@@ -41,7 +41,11 @@ public static class FfmpegCommandBuilder
         if (options.ReadTimeout is { } timeout)
         {
             var microseconds = ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture);
-            Add(start, "-rw_timeout", microseconds, "-timeout", microseconds);
+            // This DeckLink-enabled Windows build exposes the RTSP demuxer's
+            // timeout option but rejects the generic rw_timeout token at input
+            // open time. Keep the command on the capability that is actually
+            // validated by MediaToolValidator.
+            Add(start, "-timeout", microseconds);
         }
         if (preset.BufferSizeMegabytes > 0) Add(start, "-buffer_size", $"{preset.BufferSizeMegabytes}M");
         if (preset.LowLatency)
