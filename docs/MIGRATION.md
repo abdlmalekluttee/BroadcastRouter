@@ -52,4 +52,6 @@ Version 1.5.17 requires no settings or database migration. It consumes the one-s
 
 Version 1.5.18 requires no settings or database migration. It replaces the one-shot return transition with a one-second bounded recovery cadence while authoritative Wowza state is connected and a saved route remains in fallback/reconnect. Repeat at least three rapid resets and require consistent automatic restoration without service restart, orphan processes, or a slow-discovery outlier.
 
+Version 1.5.19 requires no settings or database migration. It extends authoritative connected-publisher recovery to saved routes that reached `WaitingForStream` after an early reconnect attempt, and immediately reconciles that route without waiting for the long media probe. Repeat at least three rapid resets and require the route to recover automatically from both fallback and waiting-for-stream states, with a stable service PID and no orphan media process.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

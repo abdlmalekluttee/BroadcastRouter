@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.19 — 2026-08-04
+
+- Keep saved `WaitingForStream` routes inside the authoritative Wowza publisher-return supervisor after an early reconnect attempt reaches RTSP before media is ready.
+- Reconcile the saved route immediately when Wowza reports the publisher connected, retaining previously validated media and bypassing the long FFprobe confirmation path.
+- Add a production-derived regression for the exact `Fallback -> Starting -> Fallback -> WaitingForStream` recovery sequence observed during a sub-second Wowza reset.
+
 ## 1.5.18 — 2026-08-04
 
 - Replace the fragile one-shot publisher-return wake-up with bounded authoritative recovery while a saved route is reconnecting or on standby.

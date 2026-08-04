@@ -4,6 +4,14 @@ namespace BroadcastRouter.Application;
 
 public static class RapidStreamRecoveryPolicy
 {
+    public static bool ShouldSupervisePublisher(RuntimeRoute route) =>
+        route.State is RouteState.Starting or RouteState.Running
+        || CanAccelerateConnectedPublisherRecovery(route);
+
+    public static bool CanAccelerateConnectedPublisherRecovery(RuntimeRoute route) =>
+        DesiredRoutePolicy.HasSavedAssignment(route)
+        && route.State is RouteState.Reconnecting or RouteState.Fallback or RouteState.WaitingForStream;
+
     public static DiscoveredSource MarkPublisherRestored(DiscoveredSource source, DateTimeOffset observedAt) =>
         source with
         {

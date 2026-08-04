@@ -42,6 +42,7 @@ var tests = new (string Name, Action Body)[]
     ("Saved recovery attempt receives startup grace", SavedRecoveryAttemptReceivesStartupGrace),
     ("Fast publisher disconnect requires confirmation", FastPublisherDisconnectRequiresConfirmation),
     ("Publisher return preserves validated readiness", PublisherReturnPreservesValidatedReadiness),
+    ("Connected publisher accelerates saved waiting route", ConnectedPublisherAcceleratesSavedWaitingRoute),
     ("Automatic assignment", AutomaticAssignmentUsesOnePort),
     ("Automatic assignment ignores input-only ports", AutomaticAssignmentIgnoresInputOnlyPorts),
     ("Saved routing priority and protection", SavedRoutingPriorityAndProtection),
@@ -246,6 +247,22 @@ static void PublisherReturnPreservesValidatedReadiness()
     Equal(SourceState.Ready, restoredKnown.State);
     Equal(SourceState.PublisherActive, restoredUnknown.State);
     Equal(now, restoredKnown.LastObservedAt);
+}
+
+static void ConnectedPublisherAcceleratesSavedWaitingRoute()
+{
+    var now = DateTimeOffset.UtcNow;
+    True(RapidStreamRecoveryPolicy.ShouldSupervisePublisher(RapidSavedRoute(RouteState.Running, now)));
+    True(RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
+        RapidSavedRoute(RouteState.Reconnecting, now)));
+    True(RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
+        RapidSavedRoute(RouteState.Fallback, now)));
+    True(RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
+        RapidSavedRoute(RouteState.WaitingForStream, now)));
+    True(!RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
+        RapidSavedRoute(RouteState.WaitingForStream, now) with { AssignmentMode = AssignmentMode.Automatic }));
+    True(!RapidStreamRecoveryPolicy.ShouldSupervisePublisher(
+        RapidSavedRoute(RouteState.Released, now)));
 }
 
 static RuntimeRoute RapidSavedRoute(RouteState state, DateTimeOffset now) => new(

@@ -476,10 +476,7 @@ public sealed class RouterCoordinator(
         CancellationToken cancellationToken)
     {
         var settings = GetSettings();
-        var supervisedRoutes = RoutesCopy().Where(route =>
-            route.State is RouteState.Starting or RouteState.Running
-            || (DesiredRoutePolicy.HasSavedAssignment(route)
-                && route.State is RouteState.Reconnecting or RouteState.Fallback)).ToArray();
+        var supervisedRoutes = RoutesCopy().Where(RapidStreamRecoveryPolicy.ShouldSupervisePublisher).ToArray();
         if (supervisedRoutes.Length == 0) return;
 
         var sources = SourcesCopy().ToDictionary(source => source.Identity.Value, StringComparer.Ordinal);
@@ -502,6 +499,7 @@ public sealed class RouterCoordinator(
                 var publisherConnected = connected.Contains(candidate.SourceId);
                 if (publisherConnected)
                 {
+                    var reconcileConnectedRoute = false;
                     var recoveryGate = _routeGates.GetOrAdd(candidate.SourceId, static _ => new SemaphoreSlim(1, 1));
                     if (!await recoveryGate.WaitAsync(0, cancellationToken)) continue;
                     try
@@ -515,8 +513,7 @@ public sealed class RouterCoordinator(
                             _sources.TryGetValue(candidate.SourceId, out recoverySource);
                         }
                         if (recoveryRoute is null || recoverySource is null
-                            || !DesiredRoutePolicy.HasSavedAssignment(recoveryRoute)
-                            || recoveryRoute.State is not (RouteState.Reconnecting or RouteState.Fallback)) continue;
+                            || !RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(recoveryRoute)) continue;
 
                         var now = DateTimeOffset.UtcNow;
                         bool recoveryThrottled;
@@ -543,10 +540,13 @@ public sealed class RouterCoordinator(
                             UpdatedAt = now
                         }, recoveryRoute.State, cancellationToken);
                         await LogAsync("Information", "PublisherPresence",
-                            "Wowza reports the saved publisher connected; the reserved route was made immediately eligible for bounded live recovery.",
+                            "Wowza reports the saved publisher connected; fallback or waiting-for-stream recovery was made immediately eligible without waiting for FFprobe.",
                             candidate.SourceId, cancellationToken: cancellationToken);
+                        reconcileConnectedRoute = true;
                     }
                     finally { recoveryGate.Release(); }
+                    if (reconcileConnectedRoute)
+                        await ReconcileSavedRouteAsync(candidate.SourceId, cancellationToken);
                     continue;
                 }
 
