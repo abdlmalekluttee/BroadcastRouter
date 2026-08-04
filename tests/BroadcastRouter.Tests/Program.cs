@@ -40,6 +40,7 @@ var tests = new (string Name, Action Body)[]
     ("Owned video progress outranks a stale probe", OwnedVideoProgressOutranksStaleProbe),
     ("Saved route enters retry on transient source loss", SavedRouteEntersRetryOnTransientLoss),
     ("Saved recovery attempt receives startup grace", SavedRecoveryAttemptReceivesStartupGrace),
+    ("Fast publisher disconnect requires confirmation", FastPublisherDisconnectRequiresConfirmation),
     ("Automatic assignment", AutomaticAssignmentUsesOnePort),
     ("Automatic assignment ignores input-only ports", AutomaticAssignmentIgnoresInputOnlyPorts),
     ("Saved routing priority and protection", SavedRoutingPriorityAndProtection),
@@ -214,6 +215,18 @@ static void SavedRecoveryAttemptReceivesStartupGrace()
         route, false, true, now.AddSeconds(-4), now, TimeSpan.FromSeconds(3)));
     True(!RapidStreamRecoveryPolicy.ShouldKeepStartingAttempt(
         route, false, false, now.AddMilliseconds(-500), now, TimeSpan.FromSeconds(3)));
+}
+
+static void FastPublisherDisconnectRequiresConfirmation()
+{
+    var detector = new PublisherDisconnectDetector(requiredObservations: 2);
+    True(!detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
+    True(detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
+    True(detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
+    True(!detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: true));
+    True(!detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
+    detector.Forget("WOWZA/live/_definst_/rapid.stream");
+    True(!detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
 }
 
 static RuntimeRoute RapidSavedRoute(RouteState state, DateTimeOffset now) => new(

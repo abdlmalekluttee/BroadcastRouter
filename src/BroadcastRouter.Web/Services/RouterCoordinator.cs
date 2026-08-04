@@ -42,6 +42,7 @@ public sealed class RouterCoordinator(
     private readonly Dictionary<string, DateTimeOffset> _cutoverStartedAt = new(StringComparer.Ordinal);
     private readonly StartupRouteRecoveryTracker _startupRecovery = new();
     private readonly RepeatedFailureLogGate _reconciliationFailureLogGate = new();
+    private readonly PublisherDisconnectDetector _publisherDisconnectDetector = new(requiredObservations: 2);
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private readonly object _livenessGate = new();
     private readonly object _metricsGate = new();
@@ -402,11 +403,12 @@ public sealed class RouterCoordinator(
 
     private async Task RunFastInputSupervisionAsync(CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
             var supervisor = _supervisor;
             if (supervisor is null || _settings.SimulationMode) continue;
+            await SuperviseWowzaPublisherPresenceAsync(supervisor, cancellationToken);
             foreach (var observed in supervisor.Snapshot().Where(value =>
                          value.Purpose == RouteProcessPurpose.Live && value.Running))
             {
@@ -464,6 +466,76 @@ public sealed class RouterCoordinator(
                 lock (_gate) _sources.TryGetValue(route.SourceId, out source);
                 if (!RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(route, source)) continue;
                 await RestartReservedRouteAsync(route, cancellationToken);
+            }
+        }
+    }
+
+    private async Task SuperviseWowzaPublisherPresenceAsync(
+        FfmpegProcessSupervisor supervisor,
+        CancellationToken cancellationToken)
+    {
+        var settings = GetSettings();
+        var activeRoutes = RoutesCopy().Where(route =>
+            route.State is RouteState.Starting or RouteState.Running).ToArray();
+        if (activeRoutes.Length == 0) return;
+
+        var sources = SourcesCopy().ToDictionary(source => source.Identity.Value, StringComparer.Ordinal);
+        foreach (var profile in settings.WowzaServers.Where(profile => profile.Enabled))
+        {
+            var candidates = activeRoutes.Where(route =>
+                    sources.TryGetValue(route.SourceId, out var source)
+                    && source.Identity.ServerId.Equals(profile.ServerId, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (candidates.Length == 0) continue;
+
+            var poll = await PollWowzaServerAsync(profile, cancellationToken);
+            if (poll.Error is not null) continue;
+            var connected = poll.Discovered.Where(source => source.State == SourceState.PublisherActive)
+                .Select(source => source.Identity.Value)
+                .ToHashSet(StringComparer.Ordinal);
+
+            foreach (var candidate in candidates)
+            {
+                var publisherConnected = connected.Contains(candidate.SourceId);
+                if (!_publisherDisconnectDetector.Observe(candidate.SourceId, publisherConnected)) continue;
+
+                var routeGate = _routeGates.GetOrAdd(candidate.SourceId, static _ => new SemaphoreSlim(1, 1));
+                if (!await routeGate.WaitAsync(0, cancellationToken)) continue;
+                try
+                {
+                    RuntimeRoute? route;
+                    DiscoveredSource? source;
+                    lock (_gate)
+                    {
+                        _routes.TryGetValue(candidate.SourceId, out route);
+                        _sources.TryGetValue(candidate.SourceId, out source);
+                    }
+                    if (route is null || source is null
+                        || route.State is not (RouteState.Starting or RouteState.Running)) continue;
+
+                    var current = supervisor.Snapshot().FirstOrDefault(value =>
+                        value.Source == source.Identity && value.Purpose == RouteProcessPurpose.Live && value.Running);
+                    if (current is null) continue;
+
+                    await supervisor.StopForOutputHandoffAsync(source.Identity, cancellationToken);
+                    lock (_gate)
+                    {
+                        _sources[candidate.SourceId] = source with
+                        {
+                            State = SourceState.PublisherDisconnected,
+                            LastObservedAt = DateTimeOffset.UtcNow
+                        };
+                        _sourceReadySince.Remove(candidate.SourceId);
+                        _sourceMissingSince[candidate.SourceId] = DateTimeOffset.UtcNow;
+                    }
+                    await LogAsync("Warning", "PublisherPresence",
+                        $"Wowza reported the publisher missing twice within the 100 ms supervision loop; FFmpeg process {current.ProcessId} was reaped before stale SDI output could persist.",
+                        candidate.SourceId, cancellationToken: cancellationToken);
+                    await ScheduleRetryAsync(route, "PublisherDisconnected",
+                        "Wowza reported a rapid publisher interruption; silent standby is active while the saved route retries.",
+                        cancellationToken);
+                }
+                finally { routeGate.Release(); }
             }
         }
     }

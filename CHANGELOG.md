@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.14 — 2026-08-04
+
+- Add an independent 100 ms Wowza publisher-presence monitor for active routes so two consecutive disconnected/missing observations reap the exact live FFmpeg owner without waiting for the multi-second discovery and FFprobe cycle.
+- Immediately move a confirmed rapid publisher interruption to silent standby and saved-route retry while preserving the output reservation and service host.
+- Keep REST transport failures fail-open for healthy routes; only an authoritative successful Wowza response can declare a publisher disconnected.
+
 ## 1.5.13 — 2026-08-04
 
 - Remove the unsupported generic `rw_timeout` argument after the exact production FFmpeg build proved it exits immediately with `Option rw_timeout not found`; retain the validated RTSP demuxer `timeout` option.
