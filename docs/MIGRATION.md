@@ -54,4 +54,6 @@ Version 1.5.18 requires no settings or database migration. It replaces the one-s
 
 Version 1.5.19 requires no settings or database migration. It extends authoritative connected-publisher recovery to saved routes that reached `WaitingForStream` after an early reconnect attempt, and immediately reconciles that route without waiting for the long media probe. Repeat at least three rapid resets and require the route to recover automatically from both fallback and waiting-for-stream states, with a stable service PID and no orphan media process.
 
+Version 1.5.20 requires no settings or database migration. It additionally treats a saved `Starting` or `Running` route with no owned live process as immediately recoverable when Wowza reports the publisher connected. Repeat the rapid-reset matrix and require a failed early RTSP attempt to be recreated without waiting for FFprobe, while a healthy starting/live process remains untouched.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

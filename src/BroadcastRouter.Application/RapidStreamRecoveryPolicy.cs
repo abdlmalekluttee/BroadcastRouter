@@ -8,9 +8,25 @@ public static class RapidStreamRecoveryPolicy
         route.State is RouteState.Starting or RouteState.Running
         || CanAccelerateConnectedPublisherRecovery(route);
 
-    public static bool CanAccelerateConnectedPublisherRecovery(RuntimeRoute route) =>
+    public static bool CanAccelerateConnectedPublisherRecovery(RuntimeRoute route, bool ownsLiveProcess = true) =>
         DesiredRoutePolicy.HasSavedAssignment(route)
-        && route.State is RouteState.Reconnecting or RouteState.Fallback or RouteState.WaitingForStream;
+        && (route.State is RouteState.Reconnecting or RouteState.Fallback or RouteState.WaitingForStream
+            || !ownsLiveProcess && route.State is RouteState.Starting or RouteState.Running);
+
+    public static RuntimeRoute MarkConnectedPublisherRecoveryDue(
+        RuntimeRoute route,
+        DateTimeOffset observedAt,
+        bool ownsLiveProcess) =>
+        route with
+        {
+            State = !ownsLiveProcess && route.State is RouteState.Starting or RouteState.Running
+                ? RouteState.Reconnecting
+                : route.State,
+            RetryAt = observedAt,
+            FailureCategory = "PublisherRestored",
+            FailureMessage = "Wowza confirmed that the publisher returned; reserved-route recovery was accelerated.",
+            UpdatedAt = observedAt
+        };
 
     public static DiscoveredSource MarkPublisherRestored(DiscoveredSource source, DateTimeOffset observedAt) =>
         source with

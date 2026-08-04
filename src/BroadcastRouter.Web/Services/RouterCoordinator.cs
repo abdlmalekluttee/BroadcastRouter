@@ -512,8 +512,15 @@ public sealed class RouterCoordinator(
                             _routes.TryGetValue(candidate.SourceId, out recoveryRoute);
                             _sources.TryGetValue(candidate.SourceId, out recoverySource);
                         }
+                        var ownsLiveProcess = supervisor.Snapshot().Any(value =>
+                            value.Source.Value == candidate.SourceId
+                            && value.Purpose == RouteProcessPurpose.Live
+                            && value.Running);
+                        var missingExpectedLiveOwner = !ownsLiveProcess
+                            && recoveryRoute?.State is RouteState.Starting or RouteState.Running;
                         if (recoveryRoute is null || recoverySource is null
-                            || !RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(recoveryRoute)) continue;
+                            || !RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
+                                recoveryRoute, ownsLiveProcess)) continue;
 
                         var now = DateTimeOffset.UtcNow;
                         bool recoveryThrottled;
@@ -532,15 +539,13 @@ public sealed class RouterCoordinator(
                             _sourceMissingSince.Remove(candidate.SourceId);
                         }
                         await store.UpsertSourceAsync(publisherRestored, cancellationToken);
-                        await ReplaceRouteAsync(recoveryRoute with
-                        {
-                            RetryAt = now,
-                            FailureCategory = "PublisherRestored",
-                            FailureMessage = "Wowza confirmed that the publisher returned; reserved-route recovery was accelerated.",
-                            UpdatedAt = now
-                        }, recoveryRoute.State, cancellationToken);
+                        var dueRoute = RapidStreamRecoveryPolicy.MarkConnectedPublisherRecoveryDue(
+                            recoveryRoute, now, ownsLiveProcess);
+                        await ReplaceRouteAsync(dueRoute, recoveryRoute.State, cancellationToken);
                         await LogAsync("Information", "PublisherPresence",
-                            "Wowza reports the saved publisher connected; fallback or waiting-for-stream recovery was made immediately eligible without waiting for FFprobe.",
+                            missingExpectedLiveOwner
+                                ? "Wowza reports the saved publisher connected and its starting/running live owner has exited; route recovery was made immediately eligible without waiting for FFprobe."
+                                : "Wowza reports the saved publisher connected; fallback or waiting-for-stream recovery was made immediately eligible without waiting for FFprobe.",
                             candidate.SourceId, cancellationToken: cancellationToken);
                         reconcileConnectedRoute = true;
                     }
