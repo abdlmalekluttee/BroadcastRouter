@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.20 — 2026-08-04
+
+- Detect a saved `Starting` or `Running` route whose owned live FFmpeg process has already exited while Wowza authoritatively reports the publisher connected.
+- Normalize that stale process state to immediate reconnect recovery instead of waiting for an overlapping FFprobe timeout to update the route.
+- Preserve healthy starting/live owners and retain the bounded one-second recovery cadence, preventing unnecessary restarts while closing the short-lived early-RTSP attempt gap.
+
 ## 1.5.19 — 2026-08-04
 
 - Keep saved `WaitingForStream` routes inside the authoritative Wowza publisher-return supervisor after an early reconnect attempt reaches RTSP before media is ready.

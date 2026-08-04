@@ -259,10 +259,24 @@ static void ConnectedPublisherAcceleratesSavedWaitingRoute()
         RapidSavedRoute(RouteState.Fallback, now)));
     True(RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
         RapidSavedRoute(RouteState.WaitingForStream, now)));
+    True(RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
+        RapidSavedRoute(RouteState.Starting, now), ownsLiveProcess: false));
+    True(RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
+        RapidSavedRoute(RouteState.Running, now), ownsLiveProcess: false));
+    True(!RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
+        RapidSavedRoute(RouteState.Starting, now), ownsLiveProcess: true));
     True(!RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
         RapidSavedRoute(RouteState.WaitingForStream, now) with { AssignmentMode = AssignmentMode.Automatic }));
     True(!RapidStreamRecoveryPolicy.ShouldSupervisePublisher(
         RapidSavedRoute(RouteState.Released, now)));
+
+    var staleStarting = RapidStreamRecoveryPolicy.MarkConnectedPublisherRecoveryDue(
+        RapidSavedRoute(RouteState.Starting, now), now.AddSeconds(1), ownsLiveProcess: false);
+    Equal(RouteState.Reconnecting, staleStarting.State);
+    Equal(now.AddSeconds(1), staleStarting.RetryAt);
+    var activeStarting = RapidStreamRecoveryPolicy.MarkConnectedPublisherRecoveryDue(
+        RapidSavedRoute(RouteState.Starting, now), now.AddSeconds(1), ownsLiveProcess: true);
+    Equal(RouteState.Starting, activeStarting.State);
 }
 
 static RuntimeRoute RapidSavedRoute(RouteState state, DateTimeOffset now) => new(
