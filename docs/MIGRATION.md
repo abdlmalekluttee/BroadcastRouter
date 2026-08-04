@@ -48,4 +48,6 @@ Version 1.5.15 requires no settings or database migration. It keeps the fast pub
 
 Version 1.5.16 requires no settings or database migration. A returned publisher retains `Ready` only when the source already has validated media metadata; an unknown source remains probe-gated. This prevents normal reconciliation from recycling the first accelerated replacement while preserving validation for new inputs. Repeat the controlled rapid-reset matrix and require the first replacement PID to remain stable after it begins producing media.
 
+Version 1.5.17 requires no settings or database migration. It consumes the one-shot publisher-return transition only after acquiring the per-route gate, preventing concurrent reconciliation from losing the accelerated wake-up. Repeat the rapid-reset matrix at least three times and reject the release if any run falls back to the slow discovery/retry interval.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

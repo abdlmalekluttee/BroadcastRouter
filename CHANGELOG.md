@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.17 — 2026-08-04
+
+- Preserve the one-shot publisher-return transition until the per-route gate is successfully acquired.
+- Eliminate a race where concurrent reconciliation could briefly own the gate, consume the wake-up, and force a saved route back onto the slower retry schedule.
+- Keep the route gate non-blocking in the 100 ms supervisor; a busy route is retried on the next poll without losing authoritative return state.
+
 ## 1.5.16 — 2026-08-04
 
 - Restore a returned publisher with previously validated media directly to ready state, allowing the first accelerated FFmpeg replacement to remain active while normal discovery refreshes it.

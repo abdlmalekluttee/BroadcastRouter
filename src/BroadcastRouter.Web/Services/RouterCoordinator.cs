@@ -501,11 +501,14 @@ public sealed class RouterCoordinator(
                 var publisherConnected = connected.Contains(candidate.SourceId);
                 if (publisherConnected)
                 {
-                    if (!_publisherDisconnectDetector.ObserveConnected(candidate.SourceId)) continue;
                     var recoveryGate = _routeGates.GetOrAdd(candidate.SourceId, static _ => new SemaphoreSlim(1, 1));
                     if (!await recoveryGate.WaitAsync(0, cancellationToken)) continue;
                     try
                     {
+                        // Do not consume the one-shot return transition until the route gate is
+                        // held. A concurrent reconciliation cycle may briefly own this gate; in
+                        // that case the next fast poll must still be able to wake the saved route.
+                        if (!_publisherDisconnectDetector.ObserveConnected(candidate.SourceId)) continue;
                         RuntimeRoute? recoveryRoute;
                         DiscoveredSource? recoverySource;
                         lock (_gate)
