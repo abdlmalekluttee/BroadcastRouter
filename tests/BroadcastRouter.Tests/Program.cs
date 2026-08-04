@@ -38,6 +38,8 @@ var tests = new (string Name, Action Body)[]
     ("Missing live owner enters retry before reservation", MissingLiveOwnerEntersRetryBeforeReservation),
     ("Saved routes retry without waiting for discovery", SavedRoutesRetryWithoutDiscovery),
     ("Owned video progress outranks a stale probe", OwnedVideoProgressOutranksStaleProbe),
+    ("Saved route enters retry on transient source loss", SavedRouteEntersRetryOnTransientLoss),
+    ("Saved recovery attempt receives startup grace", SavedRecoveryAttemptReceivesStartupGrace),
     ("Automatic assignment", AutomaticAssignmentUsesOnePort),
     ("Automatic assignment ignores input-only ports", AutomaticAssignmentIgnoresInputOnlyPorts),
     ("Saved routing priority and protection", SavedRoutingPriorityAndProtection),
@@ -190,6 +192,52 @@ static void OwnedVideoProgressOutranksStaleProbe()
         video with { Media = video.Media! with { HasUsableVideo = false } },
         ownedLiveVideoIsAdvancing: true));
 }
+
+static void SavedRouteEntersRetryOnTransientLoss()
+{
+    var now = DateTimeOffset.UtcNow;
+    var route = RapidSavedRoute(RouteState.Running, now);
+    True(RapidStreamRecoveryPolicy.ShouldEnterSavedRetry(route, sourceIsEffectivelyActive: false));
+    True(!RapidStreamRecoveryPolicy.ShouldEnterSavedRetry(route, sourceIsEffectivelyActive: true));
+    True(!RapidStreamRecoveryPolicy.ShouldEnterSavedRetry(
+        route with { AssignmentMode = AssignmentMode.Automatic }, sourceIsEffectivelyActive: false));
+}
+
+static void SavedRecoveryAttemptReceivesStartupGrace()
+{
+    var now = DateTimeOffset.UtcNow;
+    var route = RapidSavedRoute(RouteState.Starting, now);
+    True(RapidStreamRecoveryPolicy.ShouldKeepStartingAttempt(
+        route, false, true, now.AddMilliseconds(-500), now, TimeSpan.FromSeconds(3)));
+    True(!RapidStreamRecoveryPolicy.ShouldKeepStartingAttempt(
+        route, false, true, now.AddSeconds(-4), now, TimeSpan.FromSeconds(3)));
+    True(!RapidStreamRecoveryPolicy.ShouldKeepStartingAttempt(
+        route, false, false, now.AddMilliseconds(-500), now, TimeSpan.FromSeconds(3)));
+}
+
+static RuntimeRoute RapidSavedRoute(RouteState state, DateTimeOffset now) => new(
+    SourceId: "WOWZA/live/_definst_/rapid.stream",
+    SourceName: "Rapid stream",
+    PortId: "PORT-1",
+    PortName: "Output 1",
+    PresetId: "1080p25",
+    State: state,
+    AssignmentMode: AssignmentMode.Manual,
+    Locked: true,
+    Priority: 0,
+    RestartCount: 1,
+    Frame: null,
+    Fps: null,
+    Speed: null,
+    DroppedFrames: 0,
+    DuplicatedFrames: 0,
+    StartedAt: now,
+    UpdatedAt: now,
+    FailureCategory: "InputSessionLost",
+    FailureMessage: "Rapid interruption",
+    RetryAt: now,
+    DesiredPortId: "PORT-1",
+    DesiredPortName: "Output 1");
 
 static void MissingLiveOwnerEntersRetryBeforeReservation()
 {
@@ -486,7 +534,8 @@ static void FfmpegCommandUsesArgumentList()
     True(start.ArgumentList.Contains("-progress"));
     True(start.ArgumentList.Contains(port.FfmpegName));
     True(start.ArgumentList.Contains("-timeout"));
-    True(!start.ArgumentList.Contains("-rw_timeout"));
+    True(start.ArgumentList.Contains("-rw_timeout"));
+    Equal("10000000", start.ArgumentList[start.ArgumentList.IndexOf("-rw_timeout") + 1]);
     True(start.ArgumentList.Contains("-fflags"));
     True(start.ArgumentList.Contains("nobuffer"));
     True(start.ArgumentList.Contains("-analyzeduration"));

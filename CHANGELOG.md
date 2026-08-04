@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.12 — 2026-08-04
+
+- Apply the configured input deadline to both FFmpeg's RTSP `timeout` and generic established-socket `rw_timeout`; the first 1.5.11 live drill proved the RTSP option alone did not terminate the frozen session.
+- Convert a saved running/starting route whose source becomes unavailable into standby-backed retry instead of demoting it to `WaitingForStream`, preserving the due retry for the fast supervision loop.
+- Give a speculative saved-route replacement a bounded startup grace so normal reconciliation cannot stop it before its first real frame.
+
 ## 1.5.11 — 2026-08-04
 
 - Add a validated, GUI-configurable RTSP read timeout (1000 ms by default) so an owned route detects a broken TCP media session without waiting for the slower discovery probe.

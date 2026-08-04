@@ -39,7 +39,10 @@ public static class FfmpegCommandBuilder
         Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats");
         if (options.UseTcpTransport) Add(start, "-rtsp_transport", "tcp");
         if (options.ReadTimeout is { } timeout)
-            Add(start, "-timeout", ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture));
+        {
+            var microseconds = ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture);
+            Add(start, "-rw_timeout", microseconds, "-timeout", microseconds);
+        }
         if (preset.BufferSizeMegabytes > 0) Add(start, "-buffer_size", $"{preset.BufferSizeMegabytes}M");
         if (preset.LowLatency)
             Add(start,
