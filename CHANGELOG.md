@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.15 — 2026-08-04
+
+- Continue the independent 100 ms Wowza publisher monitor while a saved route is in reconnecting or fallback state, closing the recovery blind spot measured during the first v1.5.14 production reset.
+- Consume one confirmed publisher-return transition to make the reserved route immediately eligible for live recovery instead of waiting for the slower discovery/FFprobe cycle.
+- Preserve normal retry backoff after an early RTSP start failure so a continuously connected publisher cannot create a rapid restart loop.
+
 ## 1.5.14 — 2026-08-04
 
 - Add an independent 100 ms Wowza publisher-presence monitor for active routes so two consecutive disconnected/missing observations reap the exact live FFmpeg owner without waiting for the multi-second discovery and FFprobe cycle.

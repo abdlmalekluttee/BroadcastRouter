@@ -28,6 +28,23 @@ public sealed class PublisherDisconnectDetector(int requiredObservations = 2)
         }
     }
 
+    /// <summary>
+    /// Returns true once when a publisher comes back after a confirmed absence.
+    /// The transition is consumed so a continuously connected publisher cannot
+    /// bypass normal retry backoff after an early RTSP start failure.
+    /// </summary>
+    public bool ObserveConnected(string sourceId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId)) throw new ArgumentException("Source identity is required.", nameof(sourceId));
+        if (requiredObservations < 1) throw new ArgumentOutOfRangeException(nameof(requiredObservations));
+        lock (_gate)
+        {
+            var confirmedReturn = _missingCounts.GetValueOrDefault(sourceId) >= requiredObservations;
+            _missingCounts.Remove(sourceId);
+            return confirmedReturn;
+        }
+    }
+
     public void Forget(string sourceId)
     {
         lock (_gate) _missingCounts.Remove(sourceId);

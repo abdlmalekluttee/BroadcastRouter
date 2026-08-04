@@ -223,8 +223,10 @@ static void FastPublisherDisconnectRequiresConfirmation()
     True(!detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
     True(detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
     True(detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
-    True(!detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: true));
+    True(detector.ObserveConnected("WOWZA/live/_definst_/rapid.stream"));
+    True(!detector.ObserveConnected("WOWZA/live/_definst_/rapid.stream"));
     True(!detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
+    True(!detector.ObserveConnected("WOWZA/live/_definst_/rapid.stream"));
     detector.Forget("WOWZA/live/_definst_/rapid.stream");
     True(!detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
 }
