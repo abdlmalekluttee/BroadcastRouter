@@ -44,4 +44,6 @@ Version 1.5.11 adds `Routing.InputReadTimeoutMilliseconds`; existing settings re
 
 Version 1.5.14 requires no settings or database migration. It retains the supported RTSP timeout and saved-route retry behavior from 1.5.13, then adds a 100 ms Wowza publisher-presence monitor that requires two consecutive authoritative disconnected/missing observations. Management REST failures are ignored for route health. Repeat the controlled reset and reject the release if the old live PID survives beyond one second, the route becomes `WaitingForStream`, or recovery waits for FFprobe/discovery.
 
+Version 1.5.15 requires no settings or database migration. It keeps the fast publisher monitor active for saved routes while standby is on air and consumes a confirmed publisher-return transition to wake the reserved route immediately. Repeat at least three controlled rapid resets and require exact-owner cleanup, zero orphan processes, stable service PID, immediate standby, and automatic live restoration without waiting for the normal discovery probe.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

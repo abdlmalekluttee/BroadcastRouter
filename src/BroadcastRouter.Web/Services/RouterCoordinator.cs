@@ -475,14 +475,16 @@ public sealed class RouterCoordinator(
         CancellationToken cancellationToken)
     {
         var settings = GetSettings();
-        var activeRoutes = RoutesCopy().Where(route =>
-            route.State is RouteState.Starting or RouteState.Running).ToArray();
-        if (activeRoutes.Length == 0) return;
+        var supervisedRoutes = RoutesCopy().Where(route =>
+            route.State is RouteState.Starting or RouteState.Running
+            || (DesiredRoutePolicy.HasSavedAssignment(route)
+                && route.State is RouteState.Reconnecting or RouteState.Fallback)).ToArray();
+        if (supervisedRoutes.Length == 0) return;
 
         var sources = SourcesCopy().ToDictionary(source => source.Identity.Value, StringComparer.Ordinal);
         foreach (var profile in settings.WowzaServers.Where(profile => profile.Enabled))
         {
-            var candidates = activeRoutes.Where(route =>
+            var candidates = supervisedRoutes.Where(route =>
                     sources.TryGetValue(route.SourceId, out var source)
                     && source.Identity.ServerId.Equals(profile.ServerId, StringComparison.OrdinalIgnoreCase))
                 .ToArray();
@@ -497,7 +499,52 @@ public sealed class RouterCoordinator(
             foreach (var candidate in candidates)
             {
                 var publisherConnected = connected.Contains(candidate.SourceId);
-                if (!_publisherDisconnectDetector.Observe(candidate.SourceId, publisherConnected)) continue;
+                if (publisherConnected)
+                {
+                    if (!_publisherDisconnectDetector.ObserveConnected(candidate.SourceId)) continue;
+                    var recoveryGate = _routeGates.GetOrAdd(candidate.SourceId, static _ => new SemaphoreSlim(1, 1));
+                    if (!await recoveryGate.WaitAsync(0, cancellationToken)) continue;
+                    try
+                    {
+                        RuntimeRoute? recoveryRoute;
+                        DiscoveredSource? recoverySource;
+                        lock (_gate)
+                        {
+                            _routes.TryGetValue(candidate.SourceId, out recoveryRoute);
+                            _sources.TryGetValue(candidate.SourceId, out recoverySource);
+                        }
+                        if (recoveryRoute is null || recoverySource is null
+                            || !DesiredRoutePolicy.HasSavedAssignment(recoveryRoute)
+                            || recoveryRoute.State is not (RouteState.Reconnecting or RouteState.Fallback)) continue;
+
+                        var now = DateTimeOffset.UtcNow;
+                        var publisherRestored = recoverySource with
+                        {
+                            State = SourceState.PublisherActive,
+                            LastObservedAt = now
+                        };
+                        lock (_gate)
+                        {
+                            _sources[candidate.SourceId] = publisherRestored;
+                            _sourceMissingSince.Remove(candidate.SourceId);
+                        }
+                        await store.UpsertSourceAsync(publisherRestored, cancellationToken);
+                        await ReplaceRouteAsync(recoveryRoute with
+                        {
+                            RetryAt = now,
+                            FailureCategory = "PublisherRestored",
+                            FailureMessage = "Wowza confirmed that the publisher returned; reserved-route recovery was accelerated.",
+                            UpdatedAt = now
+                        }, recoveryRoute.State, cancellationToken);
+                        await LogAsync("Information", "PublisherPresence",
+                            "Wowza confirmed that the publisher returned; the reserved route was made immediately eligible for live recovery.",
+                            candidate.SourceId, cancellationToken: cancellationToken);
+                    }
+                    finally { recoveryGate.Release(); }
+                    continue;
+                }
+
+                if (!_publisherDisconnectDetector.Observe(candidate.SourceId, publisherConnected: false)) continue;
 
                 var routeGate = _routeGates.GetOrAdd(candidate.SourceId, static _ => new SemaphoreSlim(1, 1));
                 if (!await routeGate.WaitAsync(0, cancellationToken)) continue;
