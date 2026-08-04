@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.16 — 2026-08-04
+
+- Restore a returned publisher with previously validated media directly to ready state, allowing the first accelerated FFmpeg replacement to remain active while normal discovery refreshes it.
+- Keep publishers without prior validated media in probe-gated publisher-active state, preserving fail-closed behavior for unknown inputs.
+- Add a regression covering both known-media and unknown-media publisher-return states.
+
 ## 1.5.15 — 2026-08-04
 
 - Continue the independent 100 ms Wowza publisher monitor while a saved route is in reconnecting or fallback state, closing the recovery blind spot measured during the first v1.5.14 production reset.

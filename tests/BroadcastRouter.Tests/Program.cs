@@ -41,6 +41,7 @@ var tests = new (string Name, Action Body)[]
     ("Saved route enters retry on transient source loss", SavedRouteEntersRetryOnTransientLoss),
     ("Saved recovery attempt receives startup grace", SavedRecoveryAttemptReceivesStartupGrace),
     ("Fast publisher disconnect requires confirmation", FastPublisherDisconnectRequiresConfirmation),
+    ("Publisher return preserves validated readiness", PublisherReturnPreservesValidatedReadiness),
     ("Automatic assignment", AutomaticAssignmentUsesOnePort),
     ("Automatic assignment ignores input-only ports", AutomaticAssignmentIgnoresInputOnlyPorts),
     ("Saved routing priority and protection", SavedRoutingPriorityAndProtection),
@@ -229,6 +230,22 @@ static void FastPublisherDisconnectRequiresConfirmation()
     True(!detector.ObserveConnected("WOWZA/live/_definst_/rapid.stream"));
     detector.Forget("WOWZA/live/_definst_/rapid.stream");
     True(!detector.Observe("WOWZA/live/_definst_/rapid.stream", publisherConnected: false));
+}
+
+static void PublisherReturnPreservesValidatedReadiness()
+{
+    var now = DateTimeOffset.UtcNow;
+    var identity = new SourceIdentity("WOWZA", "live", "_definst_", "rapid.stream");
+    var known = new DiscoveredSource(identity, "Rapid stream", new Uri("rtsp://127.0.0.1/live/rapid.stream"),
+        SourceState.PublisherDisconnected, 0,
+        new MediaProperties("h264", "aac", 1920, 1080, 25, 3_000_000, 48_000, 2, true));
+    var unknown = known with { Media = null };
+
+    var restoredKnown = RapidStreamRecoveryPolicy.MarkPublisherRestored(known, now);
+    var restoredUnknown = RapidStreamRecoveryPolicy.MarkPublisherRestored(unknown, now);
+    Equal(SourceState.Ready, restoredKnown.State);
+    Equal(SourceState.PublisherActive, restoredUnknown.State);
+    Equal(now, restoredKnown.LastObservedAt);
 }
 
 static RuntimeRoute RapidSavedRoute(RouteState state, DateTimeOffset now) => new(

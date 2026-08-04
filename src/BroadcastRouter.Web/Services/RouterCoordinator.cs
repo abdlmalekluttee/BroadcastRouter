@@ -518,11 +518,7 @@ public sealed class RouterCoordinator(
                             || recoveryRoute.State is not (RouteState.Reconnecting or RouteState.Fallback)) continue;
 
                         var now = DateTimeOffset.UtcNow;
-                        var publisherRestored = recoverySource with
-                        {
-                            State = SourceState.PublisherActive,
-                            LastObservedAt = now
-                        };
+                        var publisherRestored = RapidStreamRecoveryPolicy.MarkPublisherRestored(recoverySource, now);
                         lock (_gate)
                         {
                             _sources[candidate.SourceId] = publisherRestored;
