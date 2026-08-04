@@ -62,6 +62,7 @@ var tests = new (string Name, Action Body)[]
     ("FFmpeg progress parsing", FfmpegProgressIsParsed),
     ("FFmpeg stall detection", FfmpegStallIsDetected),
     ("FFmpeg duplicate-frame input freeze detection", FfmpegDuplicateFrameFreezeIsDetected),
+    ("FFmpeg rapid duplicate burst detection", FfmpegRapidDuplicateBurstIsDetected),
     ("FFmpeg first-progress timeout", FfmpegFirstProgressTimeoutIsDetected),
     ("Windows job kills orphaned media process", WindowsJobKillsOrphanedProcess),
     ("Owned process stop and restart are serialized", OwnedProcessStopAndRestartAreSerialized),
@@ -534,8 +535,8 @@ static void FfmpegCommandUsesArgumentList()
     True(start.ArgumentList.Contains("-progress"));
     True(start.ArgumentList.Contains(port.FfmpegName));
     True(start.ArgumentList.Contains("-timeout"));
-    True(start.ArgumentList.Contains("-rw_timeout"));
-    Equal("10000000", start.ArgumentList[start.ArgumentList.IndexOf("-rw_timeout") + 1]);
+    True(!start.ArgumentList.Contains("-rw_timeout"));
+    Equal("10000000", start.ArgumentList[start.ArgumentList.IndexOf("-timeout") + 1]);
     True(start.ArgumentList.Contains("-fflags"));
     True(start.ArgumentList.Contains("nobuffer"));
     True(start.ArgumentList.Contains("-analyzeduration"));
@@ -677,15 +678,30 @@ static void FfmpegDuplicateFrameFreezeIsDetected()
     var detector = new FfmpegInputFreezeDetector();
     var now = DateTimeOffset.UtcNow;
     var initial = new FfmpegProgressSnapshot(100, 25, TimeSpan.FromSeconds(4), 0, 0, 1, now, false);
-    True(!detector.Observe(101, initial, now, TimeSpan.FromSeconds(8)));
-    True(!detector.Observe(101, initial with { Frame = 125, DuplicatedFrames = 25 }, now.AddSeconds(1), TimeSpan.FromSeconds(8)));
-    True(!detector.Observe(101, initial with { Frame = 300, DuplicatedFrames = 200 }, now.AddSeconds(8), TimeSpan.FromSeconds(8)));
-    True(detector.Observe(101, initial with { Frame = 325, DuplicatedFrames = 225 }, now.AddSeconds(9), TimeSpan.FromSeconds(8)));
+    True(!detector.Observe(101, initial, now, TimeSpan.FromSeconds(8), allowRapidBurst: false));
+    True(!detector.Observe(101, initial with { Frame = 125, DuplicatedFrames = 25 }, now.AddSeconds(1), TimeSpan.FromSeconds(8), allowRapidBurst: false));
+    True(!detector.Observe(101, initial with { Frame = 300, DuplicatedFrames = 200 }, now.AddSeconds(8), TimeSpan.FromSeconds(8), allowRapidBurst: false));
+    True(detector.Observe(101, initial with { Frame = 325, DuplicatedFrames = 225 }, now.AddSeconds(9), TimeSpan.FromSeconds(8), allowRapidBurst: false));
 
     detector.Reset();
     True(!detector.Observe(102, initial, now, TimeSpan.FromSeconds(8)));
     True(!detector.Observe(102, initial with { Frame = 125, DuplicatedFrames = 1 }, now.AddSeconds(10), TimeSpan.FromSeconds(8)));
     True(!detector.Observe(103, initial with { Frame = 150, DuplicatedFrames = 50 }, now.AddSeconds(20), TimeSpan.FromSeconds(8)));
+}
+
+static void FfmpegRapidDuplicateBurstIsDetected()
+{
+    var detector = new FfmpegInputFreezeDetector();
+    var now = DateTimeOffset.UtcNow;
+    var initial = new FfmpegProgressSnapshot(100, 25, TimeSpan.FromSeconds(4), 0, 0, 1, now, false);
+    True(!detector.Observe(201, initial, now, TimeSpan.FromSeconds(8)));
+    True(detector.Observe(201, initial with { Frame = 115, DuplicatedFrames = 15 },
+        now.AddMilliseconds(500), TimeSpan.FromSeconds(8)));
+
+    detector.Reset();
+    True(!detector.Observe(202, initial, now, TimeSpan.FromSeconds(8), allowRapidBurst: false));
+    True(!detector.Observe(202, initial with { Frame = 125, DuplicatedFrames = 25 },
+        now.AddSeconds(1), TimeSpan.FromSeconds(8), allowRapidBurst: false));
 }
 
 static void FfmpegFirstProgressTimeoutIsDetected()
