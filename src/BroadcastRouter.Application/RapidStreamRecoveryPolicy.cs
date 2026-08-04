@@ -4,6 +4,13 @@ namespace BroadcastRouter.Application;
 
 public static class RapidStreamRecoveryPolicy
 {
+    public static DiscoveredSource MarkPublisherRestored(DiscoveredSource source, DateTimeOffset observedAt) =>
+        source with
+        {
+            State = source.Media is null ? SourceState.PublisherActive : SourceState.Ready,
+            LastObservedAt = observedAt
+        };
+
     public static bool CanAttemptReservedRecovery(RuntimeRoute route, DiscoveredSource? source) =>
         source is not null
         && source.State != SourceState.Disabled

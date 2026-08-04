@@ -46,4 +46,6 @@ Version 1.5.14 requires no settings or database migration. It retains the suppor
 
 Version 1.5.15 requires no settings or database migration. It keeps the fast publisher monitor active for saved routes while standby is on air and consumes a confirmed publisher-return transition to wake the reserved route immediately. Repeat at least three controlled rapid resets and require exact-owner cleanup, zero orphan processes, stable service PID, immediate standby, and automatic live restoration without waiting for the normal discovery probe.
 
+Version 1.5.16 requires no settings or database migration. A returned publisher retains `Ready` only when the source already has validated media metadata; an unknown source remains probe-gated. This prevents normal reconciliation from recycling the first accelerated replacement while preserving validation for new inputs. Repeat the controlled rapid-reset matrix and require the first replacement PID to remain stable after it begins producing media.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.
