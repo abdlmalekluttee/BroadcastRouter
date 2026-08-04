@@ -50,4 +50,6 @@ Version 1.5.16 requires no settings or database migration. A returned publisher 
 
 Version 1.5.17 requires no settings or database migration. It consumes the one-shot publisher-return transition only after acquiring the per-route gate, preventing concurrent reconciliation from losing the accelerated wake-up. Repeat the rapid-reset matrix at least three times and reject the release if any run falls back to the slow discovery/retry interval.
 
+Version 1.5.18 requires no settings or database migration. It replaces the one-shot return transition with a one-second bounded recovery cadence while authoritative Wowza state is connected and a saved route remains in fallback/reconnect. Repeat at least three rapid resets and require consistent automatic restoration without service restart, orphan processes, or a slow-discovery outlier.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

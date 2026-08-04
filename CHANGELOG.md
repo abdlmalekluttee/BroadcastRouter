@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.18 — 2026-08-04
+
+- Replace the fragile one-shot publisher-return wake-up with bounded authoritative recovery while a saved route is reconnecting or on standby.
+- When Wowza reports the publisher connected, make the reserved route immediately eligible at most once per second until live playout succeeds.
+- Preserve REST fail-open behavior and prevent a fast-loop restart storm while guaranteeing that a missed transition cannot fall back to slow discovery.
+
 ## 1.5.17 — 2026-08-04
 
 - Preserve the one-shot publisher-return transition until the per-route gate is successfully acquired.

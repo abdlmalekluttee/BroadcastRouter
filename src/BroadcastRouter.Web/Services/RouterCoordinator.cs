@@ -43,6 +43,7 @@ public sealed class RouterCoordinator(
     private readonly StartupRouteRecoveryTracker _startupRecovery = new();
     private readonly RepeatedFailureLogGate _reconciliationFailureLogGate = new();
     private readonly PublisherDisconnectDetector _publisherDisconnectDetector = new(requiredObservations: 2);
+    private readonly Dictionary<string, DateTimeOffset> _connectedPublisherRecoveryAttemptAt = new(StringComparer.Ordinal);
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private readonly object _livenessGate = new();
     private readonly object _metricsGate = new();
@@ -505,10 +506,7 @@ public sealed class RouterCoordinator(
                     if (!await recoveryGate.WaitAsync(0, cancellationToken)) continue;
                     try
                     {
-                        // Do not consume the one-shot return transition until the route gate is
-                        // held. A concurrent reconciliation cycle may briefly own this gate; in
-                        // that case the next fast poll must still be able to wake the saved route.
-                        if (!_publisherDisconnectDetector.ObserveConnected(candidate.SourceId)) continue;
+                        _publisherDisconnectDetector.ObserveConnected(candidate.SourceId);
                         RuntimeRoute? recoveryRoute;
                         DiscoveredSource? recoverySource;
                         lock (_gate)
@@ -521,6 +519,15 @@ public sealed class RouterCoordinator(
                             || recoveryRoute.State is not (RouteState.Reconnecting or RouteState.Fallback)) continue;
 
                         var now = DateTimeOffset.UtcNow;
+                        bool recoveryThrottled;
+                        lock (_gate)
+                        {
+                            recoveryThrottled = _connectedPublisherRecoveryAttemptAt.TryGetValue(candidate.SourceId, out var attemptedAt)
+                                && now - attemptedAt < TimeSpan.FromSeconds(1);
+                            if (!recoveryThrottled) _connectedPublisherRecoveryAttemptAt[candidate.SourceId] = now;
+                        }
+                        if (recoveryThrottled) continue;
+
                         var publisherRestored = RapidStreamRecoveryPolicy.MarkPublisherRestored(recoverySource, now);
                         lock (_gate)
                         {
@@ -536,7 +543,7 @@ public sealed class RouterCoordinator(
                             UpdatedAt = now
                         }, recoveryRoute.State, cancellationToken);
                         await LogAsync("Information", "PublisherPresence",
-                            "Wowza confirmed that the publisher returned; the reserved route was made immediately eligible for live recovery.",
+                            "Wowza reports the saved publisher connected; the reserved route was made immediately eligible for bounded live recovery.",
                             candidate.SourceId, cancellationToken: cancellationToken);
                     }
                     finally { recoveryGate.Release(); }
@@ -566,6 +573,7 @@ public sealed class RouterCoordinator(
                     await supervisor.StopForOutputHandoffAsync(source.Identity, cancellationToken);
                     lock (_gate)
                     {
+                        _connectedPublisherRecoveryAttemptAt.Remove(candidate.SourceId);
                         _sources[candidate.SourceId] = source with
                         {
                             State = SourceState.PublisherDisconnected,
