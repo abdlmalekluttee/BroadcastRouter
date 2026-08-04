@@ -1064,6 +1064,21 @@ public sealed class RouterCoordinator(
                 && route.State is RouteState.Reconnecting or RouteState.Fallback
                 && route.RetryAt is not null)
                 return;
+            var recoveryStartupGrace = TimeSpan.FromMilliseconds(
+                Math.Clamp(_settings.Routing.InputReadTimeoutMilliseconds, 500, 30000) + 2000);
+            if (ownedProcess is not null && RapidStreamRecoveryPolicy.ShouldKeepStartingAttempt(
+                    route, active, ownsLiveProcess, ownedProcess.StartedAt,
+                    DateTimeOffset.UtcNow, recoveryStartupGrace))
+                return;
+            if (RapidStreamRecoveryPolicy.ShouldEnterSavedRetry(route, active))
+            {
+                if (_supervisor is not null)
+                    await _supervisor.StopForOutputHandoffAsync(source.Identity, cancellationToken);
+                await ScheduleRetryAsync(route, "SourceTemporarilyUnavailable",
+                    "The saved source became temporarily unavailable; standby is active and the known RTSP URI will be retried without waiting for discovery.",
+                    cancellationToken);
+                return;
+            }
             if (!active && (route.State is RouteState.Starting or RouteState.Running or RouteState.Reconnecting or RouteState.Fallback))
             {
                 if (_supervisor is not null) await _supervisor.StopAsync(source.Identity, cancellationToken);
