@@ -1,10 +1,14 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
+    <title>BroadcastRouter Experimental GUI</title>
+    <meta name="theme-color" content="#111827" />
+    <link rel="stylesheet" href="vendor/tabler/1.4.0/css/tabler.min.css" />
     <link rel="stylesheet" href="@($"app.css?v={AssetVersion}")" />
+    <link rel="stylesheet" href="@($"experimental-gui.css?v={AssetVersion}")" />
     <link rel="stylesheet" href="branding.css?v=1.2.3" />
     <link rel="icon" href="favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="images/broadcastrouter-logo-32.png" />
@@ -14,6 +18,7 @@
 </head>
 <body>
     <Routes />
+    <script src="vendor/tabler/1.4.0/js/tabler.min.js"></script>
     <script src="_framework/blazor.web.js"></script>
 </body>
 </html>

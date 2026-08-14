@@ -2,29 +2,51 @@
 @inject RouterCoordinator Coordinator
 @implements IDisposable
 
-<div class="shell">
-    <aside class="sidebar">
-        <div class="brand"><span class="brand-mark"><img src="images/broadcastrouter-logo-64.png" alt="" /></span><div><strong>BroadcastRouter</strong><small>DeckLink control</small></div></div>
-        <NavMenu />
-        <div class="sidebar-foot">
-            <span class="status-dot @(snapshot.EmergencyStopped ? "danger" : "online")"></span>
-            <span>@(snapshot.EmergencyStopped ? "Emergency stop" : snapshot.SimulationMode ? "Simulation" : "Production")</span>
+<div class="shell br-shell page">
+    <aside class="sidebar br-sidebar navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark" aria-label="Primary navigation">
+        <div class="container-fluid br-sidebar-inner">
+            <div class="br-brand-row">
+                <a class="brand navbar-brand navbar-brand-autodark" href="/" aria-label="BroadcastRouter dashboard">
+                    <span class="brand-mark"><img src="images/broadcastrouter-logo-64.png" alt="" /></span>
+                    <span class="br-brand-copy"><strong>BroadcastRouter</strong><small>DeckLink control</small></span>
+                </a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#br-navigation" aria-controls="br-navigation" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+            </div>
+
+            <div class="br-edition" aria-label="Application edition">
+                <span class="br-edition-dot"></span>
+                <span><strong>Experimental GUI</strong><small>Tabler interface preview</small></span>
+            </div>
+
+            <NavMenu />
+
+            <div class="sidebar-foot br-sidebar-foot">
+                <span class="status-dot @(snapshot.EmergencyStopped ? "danger" : "online")"></span>
+                <span><strong>@(snapshot.EmergencyStopped ? "Emergency stop" : snapshot.SimulationMode ? "Simulation" : "Production")</strong><small>Runtime environment</small></span>
+            </div>
         </div>
     </aside>
-    <main>
-        <header class="topbar">
-            <div><strong>@snapshot.StatusMessage</strong><small> Updated @snapshot.UpdatedAt.ToLocalTime().ToString("HH:mm:ss")</small></div>
-            <div class="system-stats"><span>CPU @snapshot.CpuPercent.ToString("0.0")%</span><span>RAM @FormatBytes(snapshot.WorkingSetBytes)</span><span>@snapshot.Routes.Count(x => x.State == RouteState.Running) live</span>
+    <div class="br-main">
+        <header class="topbar br-topbar navbar navbar-expand-md d-print-none">
+            <div class="br-runtime-status" role="status" aria-live="polite">
+                <span class="br-runtime-icon"><img src="vendor/tabler-icons/3.46.0/activity-heartbeat.svg" alt="" /></span>
+                <span><strong>@snapshot.StatusMessage</strong><small>Last update @snapshot.UpdatedAt.ToLocalTime().ToString("HH:mm:ss")</small></span>
+            </div>
+            <div class="system-stats br-system-stats"><span><small>CPU</small> @snapshot.CpuPercent.ToString("0.0")%</span><span><small>Memory</small> @FormatBytes(snapshot.WorkingSetBytes)</span><span><small>On air</small> @snapshot.Routes.Count(x => x.State == RouteState.Running)</span>
                 <AuthorizeView><Authorized>
                     @if (Coordinator.RequiresAuthentication)
                     {
-                        <form method="post" action="/auth/logout"><AntiforgeryToken /><button class="btn small" type="submit">Sign out</button></form>
+                        <form method="post" action="/auth/logout"><AntiforgeryToken /><button class="btn small br-sign-out" type="submit"><img src="vendor/tabler-icons/3.46.0/logout.svg" alt="" /> Sign out</button></form>
                     }
                 </Authorized></AuthorizeView>
             </div>
         </header>
-        <section class="content">@Body</section>
-    </main>
+        <main class="br-page-wrapper page-wrapper">
+            <section class="content br-content container-xl">@Body</section>
+        </main>
+    </div>
 </div>
 
 @code {

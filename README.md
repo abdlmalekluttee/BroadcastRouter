@@ -2,9 +2,24 @@
   <img src="src/BroadcastRouter.Web/wwwroot/images/broadcastrouter-logo-192.png" width="128" alt="BroadcastRouter logo" />
 </p>
 
-<h1 align="center">BroadcastRouter</h1>
+<h1 align="center">BroadcastRouter — Experimental GUI</h1>
 
-<p align="center"><strong>Production Wowza-to-Blackmagic DeckLink routing control for Windows.</strong></p>
+<p align="center"><strong>A presentation-only Tabler interface fork of BroadcastRouter.</strong></p>
+
+> **Experimental fork:** this repository keeps BroadcastRouter's routing, persistence, process supervision, Wowza, FFmpeg, and DeckLink behavior unchanged while testing a new operator interface built with locally bundled [Tabler](https://github.com/tabler/tabler) assets. It is intended for isolated local evaluation and is not the production repository.
+
+## Experimental GUI quick start
+
+Run the fork on loopback with its own empty data directory. The unchanged production-safe defaults do not scan the network or start physical DeckLink routes:
+
+```powershell
+$env:DataDirectory = "C:\BroadcastRouter-Experimental-GUI\data"
+dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --configuration Release
+```
+
+Open `http://127.0.0.1:5080`. Simulation can be enabled explicitly from **Settings** inside this isolated instance when sample data is useful. Do not point this experimental fork at the same database or physical outputs as a running production host.
+
+The browser assets are self-contained: Tabler Core 1.4.0 and Tabler Icons 3.46.0 are vendored under `src/BroadcastRouter.Web/wwwroot/vendor`. No CDN is contacted at runtime. See `src/BroadcastRouter.Web/wwwroot/THIRD-PARTY-NOTICES.md`.
 
 BroadcastRouter is a self-contained .NET 8 Blazor Server application that inventories active and offline Wowza publishers, validates active RTSP media with FFprobe, atomically reserves operator-designated DeckLink output ports, and supervises FFmpeg playout and standby screens. The browser is only a control surface: closing or refreshing it does not stop the routing host.
 
