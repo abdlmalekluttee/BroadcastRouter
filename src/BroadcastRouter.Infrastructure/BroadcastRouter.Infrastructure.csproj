@@ -3,7 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\BroadcastRouter.Domain\BroadcastRouter.Domain.csproj" />
     <ProjectReference Include="..\BroadcastRouter.Application\BroadcastRouter.Application.csproj" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.29" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.30" />
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
   </ItemGroup>
 
