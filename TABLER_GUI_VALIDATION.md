@@ -1,8 +1,8 @@
-# Experimental GUI validation
+# Tabler production GUI validation
 
 ## Scope
 
-This fork changes presentation only. The shared Blazor layout, navigation markup, and CSS asset loading were adapted to Tabler. No files under `BroadcastRouter.Domain`, `BroadcastRouter.Application`, or `BroadcastRouter.Infrastructure` were changed, and no routing coordinator, persistence, FFmpeg, Wowza, DeckLink, authentication, or process-management behavior was modified.
+The shared Blazor layout, navigation markup, and CSS asset loading were adapted to Tabler. The production promotion also adds preset-label validation; routing, process supervision, Wowza, FFmpeg, DeckLink, and authentication behavior remain unchanged.
 
 ## Architecture boundary
 
@@ -20,7 +20,7 @@ Before the interface changes:
 
 - Added a responsive Tabler vertical navigation shell and top runtime bar.
 - Replaced text glyph navigation with accessible Tabler SVG icons.
-- Added a clear **Experimental GUI** marker to prevent confusion with production.
+- Added a clear **Production** marker and Tabler operator-interface identification.
 - Added responsive desktop, compact desktop, tablet, and mobile layouts.
 - Added consistent Tabler-inspired cards, forms, tables, buttons, badges, notices, and focus styles.
 - Added reduced-motion handling and visible keyboard focus.
@@ -49,8 +49,8 @@ Before the interface changes:
 | Local simulation only | Not enabled; production-safe empty defaults retained |
 | Wowza integration | Not required; behavior unchanged |
 | DeckLink/driver/physical SDI | Not required; behavior unchanged |
-| Production server deployment | Explicitly excluded |
+| Production server deployment | Required for release 1.5.21 |
 
 ## Remaining manual validation
 
-Physical Wowza/DeckLink validation is intentionally not claimed for this UI-only fork. Any future production adoption should repeat the production validation matrix after the interface is reviewed and approved.
+Every production deployment must repeat the production validation matrix, including server health, all configured output modes, route recovery, and a physical SDI receiver check.

@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using BroadcastRouter.Application;
+using BroadcastRouter.Domain;
 using Microsoft.AspNetCore.Authentication;
 using BroadcastRouter.Infrastructure;
 using BroadcastRouter.Web.Components;
@@ -21,6 +22,31 @@ using Microsoft.Extensions.Hosting.WindowsServices;
 if (args is [DeckLinkIdentityProcessProbe.CommandArgument])
 {
     Console.Out.Write(JsonSerializer.Serialize(DeckLinkSdkIdentityEnumerator.Enumerate()));
+    return;
+}
+
+if (args is ["--repair-standard-output-preset", var databaseArgument, var presetId])
+{
+    var repairDatabasePath = Path.GetFullPath(databaseArgument);
+    if (!File.Exists(repairDatabasePath)) throw new FileNotFoundException("The BroadcastRouter database was not found.", repairDatabasePath);
+    var repairStore = new SqliteDataStore(repairDatabasePath);
+    await repairStore.InitializeAsync();
+    var repairSettings = await repairStore.LoadSettingsAsync();
+    var preset = repairSettings.Presets.SingleOrDefault(value => value.Id.Equals(presetId, StringComparison.OrdinalIgnoreCase))
+        ?? throw new InvalidOperationException($"Output preset '{presetId}' was not found.");
+    if (!OutputScanSelection.TryApplyStandardPreset(preset))
+        throw new InvalidOperationException($"Output preset '{presetId}' does not use a recognized standard format label.");
+    var appliedAt = DateTimeOffset.UtcNow;
+    SettingsConcurrencyPolicy.MarkApplied(repairSettings, repairSettings.ConfigurationRevision, appliedAt, "offline-standard-preset-repair");
+    await repairStore.SaveSettingsAsync(repairSettings);
+    Console.Out.WriteLine(JsonSerializer.Serialize(new
+    {
+        preset.Id,
+        preset.Name,
+        EffectiveSignal = OutputScanSelection.Describe(preset),
+        repairSettings.ConfigurationRevision,
+        AppliedAt = appliedAt
+    }));
     return;
 }
 

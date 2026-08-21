@@ -2,22 +2,11 @@
   <img src="src/BroadcastRouter.Web/wwwroot/images/broadcastrouter-logo-192.png" width="128" alt="BroadcastRouter logo" />
 </p>
 
-<h1 align="center">BroadcastRouter — Experimental GUI</h1>
+<h1 align="center">BroadcastRouter</h1>
 
-<p align="center"><strong>A presentation-only Tabler interface fork of BroadcastRouter.</strong></p>
+<p align="center"><strong>Production Wowza-to-Blackmagic DeckLink routing control for Windows.</strong></p>
 
-> **Experimental fork:** this repository keeps BroadcastRouter's routing, persistence, process supervision, Wowza, FFmpeg, and DeckLink behavior unchanged while testing a new operator interface built with locally bundled [Tabler](https://github.com/tabler/tabler) assets. It is intended for isolated local evaluation and is not the production repository.
-
-## Experimental GUI quick start
-
-Run the fork on loopback with its own empty data directory. The unchanged production-safe defaults do not scan the network or start physical DeckLink routes:
-
-```powershell
-$env:DataDirectory = "C:\BroadcastRouter-Experimental-GUI\data"
-dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --configuration Release
-```
-
-Open `http://127.0.0.1:5080`. Simulation can be enabled explicitly from **Settings** inside this isolated instance when sample data is useful. Do not point this experimental fork at the same database or physical outputs as a running production host.
+The production operator interface uses locally bundled [Tabler](https://github.com/tabler/tabler) assets. Routing, persistence, process supervision, Wowza, FFmpeg, and DeckLink operation remain server-owned and continue when the browser is closed.
 
 The browser assets are self-contained: Tabler Core 1.4.0 and Tabler Icons 3.46.0 are vendored under `src/BroadcastRouter.Web/wwwroot/vendor`. No CDN is contacted at runtime. See `src/BroadcastRouter.Web/wwwroot/THIRD-PARTY-NOTICES.md`.
 
@@ -59,7 +48,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.20`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.21`.
 3. Run `BroadcastRouter.Server.exe` once as the dedicated Windows broadcast account to complete configuration and hardware validation.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
