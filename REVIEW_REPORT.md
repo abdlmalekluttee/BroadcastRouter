@@ -220,7 +220,7 @@ Still requiring integration or hardware coverage:
 
 | Validation | Status |
 |---|---|
-| Restore, Release build, tests | **Verified automatically**: clean; 89/89 after FFmpeg startup, recovery, scan, audio, reservation, process-containment, route-action, standby-layout, safe-termination, visual-catalog, exact-exit serialization, silent-standby, and service-installer fixes. |
+| Restore, Release build, tests | **Verified automatically**: clean; 118/118 after FFmpeg startup, recovery, scan, audio, reservation, process-containment, route-action, standby-layout, safe-termination, visual-catalog, exact-exit serialization, silent-standby, service-installer, validation-continuity, identity-isolation, reference-backoff, and supervision-independence fixes. |
 | Package vulnerability audit | **Verified automatically**: no vulnerable packages reported. |
 | Atomic single-port ownership | **Verified automatically** with 500 concurrent contenders. |
 | Local browser pages/viewports | **Verified locally** in isolated simulation on port 5180; stable-session console clean; zero document/preset-card overflow at 1920×1080 and 768×1024; zero controls outside cards. |
@@ -265,6 +265,7 @@ Still requiring integration or hardware coverage:
 - 1.5.10 follow-up: production correction for non-adjacent starvation warnings and slow fallback-to-live retry scheduling.
 - 1.5.11 follow-up: production correction for stale discovery state blocking a due saved-route retry, with a configurable one-second RTSP read deadline.
 - 1.5.12 follow-up: production correction for established-socket timeout coverage and `WaitingForStream` demotion discarding a saved-route retry.
+- 1.5.22 follow-up: fully isolated scheduled DeckLink identity discovery, bounded last-known-good validation continuity, command-level coordinator progress, independent local/remote liveness loops, reference-query backoff, and no-change rediscovery audit suppression.
 
 ## Commands and results
 
@@ -288,6 +289,8 @@ Current 1.5.2 results: Release build passed with 0 warnings/errors; 89/89 regres
 Current 1.5.3 local results: Release build passed with 0 warnings/errors and 91/91 regressions passed. Duplicate-dominated output triggers only after the configured sustained interval, normal duplication does not trigger, and a new PID resets detector state. The Sources page invokes only `refresh-sources`, disables duplicate submission, and displays a backend-confirmed completion timestamp/count. Production deployment, rapid real-publisher toggling, reboot-with-live-publisher recovery, and physical SDI picture verification are recorded separately after execution.
 
 Current 1.5.3 production results: a cold full-folder backup preceded deployment to a new versioned directory, including the persisted database and 51 licensed/local DeckLink asset files. The first verification correctly rolled back because the privacy-safe package's localhost-only `AllowedHosts` rejected the LAN health hostname; the existing production host allowlist was then merged and documented before the final cold data sync. The automatic service now reports version 1.5.3, runs in Session 0, owns seven explicitly silent standby FFmpeg processes plus one live route and transient bounded probes, and has zero unowned media. Authenticated GUI inspection confirmed all output designations, both matched card images, the eight-second setting, and the source-refresh busy/receipt/completion states. A real manual refresh completed in 2.317 seconds with seven inventory records and one reachable server, with correlated structured logs. The live route remained Running at approximately 25 fps with zero drops/retries; the post-deployment Windows event audit found zero Critical/Error application events. Rapid encoder toggling, reboot-with-live-publisher recovery, and physical SDI picture/audio remain operator-observed tests.
+
+Current 1.5.22 results: Release restore/build passed with 0 warnings/errors; 118/118 regressions, the release privacy scanner, isolated simulation health, all eight simulated operator routes, GitHub build/test, and CodeQL passed. A stopped-service full-folder backup preceded deployment to a new versioned directory. The automatic Session 0 service became healthy with the expected versioned executable, retained the confirmed connector inventory and saved routes, owned every configured FFmpeg process, and had zero matching orphan processes. A complete scheduled five-minute media-tool/DeckLink cycle passed without changing the service PID, clearing a connector, writing an unchanged rediscovery audit, or triggering the watchdog. Database integrity remained `ok`; authenticated production requests for all eight operator pages and the Blazor framework asset returned HTTP 200 without unhandled-error markup. Native reference queries continued to hit their bounded helper deadline while outputs were open, but exponential backoff retained the last confirmed state and did not stall the coordinator. Physical SDI picture/audio and an 8–24 hour soak remain operator/environment validation steps.
 
 ## Recommended follow-up
 
