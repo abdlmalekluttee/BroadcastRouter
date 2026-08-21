@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.5.22 — 2026-08-21
+
+- Move scheduled DeckLink identity discovery into the existing bounded helper process; a blocked Desktop Video COM call can no longer stall the service host or trigger watchdog recovery.
+- Preserve the last confirmed port inventory on validation or identity-probe failures, retry transient scheduled validation after 30 seconds, and fail closed after a bounded ten-minute continuity grace or an operator-forced failure.
+- Report progress between every bounded media-tool capability command and reuse its confirmed FFmpeg sink inventory, preventing legitimate validation work from appearing to be a dead coordinator.
+- Separate 250 ms Wowza publisher supervision from the 100 ms local FFmpeg watchdog so REST latency cannot delay exact-PID starvation/frozen-session recovery.
+- Back off repeated native reference queries and record device-rediscovery audits only when the connector identity set actually changes.
+- Add production-derived regressions for validation continuity, isolated identity discovery, reference-query backoff, audit deduplication, and independent local FFmpeg supervision.
+
 ## 1.5.21 — 2026-08-21
 
 - Promote the locally bundled Tabler operator interface and custom DeckLink navigation icon to the production application without changing routing behavior.

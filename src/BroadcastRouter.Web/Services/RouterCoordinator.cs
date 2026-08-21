@@ -62,7 +62,9 @@ public sealed class RouterCoordinator(
     private volatile bool _forceToolValidation = true;
     private DateTimeOffset _lastDiscovery = DateTimeOffset.MinValue;
     private DateTimeOffset _lastToolValidation = DateTimeOffset.MinValue;
+    private DateTimeOffset? _lastSuccessfulToolValidationAt;
     private DateTimeOffset _nextDeckLinkReferenceStatusCheck = DateTimeOffset.MinValue;
+    private int _deckLinkReferenceFailureCount;
     private TimeSpan _lastCpu;
     private DateTimeOffset _lastCpuAt = DateTimeOffset.UtcNow;
     private static readonly TimeSpan ExtendedVideoProbeInterval = TimeSpan.FromSeconds(30);
@@ -355,6 +357,7 @@ public sealed class RouterCoordinator(
             "Stopped", "Running", "system", "BroadcastRouter host startup", "Configuration loaded from SQLite"), stoppingToken);
 
         var fastInputSupervision = RunFastInputSupervisionAsync(stoppingToken);
+        var fastPublisherSupervision = RunFastPublisherSupervisionAsync(stoppingToken);
         try
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -397,7 +400,7 @@ public sealed class RouterCoordinator(
         }
         finally
         {
-            try { await fastInputSupervision; }
+            try { await Task.WhenAll(fastInputSupervision, fastPublisherSupervision); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
         }
     }
@@ -409,7 +412,6 @@ public sealed class RouterCoordinator(
         {
             var supervisor = _supervisor;
             if (supervisor is null || _settings.SimulationMode) continue;
-            await SuperviseWowzaPublisherPresenceAsync(supervisor, cancellationToken);
             foreach (var observed in supervisor.Snapshot().Where(value =>
                          value.Purpose == RouteProcessPurpose.Live && value.Running))
             {
@@ -467,6 +469,31 @@ public sealed class RouterCoordinator(
                 lock (_gate) _sources.TryGetValue(route.SourceId, out source);
                 if (!RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(route, source)) continue;
                 await RestartReservedRouteAsync(route, cancellationToken);
+            }
+
+        }
+    }
+
+    private async Task RunFastPublisherSupervisionAsync(CancellationToken cancellationToken)
+    {
+        // Keep management-plane I/O independent from the 100 ms local FFmpeg watchdog.
+        // Two authoritative observations at 250 ms still detect a brief publisher loss
+        // within the required sub-second window without delaying local starvation recovery.
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+        {
+            var supervisor = _supervisor;
+            if (supervisor is null || _settings.SimulationMode) continue;
+            try
+            {
+                await SuperviseWowzaPublisherPresenceAsync(supervisor, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                await LogAsync("Warning", "PublisherSupervision",
+                    $"Fast Wowza publisher supervision failed; local FFmpeg supervision remains active. {LogRedactor.Redact(ex.Message)}",
+                    cancellationToken: cancellationToken);
             }
         }
     }
@@ -639,15 +666,52 @@ public sealed class RouterCoordinator(
             return;
         }
 
-        if (!_forceToolValidation && DateTimeOffset.UtcNow - _lastToolValidation < TimeSpan.FromMinutes(5)) return;
+        var now = DateTimeOffset.UtcNow;
+        if (!_forceToolValidation && now - _lastToolValidation < TimeSpan.FromMinutes(5)) return;
+        var operatorForced = _forceToolValidation && _lastToolValidation != DateTimeOffset.MinValue;
+        var previousValidation = _validation;
         _validation = new(ToolValidationState.Validating, null, null, false, false, 0, ["Validation in progress."], DateTimeOffset.UtcNow);
         Publish("Validating media tools");
-        _validation = await MediaToolValidator.ValidateAsync(settings.MediaTools, cancellationToken);
-        _lastToolValidation = DateTimeOffset.UtcNow;
+        var detailedValidation = await MediaToolValidator.ValidateDetailedAsync(settings.MediaTools, cancellationToken,
+            stage => MarkCoordinatorProgress($"Media-tool validation: {stage}"));
+        var candidateValidation = detailedValidation.Validation;
+        now = DateTimeOffset.UtcNow;
+        var validationDecision = ToolValidationContinuityPolicy.Decide(previousValidation, candidateValidation,
+            _lastSuccessfulToolValidationAt, now, operatorForced);
+        _validation = validationDecision.EffectiveValidation;
+        if (candidateValidation.CanStartHardwareRoutes) _lastSuccessfulToolValidationAt = now;
+        _lastToolValidation = now - (TimeSpan.FromMinutes(5) - validationDecision.RetryAfter);
         _forceToolValidation = false;
+        if (!candidateValidation.CanStartHardwareRoutes)
+        {
+            var detail = string.Join(" ", candidateValidation.Findings.Where(finding =>
+                finding.StartsWith("FAIL:", StringComparison.OrdinalIgnoreCase)));
+            await LogAsync(validationDecision.RetainedLastKnownGood ? "Warning" : "Error", "MediaTools",
+                validationDecision.RetainedLastKnownGood
+                    ? $"Scheduled validation failed transiently; the last confirmed hardware state was retained and validation will retry in {validationDecision.RetryAfter.TotalSeconds:0} seconds. {detail}"
+                    : $"Validation failed; hardware route starts are blocked and the last confirmed port inventory was preserved. {detail}",
+                cancellationToken: cancellationToken);
+            return;
+        }
         IReadOnlyList<DeckLinkPort> rawPorts = [];
         if (_validation.DeckLinkCompiled && File.Exists(settings.MediaTools.FfmpegPath))
-            rawPorts = await new FfmpegDeckLinkEnumerator(settings.MediaTools.FfmpegPath).EnumerateAsync(cancellationToken);
+        {
+            var executable = Path.Combine(AppContext.BaseDirectory, "BroadcastRouter.Server.exe");
+            try
+            {
+                rawPorts = await new FfmpegDeckLinkEnumerator(detailedValidation.OutputDevices, executable)
+                    .EnumerateAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _lastToolValidation = DateTimeOffset.UtcNow
+                    - (TimeSpan.FromMinutes(5) - ToolValidationContinuityPolicy.FailureRetry);
+                await LogAsync("Warning", "DeckLinkDiscovery",
+                    $"The isolated hardware identity query failed; the last confirmed port inventory was retained and discovery will retry in {ToolValidationContinuityPolicy.FailureRetry.TotalSeconds:0} seconds. {LogRedactor.Redact(ex.Message)}",
+                    cancellationToken: cancellationToken);
+                return;
+            }
+        }
         var aliases = DeckLinkIdentityMigration.BuildAliasMap(rawPorts);
         var liveOwnershipExists = _reservations.Snapshot().Count > 0
             || (_supervisor?.Snapshot().Any(process => process.Running) ?? false);
@@ -2312,16 +2376,19 @@ public sealed class RouterCoordinator(
     {
         var now = DateTimeOffset.UtcNow;
         if (_settings.SimulationMode || now < _nextDeckLinkReferenceStatusCheck) return;
-        _nextDeckLinkReferenceStatusCheck = now + TimeSpan.FromSeconds(2);
+        _nextDeckLinkReferenceStatusCheck = now + DeckLinkReferencePollingPolicy.SuccessInterval;
         var executable = Path.Combine(AppContext.BaseDirectory, "BroadcastRouter.Server.exe");
         var probe = await DeckLinkIdentityProcessProbe.EnumerateAsync(executable, cancellationToken);
         if (!probe.Success)
         {
-            _nextDeckLinkReferenceStatusCheck = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
+            _deckLinkReferenceFailureCount++;
+            var delay = DeckLinkReferencePollingPolicy.FailureDelay(_deckLinkReferenceFailureCount);
+            _nextDeckLinkReferenceStatusCheck = DateTimeOffset.UtcNow + delay;
             await LogAsync("Warning", "DeckLinkReference", $"DeckLink reference-status query failed: {probe.Error}",
                 cancellationToken: cancellationToken);
             return;
         }
+        _deckLinkReferenceFailureCount = 0;
         var hardware = probe.Identities;
         var byHandle = hardware.Where(value => !string.IsNullOrWhiteSpace(value.DeviceHandle))
             .GroupBy(value => value.DeviceHandle, StringComparer.OrdinalIgnoreCase)
@@ -2369,14 +2436,14 @@ public sealed class RouterCoordinator(
         var currentIds = current.Select(port => port.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var added = currentIds.Except(previousIds, StringComparer.OrdinalIgnoreCase).Count();
         var removed = previousIds.Except(currentIds, StringComparer.OrdinalIgnoreCase).Count();
+        if (!DeviceRediscoveryAuditPolicy.ShouldAudit(previousIds, currentIds)) return;
         await store.WriteConfigurationAuditAsync(new(0, DateTimeOffset.UtcNow, "DeviceRediscovery", "DECKLINK",
             "DeckLink", "", $"{previous.Count} connector(s)", $"{current.Count} connector(s)", "system",
             "Scheduled or operator-requested hardware enumeration",
-            added == 0 && removed == 0 ? "Identity set unchanged" : $"Added {added}; removed {removed}"), cancellationToken);
-        if (added > 0 || removed > 0)
-            await LogAsync("Warning", "DeckLinkDiscovery",
-                $"DeckLink identity set changed during rediscovery: {added} added, {removed} removed. Persisted output-port configuration was not modified.",
-                cancellationToken: cancellationToken);
+            $"Added {added}; removed {removed}"), cancellationToken);
+        await LogAsync("Warning", "DeckLinkDiscovery",
+            $"DeckLink identity set changed during rediscovery: {added} added, {removed} removed. Persisted output-port configuration was not modified.",
+            cancellationToken: cancellationToken);
     }
 
     private static string DescribePortOverride(DeckLinkPortOverride? value) => value is null
