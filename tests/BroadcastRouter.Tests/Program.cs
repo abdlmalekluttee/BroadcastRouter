@@ -55,6 +55,7 @@ var tests = new (string Name, Action Body)[]
     ("Durable route changes require persistence", DurableRouteChangesRequirePersistence),
     ("Coordinator liveness detects a blocked cycle", CoordinatorLivenessDetectsBlockedCycle),
     ("Coordinator watchdog is registered and health-aware", CoordinatorWatchdogIsRegisteredAndHealthAware),
+    ("Health requests use cached database integrity", HealthRequestsUseCachedDatabaseIntegrity),
     ("Transient media validation retains the last confirmed state", TransientMediaValidationRetainsLastConfirmedState),
     ("DeckLink reference failures use bounded backoff", DeckLinkReferenceFailuresUseBoundedBackoff),
     ("Unchanged DeckLink rediscovery is not audited", UnchangedDeckLinkRediscoveryIsNotAudited),
@@ -811,6 +812,23 @@ static void CoordinatorWatchdogIsRegisteredAndHealthAware()
     True(supervisor.Contains("ProcessReapTimeout", StringComparison.Ordinal));
     True(supervisor.Contains("StreamDrainTimeout", StringComparison.Ordinal));
     True(!commands.Contains("WaitForExitAsync(CancellationToken.None)", StringComparison.Ordinal));
+}
+
+static void HealthRequestsUseCachedDatabaseIntegrity()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Program.cs"));
+    var monitor = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Services", "DatabaseIntegrityMonitor.cs"));
+    var healthStart = program.IndexOf("app.MapGet(\"/health\"", StringComparison.Ordinal);
+    var healthEnd = program.IndexOf(".AllowAnonymous();", healthStart, StringComparison.Ordinal);
+    True(healthStart >= 0 && healthEnd > healthStart);
+    var healthEndpoint = program[healthStart..healthEnd];
+    True(healthEndpoint.Contains("DatabaseIntegrityMonitor", StringComparison.Ordinal));
+    True(healthEndpoint.Contains("databaseIntegrity.Snapshot", StringComparison.Ordinal));
+    True(!healthEndpoint.Contains("IntegrityCheckAsync", StringComparison.Ordinal));
+    True(program.Contains("GetRequiredService<DatabaseIntegrityMonitor>().RefreshAsync()", StringComparison.Ordinal));
+    True(monitor.Contains("TimeSpan.FromMinutes(1)", StringComparison.Ordinal));
+    True(monitor.Contains("BackgroundService", StringComparison.Ordinal));
 }
 
 static void DeckLinkIdentityPollingIsIsolatedAndBounded()
