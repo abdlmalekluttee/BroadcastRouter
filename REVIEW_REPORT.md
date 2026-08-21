@@ -1,10 +1,10 @@
 # BroadcastRouter production-safety review
 
 Review date: 2026-08-21
-Review branch: `codex/cached-health-integrity`
-Current release branch: `codex/cached-health-integrity` (1.5.24)
+Review branch: `codex/reuse-owned-live-media`
+Current release branch: `codex/reuse-owned-live-media` (1.5.25)
 Reviewed baseline: release `1.3.6`
-Resulting release version: `1.5.24`
+Resulting release version: `1.5.25`
 
 ## Executive summary
 
@@ -58,7 +58,9 @@ The 1.5.21 production soak reproduced a watchdog termination in `Media-tool and 
 
 The first 1.5.22 production validation cycle retained the correct 16-port inventory when the isolated identity helper timed out under active DeckLink ownership, but it also exposed an incorrect retry coupling: the timeout moved the timestamp for the complete media-tool validation onto the 30-second transient-tool-failure cadence. That caused repeated FFmpeg/DeckLink validation and frequent `Validating media tools` UI state even though the last confirmed inventory remained valid. Version 1.5.23 keeps identity-helper failures on the normal five-minute hardware cadence; only actual media-tool failures receive the bounded 30-second retry.
 
-The official 1.5.23 GitHub artifact was deployed after a stopped, hash-verified cold backup. Three successive hardware validations retained all 16 connectors at five-minute intervals with no 30-second replay, service restart, route release, or configuration change. Four live routes and one saved offline route remained intact; eight FFmpeg outputs stayed service-owned with no orphan, and every authenticated operator page returned HTTP 200. A deliberately aggressive one-request-per-second `/health` acceptance test then exposed a separate monitoring defect: every request performed a fresh SQLite `PRAGMA integrity_check`, and several exceeded three seconds while live probes and writes were active. Version 1.5.24 moves integrity checking to a serialized one-minute background monitor and serves health from its immutable snapshot plus coordinator liveness.
+The official 1.5.23 GitHub artifact was deployed after a stopped, hash-verified cold backup. Three successive hardware validations retained all 16 connectors at five-minute intervals with no 30-second replay, service restart, route release, or configuration change. Four live routes and one saved offline route remained intact; eight FFmpeg outputs stayed service-owned with no orphan, and every authenticated operator page returned HTTP 200. A deliberately aggressive one-request-per-second `/health` acceptance test exposed a separate design defect: every request performed a fresh SQLite `PRAGMA integrity_check` while live probes and writes were active. Version 1.5.24 moves integrity checking to a serialized one-minute background monitor and serves health from its immutable snapshot plus coordinator liveness.
+
+The official 1.5.24 artifact confirmed that `/health` no longer opens SQLite, but a deliberately strict two-second LAN deadline still caught short response-latency clusters. A ten-second measurement completed 45/45 requests, with a 3.365-second maximum; the slow samples aligned exactly with simultaneous extended FFprobe/keyframe-confirmation completions. Discovery was repeatedly reproving media already demonstrated by an advancing owned live FFmpeg process. Version 1.5.25 reuses confirmed standard-video media only while that exact live owner is fresh. Every source without that strong evidence—including audio-led, unassigned, fallback, stale, or unhealthy sources—continues through the full probe path.
 
 The 1.2.2 follow-up replaces the external FFplay confidence window with a compact embedded browser player. RTSP frame receipt, H.264/AAC fragmented-MP4 streaming, the VU overlay, browser playback, explicit stop, and exact child-process cleanup were verified in a controlled lab; physical DeckLink picture/audio observation remains an environment-specific validation step.
 
@@ -156,6 +158,7 @@ The failed documented web start is an environmental port conflict, not an applic
 | BR-052 | Medium | Diagnostic audit noise | `Application/ToolValidationContinuityPolicy.cs`; `Web/Services/RouterCoordinator.cs` | Unchanged five-minute rediscovery records consumed 998 of the latest 1000 configuration-audit rows, hiding meaningful operator changes. | **Fixed in 1.5.22.** Rediscovery is audited only when the case-insensitive connector identity set changes; failed native reference queries use bounded exponential backoff. |
 | BR-053 | High | Identity timeout validation loop | `Application/ToolValidationContinuityPolicy.cs`; `Web/Services/RouterCoordinator.cs` | A bounded identity-helper timeout retained the correct port inventory but rescheduled the complete FFmpeg/DeckLink validation after 30 seconds, producing continuous expensive validation while active outputs held Desktop Video. | **Fixed in 1.5.23.** Identity-helper failures keep the normal five-minute hardware cadence; the 30-second retry remains exclusive to actual media-tool validation failures. Regression: `DeckLink identity failure keeps normal validation cadence`. |
 | BR-054 | High | Health-check database contention | `Web/Services/DatabaseIntegrityMonitor.cs`; `Web/Program.cs` | The anonymous health endpoint ran a complete SQLite integrity check for every request. Production acceptance polling reproduced multi-second responses and false client timeouts even though the coordinator and routes remained healthy. | **Fixed in 1.5.24.** A serialized background monitor refreshes integrity once per minute; `/health` reads that immutable result and coordinator liveness without opening SQLite. Regression: `Health requests use cached database integrity`. |
+| BR-055 | High | Redundant active-route probing | `Application/OwnedLiveMediaReusePolicy.cs`; `Web/Services/RouterCoordinator.cs` | Every Wowza discovery cycle launched FFprobe for already healthy standard-video routes. Simultaneous extended keyframe scans correlated with 1.7–3.4 second web-response delays and continuous unnecessary helper processes. | **Fixed in 1.5.25.** Confirmed media is reused only while the exact owned live FFmpeg process is advancing within the configured stall window; all weaker states remain probe-gated. Regression: `Healthy owned standard video reuses confirmed media`. |
 
 ## GUI review
 
@@ -178,7 +181,7 @@ The 1.2.3 route/rule card layouts were rechecked against the deployed production
 
 ## Test coverage
 
-Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89. Version 1.5.6: 98/98. Version 1.5.7: 102/102. Version 1.5.8: 103/103. Version 1.5.9: 106/106. Version 1.5.11: 108/108. Version 1.5.12: 110/110. Version 1.5.13: 111/111. Versions 1.5.14 and 1.5.15: 112/112. Versions 1.5.16 through 1.5.18: 113/113. Versions 1.5.19 and 1.5.20: 114/114. Version 1.5.22: 118/118. Version 1.5.23: 119/119. Version 1.5.24: 120/120 tests.
+Baseline: 37/37 tests. Version 1.2.2: 53/53. Version 1.2.3: 55/55. Version 1.2.4: 57/57. Version 1.2.5: 59/59. Version 1.2.6: 60/60. Version 1.2.8: 62/62. Version 1.2.9: 64/64. Version 1.2.10: 68/68. Version 1.2.11: 70/70. Versions 1.3.0 through 1.3.2: 75/75. Version 1.3.3: 81/81. Version 1.3.4: 84/84. Version 1.5.0: 85/85. Version 1.5.1: 86/86. Version 1.5.2: 89/89. Version 1.5.6: 98/98. Version 1.5.7: 102/102. Version 1.5.8: 103/103. Version 1.5.9: 106/106. Version 1.5.11: 108/108. Version 1.5.12: 110/110. Version 1.5.13: 111/111. Versions 1.5.14 and 1.5.15: 112/112. Versions 1.5.16 through 1.5.18: 113/113. Versions 1.5.19 and 1.5.20: 114/114. Version 1.5.22: 118/118. Version 1.5.23: 119/119. Version 1.5.24: 120/120. Version 1.5.25: 121/121 tests.
 
 Added coverage:
 
@@ -274,6 +277,7 @@ Still requiring integration or hardware coverage:
 - 1.5.22 follow-up: fully isolated scheduled DeckLink identity discovery, bounded last-known-good validation continuity, command-level coordinator progress, independent local/remote liveness loops, reference-query backoff, and no-change rediscovery audit suppression.
 - 1.5.23 follow-up: separate identity-helper timeout cadence from transient media-tool validation retries so active DeckLink ownership cannot cause a 30-second full-validation loop.
 - 1.5.24 follow-up: serialized background database-integrity monitoring and a non-blocking cached `/health` response.
+- 1.5.25 follow-up: reuse of confirmed media for a fresh exact owned live process, eliminating redundant healthy-route FFprobe/keyframe scans without weakening readiness checks for other source states.
 
 ## Commands and results
 

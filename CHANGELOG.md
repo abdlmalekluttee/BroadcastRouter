@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.25 — 2026-08-21
+
+- Reuse confirmed standard-video metadata while the exact owned live FFmpeg process is running and reporting fresh frames, instead of launching redundant FFprobe/keyframe scans on every Wowza discovery cycle.
+- Keep full probing for new, offline, unassigned, audio-led, starting, fallback, stale, or otherwise unhealthy sources so discovery and media-mode recovery remain fail-closed.
+- Remove the repeated extended-probe bursts that correlated with multi-second web-health latency while leaving route liveness under the independent 100 ms FFmpeg supervisor and 250 ms Wowza publisher monitor.
+
 ## 1.5.24 — 2026-08-21
 
 - Move SQLite integrity checking out of the anonymous `/health` request path and refresh it once per minute in a serialized background monitor.
