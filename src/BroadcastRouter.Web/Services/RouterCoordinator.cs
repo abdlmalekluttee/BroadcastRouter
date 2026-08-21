@@ -998,6 +998,24 @@ public sealed class RouterCoordinator(
         if (source.Media is not null)
             return new(source, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false, false);
 
+        DiscoveredSource? previousSource;
+        lock (_gate) _sources.TryGetValue(source.Identity.Value, out previousSource);
+        var ownedLive = _supervisor?.Snapshot().FirstOrDefault(process =>
+            process.Source == source.Identity
+            && process.Purpose == RouteProcessPurpose.Live
+            && process.Running);
+        var now = DateTimeOffset.UtcNow;
+        if (OwnedLiveMediaReusePolicy.CanReuse(source, previousSource,
+                ownedLive is not null,
+                ownedLive?.Progress?.Frame,
+                ownedLive?.Progress?.LastProgressAt,
+                now,
+                TimeSpan.FromSeconds(Math.Clamp(settings.Routing.StallTimeoutSeconds, 2, 60))))
+        {
+            return new(source with { State = SourceState.Ready, Media = previousSource!.Media }, null,
+                SourceMediaMode.Video, SourceMediaMode.Video, false, false);
+        }
+
         SourceMediaModeState previousMode;
         lock (_gate)
         {

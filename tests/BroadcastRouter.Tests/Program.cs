@@ -38,6 +38,7 @@ var tests = new (string Name, Action Body)[]
     ("Missing live owner enters retry before reservation", MissingLiveOwnerEntersRetryBeforeReservation),
     ("Saved routes retry without waiting for discovery", SavedRoutesRetryWithoutDiscovery),
     ("Owned video progress outranks a stale probe", OwnedVideoProgressOutranksStaleProbe),
+    ("Healthy owned standard video reuses confirmed media", HealthyOwnedStandardVideoReusesConfirmedMedia),
     ("Saved route enters retry on transient source loss", SavedRouteEntersRetryOnTransientLoss),
     ("Saved recovery attempt receives startup grace", SavedRecoveryAttemptReceivesStartupGrace),
     ("Fast publisher disconnect requires confirmation", FastPublisherDisconnectRequiresConfirmation),
@@ -201,6 +202,30 @@ static void OwnedVideoProgressOutranksStaleProbe()
     True(!RapidStreamRecoveryPolicy.IsEffectivelyActive(
         video with { Media = video.Media! with { HasUsableVideo = false } },
         ownedLiveVideoIsAdvancing: true));
+}
+
+static void HealthyOwnedStandardVideoReusesConfirmedMedia()
+{
+    var now = DateTimeOffset.UtcNow;
+    var identity = new SourceIdentity("WOWZA", "live", "_definst_", "stable.stream");
+    var observed = new DiscoveredSource(identity, "Stable stream",
+        new Uri("rtsp://127.0.0.1/live/stable.stream"), SourceState.PublisherActive, 0);
+    var media = new MediaProperties("h264", "aac", 1920, 1080, 25, 3_000_000, 48_000, 2, true);
+    var previous = observed with { State = SourceState.Ready, Media = media };
+    var freshness = TimeSpan.FromSeconds(10);
+
+    True(OwnedLiveMediaReusePolicy.CanReuse(observed, previous, true, 100, now.AddSeconds(-1), now, freshness));
+    True(!OwnedLiveMediaReusePolicy.CanReuse(observed, previous, false, 100, now.AddSeconds(-1), now, freshness));
+    True(!OwnedLiveMediaReusePolicy.CanReuse(observed, previous, true, 0, now.AddSeconds(-1), now, freshness));
+    True(!OwnedLiveMediaReusePolicy.CanReuse(observed, previous, true, 100, now.AddSeconds(-11), now, freshness));
+    True(!OwnedLiveMediaReusePolicy.CanReuse(observed,
+        previous with { Media = media with { HasUsableVideo = false } },
+        true, 100, now.AddSeconds(-1), now, freshness));
+    True(!OwnedLiveMediaReusePolicy.CanReuse(
+        observed with { State = SourceState.PublisherDisconnected }, previous,
+        true, 100, now.AddSeconds(-1), now, freshness));
+    Throws<ArgumentOutOfRangeException>(() => OwnedLiveMediaReusePolicy.CanReuse(
+        observed, previous, true, 100, now, now, TimeSpan.Zero));
 }
 
 static void SavedRouteEntersRetryOnTransientLoss()

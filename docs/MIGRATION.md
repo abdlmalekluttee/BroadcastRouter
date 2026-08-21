@@ -64,4 +64,6 @@ Version 1.5.23 requires no settings or database migration. It limits identity-he
 
 Version 1.5.24 requires no settings or database migration. Database integrity is refreshed in the background once per minute and `/health` reads that cached result together with coordinator liveness. Existing health-monitor URLs and response status values remain compatible.
 
+Version 1.5.25 requires no settings or database migration. Confirmed standard-video metadata is reused only while the source's exact owned live FFmpeg process is advancing within the configured stall window. All other source states continue to use the existing FFprobe readiness path.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.
