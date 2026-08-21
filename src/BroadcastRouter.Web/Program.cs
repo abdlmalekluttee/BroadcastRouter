@@ -82,9 +82,11 @@ builder.Services.AddHttpClient<DeckLinkSoftwareInformationProvider>(client =>
 });
 builder.Services.AddSingleton<RouterCoordinator>();
 builder.Services.AddSingleton<BrowserPreviewSupervisor>();
+builder.Services.AddSingleton<DatabaseIntegrityMonitor>();
 builder.Services.AddHostedService<ServiceLifecycleReporter>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<RouterCoordinator>());
 builder.Services.AddHostedService<RouterCoordinatorWatchdog>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<DatabaseIntegrityMonitor>());
 builder.Services.AddScoped<AuthorizedRouterCommands>();
 builder.Services.AddScoped<AuthorizedPreviewCommands>();
 builder.Services.AddRazorComponents().AddInteractiveServerComponents(options => options.DetailedErrors = false);
@@ -128,6 +130,7 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+await app.Services.GetRequiredService<DatabaseIntegrityMonitor>().RefreshAsync();
 if (!app.Environment.IsDevelopment()) app.UseExceptionHandler("/error", createScopeForErrors: true);
 if (!app.Environment.IsDevelopment() && persistedSettings.Security.HttpsEnabled) app.UseHsts();
 const string RawPeerAddressKey = "BroadcastRouter.RawPeerAddress";
@@ -211,12 +214,12 @@ var deckLinkAssetEndpoint = app.MapGet("/hardware-assets/decklink/{slug}/{kind}"
 });
 deckLinkAssetEndpoint.RequireAuthorization();
 
-app.MapGet("/health", async (SqliteDataStore store, RouterCoordinator coordinator, CancellationToken cancellationToken) =>
+app.MapGet("/health", (DatabaseIntegrityMonitor databaseIntegrity, RouterCoordinator coordinator) =>
 {
-    var integrity = await store.IntegrityCheckAsync(cancellationToken);
+    var integrity = databaseIntegrity.Snapshot;
     var coordinatorResponsive = CoordinatorLivenessPolicy.IsResponsive(
         coordinator.GetLiveness(), DateTimeOffset.UtcNow, RouterCoordinatorWatchdog.MaximumSilence);
-    return Results.Ok(new { status = integrity == "ok" && coordinatorResponsive ? "healthy" : "degraded" });
+    return Results.Ok(new { status = integrity.IsHealthy && coordinatorResponsive ? "healthy" : "degraded" });
 }).AllowAnonymous();
 
 app.MapPost("/auth/login", async (HttpContext context, IAntiforgery antiforgery) =>

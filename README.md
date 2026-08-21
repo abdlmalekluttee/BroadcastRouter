@@ -48,7 +48,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.23`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.24`.
 3. Run `BroadcastRouter.Server.exe` once as the dedicated Windows broadcast account to complete configuration and hardware validation.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
@@ -99,7 +99,7 @@ For fast standby-to-live cuts, enable **Low latency** on the output preset and c
 
 Live-video supervision also detects a stale decoder that keeps FFmpeg output progress alive by repeating almost every frame. After the configurable frozen-input timeout, only that owned route process is stopped and retried; the saved assignment and output-port configuration remain intact. Audio-led sources are excluded because their continuous black video is intentional. Ambiguous H.264/AAC inputs receive a bounded, rate-limited extended keyframe-acquisition probe before audio-led mode is committed, so a long GOP is not mistaken for an absent picture. Fatal RTSP control-session desynchronization recreates only the affected owned route while preserving its saved output reservation. During recovery, the generated fallback is identified separately and fully reaped before replacement live playout starts, so its frames cannot be reported as recovered source video or block the new source owner. **Refresh discovery** on Sources is a source-only operation and displays the backend-confirmed completion time and inventory count without rescanning DeckLink hardware.
 
-The routing worker publishes an internal heartbeat before and after process supervision, discovery/probing, hardware validation, route reconciliation, and standby reconciliation. `/health` becomes `degraded` if that worker makes no progress for two minutes. The independent watchdog then writes the stalled stage and terminates the host so the configured Windows Service recovery action restarts it; the process Job Object removes only BroadcastRouter-owned media children. This protects against a responsive web interface masking a stalled routing engine.
+The routing worker publishes an internal heartbeat before and after process supervision, discovery/probing, hardware validation, route reconciliation, and standby reconciliation. `/health` reads a once-per-minute background SQLite integrity snapshot and becomes `degraded` if either that check fails or the worker makes no progress for two minutes. Monitoring requests therefore remain non-blocking and cannot contend with live database traffic. The independent watchdog then writes the stalled stage and terminates the host so the configured Windows Service recovery action restarts it; the process Job Object removes only BroadcastRouter-owned media children. This protects against a responsive web interface masking a stalled routing engine.
 
 Native DeckLink identity and reference-lock polling runs in a hidden, short-lived helper process with its own five-second deadline and kill-on-close containment. If Desktop Video blocks inside a COM call, the helper is discarded and retried later while discovery, routing, and the service host continue using the last confirmed hardware state.
 

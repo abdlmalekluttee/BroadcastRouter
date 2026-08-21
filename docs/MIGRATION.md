@@ -62,4 +62,6 @@ Version 1.5.22 requires no settings or database migration. It moves every native
 
 Version 1.5.23 requires no settings or database migration. It limits identity-helper timeout retries to the normal five-minute hardware cadence; only a real transient media-tool validation failure uses the 30-second retry. This prevents active DeckLink outputs from causing continuous full capability checks while preserving the confirmed connector inventory.
 
+Version 1.5.24 requires no settings or database migration. Database integrity is refreshed in the background once per minute and `/health` reads that cached result together with coordinator liveness. Existing health-monitor URLs and response status values remain compatible.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

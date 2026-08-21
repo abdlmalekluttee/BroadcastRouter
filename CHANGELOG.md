@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.24 — 2026-08-21
+
+- Move SQLite integrity checking out of the anonymous `/health` request path and refresh it once per minute in a serialized background monitor.
+- Serve health requests from the last immutable integrity snapshot plus the live coordinator heartbeat, preventing aggressive monitoring from contending with production database traffic or producing false request timeouts.
+- Complete one integrity check before the web listener starts so the first published health response remains authoritative rather than briefly reporting an unknown state.
+
 ## 1.5.23 — 2026-08-21
 
 - Keep an isolated DeckLink identity-helper timeout on the normal five-minute hardware-discovery cadence instead of rerunning the complete media-tool validation every 30 seconds while active outputs hold the driver.
