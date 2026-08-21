@@ -1651,6 +1651,12 @@ static void OutputScanSelectionRoundTrips()
     True(OutputScanSelection.TryParse(OutputScanSelection.Interlaced, out var interlaced) && interlaced);
     True(!OutputScanSelection.TryParse("", out _));
     True(!OutputScanSelection.TryParse("True", out _));
+    var mislabeled = new OutputPresetProfile { Id = "1080i50", Name = "1080i50", Interlaced = false };
+    Equal("1920x1080 25p", OutputScanSelection.Describe(mislabeled));
+    True(OutputScanSelection.StandardPresetMismatch(mislabeled) is not null);
+    True(OutputScanSelection.TryApplyStandardPreset(mislabeled));
+    Equal("1920x1080 50i", OutputScanSelection.Describe(mislabeled));
+    True(OutputScanSelection.StandardPresetMismatch(mislabeled) is null);
 }
 
 static void ManualRoutePresetSelectionIsValidated()
@@ -1799,6 +1805,11 @@ static void SettingsRejectInvalidGuiValues()
         Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
         settings.Presets[0].StandbyMode = FallbackMode.Black;
         settings.Presets[0].StandbyValue = "";
+        settings.Presets[0].Id = "1080i50";
+        settings.Presets[0].Name = "1080i50";
+        settings.Presets[0].Interlaced = false;
+        Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());
+        settings.Presets[0].Interlaced = true;
         settings.ManualSources.Add(new ManualSourceProfile { FriendlyName = "Wrong connector", RtspUrl = "rtsp://127.0.0.1/live/test", FixedPortId = "INPUT-1" });
         settings.DeckLinkPortOverrides.Add(new DeckLinkPortOverride { StableId = "INPUT-1", FriendlyName = "Input 1", IsOutputPort = false });
         Throws<InvalidOperationException>(() => store.SaveSettingsAsync(settings).GetAwaiter().GetResult());

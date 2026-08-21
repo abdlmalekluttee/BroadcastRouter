@@ -448,6 +448,7 @@ public sealed class SqliteDataStore
             if (string.IsNullOrWhiteSpace(preset.Id) || string.IsNullOrWhiteSpace(preset.Name)) throw new InvalidOperationException("Every preset requires an ID and name.");
             if (preset.Width <= 0 || preset.Height <= 0) throw new InvalidOperationException($"Preset {preset.Id} requires a positive raster size.");
             if (preset.FrameRateNumerator <= 0 || preset.FrameRateDenominator <= 0) throw new InvalidOperationException($"Preset {preset.Id} requires a positive frame rate.");
+            if (OutputScanSelection.StandardPresetMismatch(preset) is { } mismatch) throw new InvalidOperationException(mismatch);
             if (string.IsNullOrWhiteSpace(preset.PixelFormat)) throw new InvalidOperationException($"Preset {preset.Id} requires a pixel format.");
             if (preset.BufferSizeMegabytes is < 1 or > 4096) throw new InvalidOperationException($"Preset {preset.Id} buffer size must be between 1 and 4096 MB.");
             if (preset.RtspTransport is not ("tcp" or "udp")) throw new InvalidOperationException($"Preset {preset.Id} has an unsupported RTSP transport.");

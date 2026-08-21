@@ -6,6 +6,10 @@
 
 <p align="center"><strong>Production Wowza-to-Blackmagic DeckLink routing control for Windows.</strong></p>
 
+The production operator interface uses locally bundled [Tabler](https://github.com/tabler/tabler) assets. Routing, persistence, process supervision, Wowza, FFmpeg, and DeckLink operation remain server-owned and continue when the browser is closed.
+
+The browser assets are self-contained: Tabler Core 1.4.0 and Tabler Icons 3.46.0 are vendored under `src/BroadcastRouter.Web/wwwroot/vendor`. No CDN is contacted at runtime. See `src/BroadcastRouter.Web/wwwroot/THIRD-PARTY-NOTICES.md`.
+
 BroadcastRouter is a self-contained .NET 8 Blazor Server application that inventories active and offline Wowza publishers, validates active RTSP media with FFprobe, atomically reserves operator-designated DeckLink output ports, and supervises FFmpeg playout and standby screens. The browser is only a control surface: closing or refreshing it does not stop the routing host.
 
 ## What it provides
@@ -44,7 +48,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.20`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.21`.
 3. Run `BroadcastRouter.Server.exe` once as the dedicated Windows broadcast account to complete configuration and hardware validation.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
