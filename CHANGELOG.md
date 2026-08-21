@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.5.23 — 2026-08-21
+
+- Keep an isolated DeckLink identity-helper timeout on the normal five-minute hardware-discovery cadence instead of rerunning the complete media-tool validation every 30 seconds while active outputs hold the driver.
+- Continue using the 30-second retry only for an actual transient media-tool validation failure, while retaining the last confirmed port inventory in both cases.
+- Add a production-derived regression that prevents identity-only failures from reintroducing the high-frequency validation loop.
+
 ## 1.5.22 — 2026-08-21
 
 - Move scheduled DeckLink identity discovery into the existing bounded helper process; a blocked Desktop Video COM call can no longer stall the service host or trigger watchdog recovery.
