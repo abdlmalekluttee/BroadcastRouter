@@ -2,24 +2,44 @@ using BroadcastRouter.Domain;
 
 namespace BroadcastRouter.Infrastructure;
 
+public sealed record MediaToolValidationResult(
+    MediaToolValidation Validation,
+    IReadOnlyList<DeckLinkSink> OutputDevices);
+
 public static class MediaToolValidator
 {
-    public static async Task<MediaToolValidation> ValidateAsync(MediaToolPaths paths, CancellationToken cancellationToken)
+    public static async Task<MediaToolValidation> ValidateAsync(MediaToolPaths paths, CancellationToken cancellationToken) =>
+        (await ValidateDetailedAsync(paths, cancellationToken).ConfigureAwait(false)).Validation;
+
+    public static async Task<MediaToolValidationResult> ValidateDetailedAsync(
+        MediaToolPaths paths,
+        CancellationToken cancellationToken,
+        Action<string>? reportProgress = null)
     {
         var findings = new List<string>();
         if (!File.Exists(paths.FfmpegPath) || !File.Exists(paths.FfprobePath))
-            return new(ToolValidationState.Invalid, null, null, false, false, 0,
-                ["FFmpeg and FFprobe must both point to existing executable files."], DateTimeOffset.UtcNow);
+            return new(new(ToolValidationState.Invalid, null, null, false, false, 0,
+                ["FFmpeg and FFprobe must both point to existing executable files."], DateTimeOffset.UtcNow), []);
 
+        reportProgress?.Invoke("FFmpeg and DeckLink capability inspection");
         var ffmpeg = await FfmpegDiagnostics.InspectAsync(paths.FfmpegPath, cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("FFprobe version inspection");
         var ffprobe = await ExternalCommandRunner.RunAsync(paths.FfprobePath, ["-version"], TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("FFmpeg filter inspection");
         var filters = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-filters"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("FFmpeg pixel-format inspection");
         var pixelFormats = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-pix_fmts"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("FFmpeg codec inspection");
         var codecs = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-codecs"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("FFmpeg encoder inspection");
         var encoders = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-encoders"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("FFmpeg muxer inspection");
         var muxers = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-muxers"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("RTSP timeout capability inspection");
         var rtspOptions = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-h", "demuxer=rtsp"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("DeckLink termination capability inspection");
         var deckLinkOptions = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-h", "muxer=decklink"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("Windows media environment inspection");
         var environment = await SystemEnvironmentScanner.ScanAsync(paths, cancellationToken).ConfigureAwait(false);
 
         var ffprobeVersion = ffprobe.CombinedOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
@@ -63,9 +83,10 @@ public static class MediaToolValidator
 
         var valid = ffmpeg.ExecutableFound && ffprobe.Started && ffprobe.ExitCode == 0 && ffmpeg.HasDeckLinkOutput
             && ffmpeg.OutputDevices.Count > 0 && missingFilters.Length == 0 && hasPixelFormat && hasRawVideo && hasRtspTimeout && driver;
-        return new(valid ? ToolValidationState.Valid : ToolValidationState.Invalid, ffmpeg.VersionLine, ffprobeVersion,
-            ffmpeg.HasDeckLinkOutput, driver, ffmpeg.OutputDevices.Count, findings, DateTimeOffset.UtcNow,
-            hasWindowsDeckLinkSafeTerminate, missingStandbyFilters.Length == 0);
+        return new(new(valid ? ToolValidationState.Valid : ToolValidationState.Invalid, ffmpeg.VersionLine, ffprobeVersion,
+                ffmpeg.HasDeckLinkOutput, driver, ffmpeg.OutputDevices.Count, findings, DateTimeOffset.UtcNow,
+                hasWindowsDeckLinkSafeTerminate, missingStandbyFilters.Length == 0),
+            ffmpeg.OutputDevices);
     }
 
     private static bool ContainsTool(string report, string token) =>

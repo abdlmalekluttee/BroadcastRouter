@@ -50,6 +50,8 @@ The coordinator records stage-level progress around supervision, discovery/probi
 
 DeckLink SDK identity and reference-lock queries are never executed in the service host. A hidden copy of the server executable performs the COM enumeration, returns bounded JSON over redirected output, and exits. The caller enforces a five-second deadline in a kill-on-close Job Object; timeout retains the last confirmed hardware state and delays the next attempt for 30 seconds without blocking coordinator progress.
 
+Media-tool capability validation reports progress between its independently bounded commands. Scheduled transient failures retain the last confirmed validation and port inventory for a maximum ten-minute continuity window while retrying every 30 seconds; first-time, operator-forced, and sustained failures remain fail-closed. The 100 ms local FFmpeg liveness watchdog and 250 ms Wowza publisher monitor are separate tasks, preventing management-plane latency from delaying an already-observed native media failure.
+
 ## Embedded browser preview
 
 Preview is an administrator-only, application-owned operation and is independent of DeckLink route ownership. One preview may run at a time. A tokenized FFmpeg producer opens the selected RTSP source, scales it into a compact 720×450 canvas, renders a real `showvolume` peak/dB audio meter when audio is present, and emits fragmented H.264/AAC MP4 directly to an authenticated browser endpoint. A random per-session token prevents stale players from attaching to a replacement preview, and the endpoint is explicitly non-cacheable.

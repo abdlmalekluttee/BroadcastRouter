@@ -3,12 +3,18 @@ using BroadcastRouter.Domain;
 
 namespace BroadcastRouter.Infrastructure;
 
-public sealed class FfmpegDeckLinkEnumerator(string ffmpegPath) : IDeckLinkEnumerator
+public sealed class FfmpegDeckLinkEnumerator(
+    IReadOnlyList<DeckLinkSink> outputDevices,
+    string identityHelperPath) : IDeckLinkEnumerator
 {
     public async Task<IReadOnlyList<DeckLinkPort>> EnumerateAsync(CancellationToken cancellationToken)
     {
-        var diagnostic = await FfmpegDiagnostics.InspectAsync(ffmpegPath, cancellationToken).ConfigureAwait(false);
-        if (!diagnostic.HasDeckLinkOutput) return [];
-        return DeckLinkIdentityResolver.Resolve(diagnostic.OutputDevices, DeckLinkSdkIdentityEnumerator.Enumerate());
+        if (outputDevices.Count == 0) return [];
+        var identityProbe = await DeckLinkIdentityProcessProbe
+            .EnumerateAsync(identityHelperPath, cancellationToken)
+            .ConfigureAwait(false);
+        if (!identityProbe.Success)
+            throw new InvalidOperationException(identityProbe.Error ?? "The isolated DeckLink identity query failed.");
+        return DeckLinkIdentityResolver.Resolve(outputDevices, identityProbe.Identities);
     }
 }

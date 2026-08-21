@@ -56,4 +56,8 @@ Version 1.5.19 requires no settings or database migration. It extends authoritat
 
 Version 1.5.20 requires no settings or database migration. It additionally treats a saved `Starting` or `Running` route with no owned live process as immediately recoverable when Wowza reports the publisher connected. Repeat the rapid-reset matrix and require a failed early RTSP attempt to be recreated without waiting for FFprobe, while a healthy starting/live process remains untouched.
 
+Version 1.5.21 requires no settings or database migration. It promotes the Tabler interface, validates the effective scan/raster/cadence of standard output presets, and corrects `1080i50` to 1920x1080 at 25 frames/50 top-first fields per second. Existing identities, output designations, saved routes, and standby settings remain compatible.
+
+Version 1.5.22 requires no settings or database migration. It moves every native DeckLink identity query out of the service host, retains the last confirmed connector inventory through transient validation/helper failures, retries after 30 seconds, and separates local FFmpeg recovery from Wowza REST polling. After deployment, monitor for at least one five-minute scheduled validation cycle and confirm the service PID, connector identities, output designations, saved routes, and owned media processes remain stable.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

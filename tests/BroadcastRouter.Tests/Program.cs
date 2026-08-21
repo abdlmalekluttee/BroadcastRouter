@@ -55,6 +55,10 @@ var tests = new (string Name, Action Body)[]
     ("Durable route changes require persistence", DurableRouteChangesRequirePersistence),
     ("Coordinator liveness detects a blocked cycle", CoordinatorLivenessDetectsBlockedCycle),
     ("Coordinator watchdog is registered and health-aware", CoordinatorWatchdogIsRegisteredAndHealthAware),
+    ("Transient media validation retains the last confirmed state", TransientMediaValidationRetainsLastConfirmedState),
+    ("DeckLink reference failures use bounded backoff", DeckLinkReferenceFailuresUseBoundedBackoff),
+    ("Unchanged DeckLink rediscovery is not audited", UnchangedDeckLinkRediscoveryIsNotAudited),
+    ("Local FFmpeg failure supervision precedes Wowza polling", LocalFfmpegSupervisionPrecedesWowzaPolling),
     ("Startup route recovery is single shot", StartupRouteRecoveryIsSingleShot),
     ("FFmpeg command uses argument list", FfmpegCommandUsesArgumentList),
     ("FFmpeg audio-led route generates continuous black video", FfmpegAudioLedRouteGeneratesBlackVideo),
@@ -814,12 +818,78 @@ static void DeckLinkIdentityPollingIsIsolatedAndBounded()
     var coordinator = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Services", "RouterCoordinator.cs"));
     var program = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Program.cs"));
     var probe = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Infrastructure", "DeckLinkIdentityProcessProbe.cs"));
+    var enumerator = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Infrastructure", "FfmpegDeckLinkEnumerator.cs"));
 
     True(coordinator.Contains("DeckLinkIdentityProcessProbe.EnumerateAsync", StringComparison.Ordinal));
     True(!coordinator.Contains("DeckLinkSdkIdentityEnumerator.Enumerate()", StringComparison.Ordinal));
     True(program.Contains("DeckLinkIdentityProcessProbe.CommandArgument", StringComparison.Ordinal));
     True(probe.Contains("DefaultTimeout", StringComparison.Ordinal));
     True(probe.Contains("containOnWindows: true", StringComparison.Ordinal));
+    True(enumerator.Contains("DeckLinkIdentityProcessProbe", StringComparison.Ordinal));
+    True(!enumerator.Contains("DeckLinkSdkIdentityEnumerator.Enumerate()", StringComparison.Ordinal));
+}
+
+static void TransientMediaValidationRetainsLastConfirmedState()
+{
+    var now = DateTimeOffset.UtcNow;
+    var valid = new MediaToolValidation(ToolValidationState.Valid, "ffmpeg", "ffprobe", true, true, 8,
+        ["PASS: confirmed"], now.AddMinutes(-1), true, true);
+    var invalid = valid with
+    {
+        State = ToolValidationState.Invalid,
+        DeckLinkOutputCount = 0,
+        Findings = ["FAIL: transient output enumeration failure"],
+        CheckedAt = now
+    };
+
+    var scheduled = ToolValidationContinuityPolicy.Decide(valid, invalid, now.AddMinutes(-1), now,
+        operatorForced: false);
+    True(scheduled.RetainedLastKnownGood);
+    True(scheduled.EffectiveValidation.CanStartHardwareRoutes);
+    Equal(TimeSpan.FromSeconds(30), scheduled.RetryAfter);
+    True(scheduled.EffectiveValidation.Findings.Any(value => value.Contains("last confirmed", StringComparison.OrdinalIgnoreCase)));
+
+    var forced = ToolValidationContinuityPolicy.Decide(valid, invalid, now.AddMinutes(-1), now,
+        operatorForced: true);
+    True(!forced.RetainedLastKnownGood);
+    True(!forced.EffectiveValidation.CanStartHardwareRoutes);
+
+    var expired = ToolValidationContinuityPolicy.Decide(valid, invalid, now.AddMinutes(-11), now,
+        operatorForced: false);
+    True(!expired.RetainedLastKnownGood);
+    True(!expired.EffectiveValidation.CanStartHardwareRoutes);
+}
+
+static void DeckLinkReferenceFailuresUseBoundedBackoff()
+{
+    Equal(TimeSpan.FromSeconds(10), DeckLinkReferencePollingPolicy.SuccessInterval);
+    Equal(TimeSpan.FromSeconds(30), DeckLinkReferencePollingPolicy.FailureDelay(1));
+    Equal(TimeSpan.FromSeconds(60), DeckLinkReferencePollingPolicy.FailureDelay(2));
+    Equal(TimeSpan.FromSeconds(120), DeckLinkReferencePollingPolicy.FailureDelay(3));
+    Equal(TimeSpan.FromSeconds(240), DeckLinkReferencePollingPolicy.FailureDelay(4));
+    Equal(TimeSpan.FromSeconds(300), DeckLinkReferencePollingPolicy.FailureDelay(20));
+}
+
+static void UnchangedDeckLinkRediscoveryIsNotAudited()
+{
+    True(!DeviceRediscoveryAuditPolicy.ShouldAudit(["PORT-A", "port-b"], ["PORT-B", "port-a"]));
+    True(DeviceRediscoveryAuditPolicy.ShouldAudit(["PORT-A"], ["PORT-A", "PORT-B"]));
+    True(DeviceRediscoveryAuditPolicy.ShouldAudit(["PORT-A", "PORT-B"], ["PORT-A"]));
+}
+
+static void LocalFfmpegSupervisionPrecedesWowzaPolling()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var coordinator = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Services", "RouterCoordinator.cs"));
+    var methodStart = coordinator.IndexOf("private async Task RunFastInputSupervisionAsync", StringComparison.Ordinal);
+    var methodEnd = coordinator.IndexOf("private async Task RunFastPublisherSupervisionAsync", methodStart, StringComparison.Ordinal);
+    True(methodStart >= 0 && methodEnd > methodStart);
+    var method = coordinator[methodStart..methodEnd];
+    var localSnapshot = method.IndexOf("supervisor.Snapshot().Where", StringComparison.Ordinal);
+    True(localSnapshot >= 0);
+    True(!method.Contains("await SuperviseWowzaPublisherPresenceAsync", StringComparison.Ordinal));
+    True(coordinator.Contains("RunFastPublisherSupervisionAsync", StringComparison.Ordinal));
+    True(coordinator.Contains("Task.WhenAll(fastInputSupervision, fastPublisherSupervision)", StringComparison.Ordinal));
 }
 
 static void WindowsJobKillsOrphanedProcess()
