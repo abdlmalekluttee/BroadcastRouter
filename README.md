@@ -48,7 +48,7 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.22`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.23`.
 3. Run `BroadcastRouter.Server.exe` once as the dedicated Windows broadcast account to complete configuration and hardware validation.
 4. Open `http://127.0.0.1:5080`.
 5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
@@ -103,7 +103,7 @@ The routing worker publishes an internal heartbeat before and after process supe
 
 Native DeckLink identity and reference-lock polling runs in a hidden, short-lived helper process with its own five-second deadline and kill-on-close containment. If Desktop Video blocks inside a COM call, the helper is discarded and retried later while discovery, routing, and the service host continue using the last confirmed hardware state.
 
-Scheduled media-tool validation keeps the last confirmed port inventory during transient failures and retries after 30 seconds. A last-known-good validation may bridge a scheduled failure for no more than ten minutes; initial validation, operator-forced validation, and sustained failures remain fail-closed. Local FFmpeg starvation/freeze supervision runs independently from Wowza REST polling, so a slow management request cannot delay exact-process recovery.
+Scheduled media-tool validation keeps the last confirmed port inventory during transient failures and retries an actual tool failure after 30 seconds. An identity-helper timeout also retains the confirmed inventory but returns to the normal five-minute hardware cadence, avoiding a validation loop while active outputs hold the driver. A last-known-good validation may bridge a scheduled failure for no more than ten minutes; initial validation, operator-forced validation, and sustained failures remain fail-closed. Local FFmpeg starvation/freeze supervision runs independently from Wowza REST polling, so a slow management request cannot delay exact-process recovery.
 
 ## Build and test
 

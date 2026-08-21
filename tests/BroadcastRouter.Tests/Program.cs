@@ -59,6 +59,7 @@ var tests = new (string Name, Action Body)[]
     ("DeckLink reference failures use bounded backoff", DeckLinkReferenceFailuresUseBoundedBackoff),
     ("Unchanged DeckLink rediscovery is not audited", UnchangedDeckLinkRediscoveryIsNotAudited),
     ("Local FFmpeg failure supervision precedes Wowza polling", LocalFfmpegSupervisionPrecedesWowzaPolling),
+    ("DeckLink identity failure keeps the normal validation cadence", DeckLinkIdentityFailureKeepsNormalCadence),
     ("Startup route recovery is single shot", StartupRouteRecoveryIsSingleShot),
     ("FFmpeg command uses argument list", FfmpegCommandUsesArgumentList),
     ("FFmpeg audio-led route generates continuous black video", FfmpegAudioLedRouteGeneratesBlackVideo),
@@ -890,6 +891,21 @@ static void LocalFfmpegSupervisionPrecedesWowzaPolling()
     True(!method.Contains("await SuperviseWowzaPublisherPresenceAsync", StringComparison.Ordinal));
     True(coordinator.Contains("RunFastPublisherSupervisionAsync", StringComparison.Ordinal));
     True(coordinator.Contains("Task.WhenAll(fastInputSupervision, fastPublisherSupervision)", StringComparison.Ordinal));
+}
+
+static void DeckLinkIdentityFailureKeepsNormalCadence()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var coordinator = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Services", "RouterCoordinator.cs"));
+    var failureStart = coordinator.IndexOf("The isolated hardware identity query failed", StringComparison.Ordinal);
+    True(failureStart >= 0);
+    var blockStart = coordinator.LastIndexOf("catch", failureStart, StringComparison.Ordinal);
+    var blockEnd = coordinator.IndexOf("return;", failureStart, StringComparison.Ordinal);
+    True(blockStart >= 0 && blockEnd > failureStart);
+    var failureBlock = coordinator[blockStart..blockEnd];
+    True(failureBlock.Contains("_lastToolValidation = DateTimeOffset.UtcNow", StringComparison.Ordinal));
+    True(failureBlock.Contains("SuccessRetry.TotalMinutes", StringComparison.Ordinal));
+    True(!failureBlock.Contains("FailureRetry", StringComparison.Ordinal));
 }
 
 static void WindowsJobKillsOrphanedProcess()

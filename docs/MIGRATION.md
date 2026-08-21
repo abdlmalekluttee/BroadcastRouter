@@ -60,4 +60,6 @@ Version 1.5.21 requires no settings or database migration. It promotes the Table
 
 Version 1.5.22 requires no settings or database migration. It moves every native DeckLink identity query out of the service host, retains the last confirmed connector inventory through transient validation/helper failures, retries after 30 seconds, and separates local FFmpeg recovery from Wowza REST polling. After deployment, monitor for at least one five-minute scheduled validation cycle and confirm the service PID, connector identities, output designations, saved routes, and owned media processes remain stable.
 
+Version 1.5.23 requires no settings or database migration. It limits identity-helper timeout retries to the normal five-minute hardware cadence; only a real transient media-tool validation failure uses the 30-second retry. This prevents active DeckLink outputs from causing continuous full capability checks while preserving the confirmed connector inventory.
+
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.

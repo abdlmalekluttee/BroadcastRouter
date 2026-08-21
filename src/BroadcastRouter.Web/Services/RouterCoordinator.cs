@@ -704,10 +704,9 @@ public sealed class RouterCoordinator(
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _lastToolValidation = DateTimeOffset.UtcNow
-                    - (TimeSpan.FromMinutes(5) - ToolValidationContinuityPolicy.FailureRetry);
+                _lastToolValidation = DateTimeOffset.UtcNow;
                 await LogAsync("Warning", "DeckLinkDiscovery",
-                    $"The isolated hardware identity query failed; the last confirmed port inventory was retained and discovery will retry in {ToolValidationContinuityPolicy.FailureRetry.TotalSeconds:0} seconds. {LogRedactor.Redact(ex.Message)}",
+                    $"The isolated hardware identity query failed; the last confirmed port inventory was retained and discovery will retry on the normal {ToolValidationContinuityPolicy.SuccessRetry.TotalMinutes:0}-minute hardware cadence. {LogRedactor.Redact(ex.Message)}",
                     cancellationToken: cancellationToken);
                 return;
             }
