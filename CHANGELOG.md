@@ -7,6 +7,7 @@
 - Promote the locally bundled Tabler operator interface and custom DeckLink navigation icon to the production application without changing routing behavior.
 - Display the effective signal format beside every output preset and reject standard preset labels whose raster, cadence, or scan flag contradicts the label.
 - Add a bounded offline standard-preset repair command and correct the production `1080i50` profile to 1920x1080, 25 frames/50 fields per second, top-field-first output during deployment.
+- Keep saved-route reservation policy controls on a full-width responsive row instead of collapsing them into the narrow priority column.
 
 ## 1.5.20 — 2026-08-04
 
