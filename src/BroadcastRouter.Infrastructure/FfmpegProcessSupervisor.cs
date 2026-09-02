@@ -14,7 +14,8 @@ public sealed record RouteProcessSnapshot(
     FfmpegProgressSnapshot? Progress,
     IReadOnlyList<string> RecentErrors,
     int? ExitCode,
-    FfmpegInputFailure? InputFailure);
+    FfmpegInputFailure? InputFailure,
+    FfmpegMediaHealthSnapshot MediaHealth);
 
 public enum RouteProcessPurpose { Live, Fallback, PortStandby }
 
@@ -242,8 +243,12 @@ public sealed class FfmpegProcessSupervisor(
                 var observedAt = DateTimeOffset.UtcNow;
                 var safe = LogRedactor.Redact(line);
                 managed.AddError(safe);
+                managed.MediaHealth.Observe(safe, observedAt);
                 if (FfmpegInputFailureDetector.TryClassify(safe, out var category))
                     managed.InputFailure ??= new(category, safe, observedAt);
+                else if (managed.AudioFailureDetector.Observe(safe, observedAt, managed.StartedAt,
+                             MediaStarvationStartupGrace, out var audioCategory, out var audioDetail))
+                    managed.InputFailure ??= new(audioCategory, audioDetail, observedAt);
                 else if (managed.MediaStarvationDetector.Observe(safe, observedAt, managed.StartedAt,
                              MediaStarvationStartupGrace, out var starvationCategory, out var starvationDetail))
                     managed.InputFailure ??= new(starvationCategory, starvationDetail, observedAt);
@@ -360,7 +365,7 @@ public sealed class FfmpegProcessSupervisor(
         }
         catch (InvalidOperationException) { running = false; }
         return new(managed.Source, managed.Purpose, managed.Process.Id, managed.StartedAt, running, managed.Progress,
-            managed.Errors.ToArray(), exitCode, managed.InputFailure);
+            managed.Errors.ToArray(), exitCode, managed.InputFailure, managed.MediaHealth.Snapshot());
     }
 
     private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, Process process,
@@ -373,6 +378,8 @@ public sealed class FfmpegProcessSupervisor(
         public DateTimeOffset StartedAt { get; } = startedAt;
         public FfmpegProgressParser Parser { get; } = new();
         public FfmpegMediaStarvationDetector MediaStarvationDetector { get; } = new();
+        public FfmpegAudioFailureDetector AudioFailureDetector { get; } = new();
+        public FfmpegMediaHealthTracker MediaHealth { get; } = new();
         public ConcurrentQueue<string> Errors { get; } = new();
         public FfmpegProgressSnapshot? Progress { get; set; }
         public FfmpegInputFailure? InputFailure { get; set; }

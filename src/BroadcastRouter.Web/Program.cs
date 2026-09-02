@@ -217,9 +217,13 @@ deckLinkAssetEndpoint.RequireAuthorization();
 app.MapGet("/health", (DatabaseIntegrityMonitor databaseIntegrity, RouterCoordinator coordinator) =>
 {
     var integrity = databaseIntegrity.Snapshot;
+    var now = DateTimeOffset.UtcNow;
     var coordinatorResponsive = CoordinatorLivenessPolicy.IsResponsive(
-        coordinator.GetLiveness(), DateTimeOffset.UtcNow, RouterCoordinatorWatchdog.MaximumSilence);
-    return Results.Ok(new { status = integrity.IsHealthy && coordinatorResponsive ? "healthy" : "degraded" });
+        coordinator.GetLiveness(), now, RouterCoordinatorWatchdog.MaximumSilence);
+    var auxiliaryResponsive = coordinator.GetAuxiliaryLiveness().All(snapshot =>
+        AuxiliaryLoopLivenessPolicy.IsResponsive(snapshot, now,
+            RouterCoordinatorWatchdog.MaximumSilenceFor(snapshot.Name)));
+    return Results.Ok(new { status = integrity.IsHealthy && coordinatorResponsive && auxiliaryResponsive ? "healthy" : "degraded" });
 }).AllowAnonymous();
 
 app.MapPost("/auth/login", async (HttpContext context, IAntiforgery antiforgery) =>
