@@ -154,15 +154,16 @@ public sealed class FfmpegProcessSupervisor(
 
             var process = new Process { StartInfo = start, EnableRaisingEvents = true };
             var managed = new ManagedProcess(source, purpose, process, DateTimeOffset.UtcNow);
-            if (!_running.TryAdd(source.Value, managed))
-            {
-                process.Dispose();
-                throw new InvalidOperationException($"An FFmpeg process is already owned for {source}.");
-            }
             try
             {
                 if (!process.Start()) throw new InvalidOperationException("FFmpeg did not start.");
+                managed.ProcessId = process.Id;
                 ContainOrTerminate(process);
+                // Publish only a fully associated Process. Snapshot readers do
+                // not take the owner gate and must never observe the interval
+                // between Process construction and Process.Start().
+                if (!_running.TryAdd(source.Value, managed))
+                    throw new InvalidOperationException($"An FFmpeg process is already owned for {source}.");
                 managed.ProgressTask = PumpProgressAsync(managed);
                 managed.ErrorTask = PumpErrorsAsync(managed);
                 managed.ExitTask = ObserveExitAsync(managed);
@@ -171,6 +172,15 @@ public sealed class FfmpegProcessSupervisor(
             catch
             {
                 _running.TryRemove(new KeyValuePair<string, ManagedProcess>(source.Value, managed));
+                try
+                {
+                    if (!HasExited(process))
+                    {
+                        process.Kill(entireProcessTree: true);
+                        process.WaitForExit();
+                    }
+                }
+                catch { }
                 process.Dispose();
                 throw;
             }
@@ -260,7 +270,7 @@ public sealed class FfmpegProcessSupervisor(
     private async Task StopManagedAsync(ManagedProcess managed, TimeSpan stopTimeout, CancellationToken cancellationToken)
     {
         var cancellationRequested = false;
-        if (!managed.Process.HasExited)
+        if (!HasExited(managed.Process))
         {
             ReportLifecycle(managed, RouteProcessLifecycleState.StopRequested);
             var signal = SignalQuitAsync(managed.Process);
@@ -290,7 +300,7 @@ public sealed class FfmpegProcessSupervisor(
                 try { await managed.Process.WaitForExitAsync(reapDeadline.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (reapDeadline.IsCancellationRequested)
                 {
-                    throw new TimeoutException($"Owned FFmpeg process {managed.Process.Id} did not exit after forced termination.");
+                    throw new TimeoutException($"Owned FFmpeg process {managed.ProcessId} did not exit after forced termination.");
                 }
             }
         }
@@ -338,7 +348,7 @@ public sealed class FfmpegProcessSupervisor(
     {
         if (state == RouteProcessLifecycleState.Exited
             && Interlocked.Exchange(ref managed.ExitReported, 1) != 0) return;
-        try { LifecycleChanged?.Invoke(new(managed.Source, managed.Process.Id, state, DateTimeOffset.UtcNow, exitCode)); }
+        try { LifecycleChanged?.Invoke(new(managed.Source, managed.ProcessId, state, DateTimeOffset.UtcNow, exitCode)); }
         catch { }
     }
 
@@ -364,7 +374,7 @@ public sealed class FfmpegProcessSupervisor(
             if (!running) exitCode = managed.Process.ExitCode;
         }
         catch (InvalidOperationException) { running = false; }
-        return new(managed.Source, managed.Purpose, managed.Process.Id, managed.StartedAt, running, managed.Progress,
+        return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
             managed.Errors.ToArray(), exitCode, managed.InputFailure, managed.MediaHealth.Snapshot());
     }
 
@@ -375,6 +385,7 @@ public sealed class FfmpegProcessSupervisor(
         public SourceIdentity Source { get; } = source;
         public RouteProcessPurpose Purpose { get; } = purpose;
         public Process Process { get; } = process;
+        public int ProcessId { get; set; }
         public DateTimeOffset StartedAt { get; } = startedAt;
         public FfmpegProgressParser Parser { get; } = new();
         public FfmpegMediaStarvationDetector MediaStarvationDetector { get; } = new();

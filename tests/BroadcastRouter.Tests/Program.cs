@@ -967,6 +967,7 @@ static void LocalFfmpegSupervisionPrecedesWowzaPolling()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
     var coordinator = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Services", "RouterCoordinator.cs"));
+    var supervisor = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Infrastructure", "FfmpegProcessSupervisor.cs"));
     var methodStart = coordinator.IndexOf("private async Task RunFastInputSupervisionAsync", StringComparison.Ordinal);
     var methodEnd = coordinator.IndexOf("private async Task RunFastPublisherSupervisionAsync", methodStart, StringComparison.Ordinal);
     True(methodStart >= 0 && methodEnd > methodStart);
@@ -980,6 +981,9 @@ static void LocalFfmpegSupervisionPrecedesWowzaPolling()
     True(coordinator.Contains("process.InputFailure is not null", StringComparison.Ordinal));
     True(coordinator.Contains("var signature = $\"{process.ProcessId}:{outputCategory}\"", StringComparison.Ordinal));
     True(coordinator.Contains("Task.WhenAll(fastInputSupervision, fastPublisherSupervision)", StringComparison.Ordinal));
+    True(supervisor.Contains("managed.ProcessId = process.Id", StringComparison.Ordinal));
+    True(supervisor.Contains("Publish only a fully associated Process", StringComparison.Ordinal));
+    True(!supervisor.Contains("managed.Process.Id, managed.StartedAt", StringComparison.Ordinal));
 }
 
 static void DeckLinkIdentityFailureKeepsNormalCadence()
