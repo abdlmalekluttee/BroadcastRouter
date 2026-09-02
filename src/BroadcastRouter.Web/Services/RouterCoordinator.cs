@@ -48,6 +48,10 @@ public sealed class RouterCoordinator(
     private readonly object _livenessGate = new();
     private readonly object _metricsGate = new();
     private DateTimeOffset _coordinatorProgressAt = DateTimeOffset.UtcNow;
+    private DateTimeOffset _fastInputProgressAt = DateTimeOffset.UtcNow;
+    private DateTimeOffset _fastPublisherProgressAt = DateTimeOffset.UtcNow;
+    private int _fastInputRestartCount;
+    private int _fastPublisherRestartCount;
     private DateTimeOffset? _lastCompletedCycleAt;
     private string _coordinatorStage = "Startup";
     private long _completedCycles;
@@ -70,6 +74,9 @@ public sealed class RouterCoordinator(
     private static readonly TimeSpan ExtendedVideoProbeInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ExtendedVideoProbeDuration = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan ExtendedVideoProbeTimeout = TimeSpan.FromSeconds(16);
+    private static readonly TimeSpan AuxiliaryLoopRestartDelay = TimeSpan.FromSeconds(1);
+    private const string FastInputLoop = "FastInputSupervision";
+    private const string FastPublisherLoop = "FastPublisherSupervision";
 
     public event Action? Changed;
 
@@ -91,6 +98,16 @@ public sealed class RouterCoordinator(
         lock (_livenessGate)
             return new(_startedAt, _coordinatorProgressAt, _lastCompletedCycleAt,
                 _coordinatorStage, _completedCycles);
+    }
+
+    public IReadOnlyList<AuxiliaryLoopLivenessSnapshot> GetAuxiliaryLiveness()
+    {
+        lock (_livenessGate)
+            return
+            [
+                new(FastInputLoop, _fastInputProgressAt, _fastInputRestartCount),
+                new(FastPublisherLoop, _fastPublisherProgressAt, _fastPublisherRestartCount)
+            ];
     }
 
     public async Task<SettingsApplyResult> SaveSettingsAsync(OperatorSettings settings, string actor = "system",
@@ -356,8 +373,16 @@ public sealed class RouterCoordinator(
         await store.WriteConfigurationAuditAsync(new(0, DateTimeOffset.UtcNow, "ServiceRestart", "HOST", "", "",
             "Stopped", "Running", "system", "BroadcastRouter host startup", "Configuration loaded from SQLite"), stoppingToken);
 
-        var fastInputSupervision = RunFastInputSupervisionAsync(stoppingToken);
-        var fastPublisherSupervision = RunFastPublisherSupervisionAsync(stoppingToken);
+        var fastInputSupervision = ResilientBackgroundLoop.RunAsync(
+            RunFastInputSupervisionAsync,
+            (exception, token) => ReportAuxiliaryLoopFailureAsync(FastInputLoop, exception, token),
+            AuxiliaryLoopRestartDelay,
+            stoppingToken);
+        var fastPublisherSupervision = ResilientBackgroundLoop.RunAsync(
+            RunFastPublisherSupervisionAsync,
+            (exception, token) => ReportAuxiliaryLoopFailureAsync(FastPublisherLoop, exception, token),
+            AuxiliaryLoopRestartDelay,
+            stoppingToken);
         try
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -410,6 +435,7 @@ public sealed class RouterCoordinator(
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
+            MarkAuxiliaryProgress(FastInputLoop);
             var supervisor = _supervisor;
             if (supervisor is null || _settings.SimulationMode) continue;
             foreach (var observed in supervisor.Snapshot().Where(value =>
@@ -436,11 +462,7 @@ public sealed class RouterCoordinator(
                     await supervisor.StopForOutputHandoffAsync(observed.Source, cancellationToken);
                     if (failure is not null)
                     {
-                        await LogAsync("Warning", "InputLiveness",
-                            $"FFmpeg process {observed.ProcessId} reported {failure.Category}; the exact owned session was reaped within the fast supervision path. {failure.Detail}",
-                            route.SourceId, cancellationToken: cancellationToken);
-                        await ScheduleRetryAsync(route, "InputSessionLost",
-                            $"The live media session became unusable ({failure.Category}) and was recreated.", cancellationToken);
+                        await RecordMediaRecoveryAsync(current, route, "fast input supervision", cancellationToken);
                     }
                     else
                     {
@@ -482,6 +504,7 @@ public sealed class RouterCoordinator(
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
+            MarkAuxiliaryProgress(FastPublisherLoop);
             var supervisor = _supervisor;
             if (supervisor is null || _settings.SimulationMode) continue;
             try
@@ -637,6 +660,60 @@ public sealed class RouterCoordinator(
             _lastCompletedCycleAt = now;
             _completedCycles++;
         }
+    }
+
+    private void MarkAuxiliaryProgress(string name)
+    {
+        var now = DateTimeOffset.UtcNow;
+        lock (_livenessGate)
+        {
+            if (name == FastInputLoop) _fastInputProgressAt = now;
+            else if (name == FastPublisherLoop) _fastPublisherProgressAt = now;
+        }
+    }
+
+    private async Task ReportAuxiliaryLoopFailureAsync(
+        string name,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        int restartCount;
+        lock (_livenessGate)
+        {
+            if (name == FastInputLoop) restartCount = ++_fastInputRestartCount;
+            else restartCount = ++_fastPublisherRestartCount;
+        }
+
+        var safe = LogRedactor.Redact(exception.Message);
+        // Do not pass the raw exception to an externally configured logger:
+        // transport exceptions can contain a credential-bearing URI. The
+        // redacted message and stable loop identity are sufficient here; the
+        // structured incident remains available in the application log.
+        logger.LogError(
+            "Critical auxiliary loop {LoopName} faulted and will restart. Attempt {RestartCount}. {Failure}",
+            name, restartCount, safe);
+        await LogAsync("Error", "Supervision",
+            $"Critical auxiliary loop {name} faulted and will restart automatically after "
+            + $"{AuxiliaryLoopRestartDelay.TotalSeconds:0} second. Restart attempt {restartCount}. {safe}",
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task RecordMediaRecoveryAsync(
+        RouteProcessSnapshot process,
+        RuntimeRoute route,
+        string recoveryPath,
+        CancellationToken cancellationToken)
+    {
+        var failure = process.InputFailure
+            ?? throw new InvalidOperationException("Media recovery requires a captured input failure.");
+        var summary = process.MediaHealth.ToDiagnosticSummary();
+        await LogAsync("Warning", "MediaRecovery",
+            $"Owned live FFmpeg process {process.ProcessId} was reaped by {recoveryPath} after "
+            + $"{failure.Category}. {failure.Detail} {summary}",
+            route.SourceId, cancellationToken: cancellationToken);
+        await ScheduleRetryAsync(route, "InputSessionLost",
+            $"The live media session became unusable ({failure.Category}) and was recreated automatically. {summary}",
+            cancellationToken);
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
@@ -1847,7 +1924,20 @@ public sealed class RouterCoordinator(
                 if (route is null) continue;
                 var progress = process.Progress;
                 var now = DateTimeOffset.UtcNow;
-            if (FfmpegStallDetector.IsFirstProgressTimedOut(process.Running, progress, process.StartedAt, now,
+            if (process.Purpose == RouteProcessPurpose.Live && process.Running && process.InputFailure is not null)
+            {
+                // The 100 ms path is the primary recovery mechanism. Re-check
+                // the exact PID here so the normal reconciler remains a safe
+                // second line of defence if that auxiliary loop ever restarts
+                // or becomes temporarily unavailable.
+                var current = _supervisor.Snapshot().FirstOrDefault(value =>
+                    value.Source == process.Source && value.ProcessId == process.ProcessId
+                    && value.Purpose == RouteProcessPurpose.Live && value.Running);
+                if (current?.InputFailure is null) continue;
+                await _supervisor.StopForOutputHandoffAsync(process.Source, cancellationToken);
+                await RecordMediaRecoveryAsync(current, route, "normal process reconciliation", cancellationToken);
+            }
+            else if (FfmpegStallDetector.IsFirstProgressTimedOut(process.Running, progress, process.StartedAt, now,
                     TimeSpan.FromSeconds(_settings.Routing.FirstProgressTimeoutSeconds)))
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
@@ -1895,7 +1985,10 @@ public sealed class RouterCoordinator(
                     or FfmpegFailureCategory.DeckLinkUnavailable or FfmpegFailureCategory.DeckLinkFormat;
                 if (outputDiagnostic)
                 {
-                    var signature = $"{process.ProcessId}:{outputCategory}:{processDetail}";
+                    // FFmpeg embeds changing timestamps and counters in many
+                    // DeckLink warnings. Key by owned process and category so a
+                    // single incident cannot flood SQLite every second.
+                    var signature = $"{process.ProcessId}:{outputCategory}";
                     var shouldLog = false;
                     lock (_gate)
                     {
@@ -1908,9 +2001,13 @@ public sealed class RouterCoordinator(
                     }
                     if (shouldLog)
                         await LogAsync("Warning", "DeckLinkOutput",
-                            $"{outputCategory}: FFmpeg process {process.ProcessId} reported an output-path warning while processing frames. {processDetail}",
+                            $"{outputCategory}: FFmpeg process {process.ProcessId} reported an output-path warning while processing frames. "
+                            + (process.MediaHealth.HasAnomalies ? process.MediaHealth.ToDiagnosticSummary() : processDetail),
                             route.SourceId, cancellationToken: cancellationToken);
                 }
+                var compactFailureDetail = process.MediaHealth.HasAnomalies
+                    ? process.MediaHealth.ToDiagnosticSummary()
+                    : processDetail;
                 await ReplaceRouteAsync(route with
                 {
                     State = state,
@@ -1923,7 +2020,7 @@ public sealed class RouterCoordinator(
                     StartedAt = process.StartedAt,
                     FailureCategory = outputDiagnostic ? outputCategory.ToString() :
                         route.FailureCategory?.StartsWith("DeckLink", StringComparison.Ordinal) == true ? null : route.FailureCategory,
-                    FailureMessage = outputDiagnostic ? processDetail :
+                    FailureMessage = outputDiagnostic ? compactFailureDetail :
                         route.FailureCategory?.StartsWith("DeckLink", StringComparison.Ordinal) == true ? null : route.FailureMessage,
                     UpdatedAt = DateTimeOffset.UtcNow
                 }, route.State, cancellationToken, persistHistory: state != route.State);

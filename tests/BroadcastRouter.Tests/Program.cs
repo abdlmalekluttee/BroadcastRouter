@@ -55,6 +55,8 @@ var tests = new (string Name, Action Body)[]
     ("Route telemetry updates skip persistence", RouteTelemetryUpdatesSkipPersistence),
     ("Durable route changes require persistence", DurableRouteChangesRequirePersistence),
     ("Coordinator liveness detects a blocked cycle", CoordinatorLivenessDetectsBlockedCycle),
+    ("Auxiliary liveness detects a stopped fast loop", AuxiliaryLivenessDetectsStoppedLoop),
+    ("Critical auxiliary loops restart after faults", CriticalAuxiliaryLoopsRestartAfterFaults),
     ("Coordinator watchdog is registered and health-aware", CoordinatorWatchdogIsRegisteredAndHealthAware),
     ("Health requests use cached database integrity", HealthRequestsUseCachedDatabaseIntegrity),
     ("Transient media validation retains the last confirmed state", TransientMediaValidationRetainsLastConfirmedState),
@@ -85,6 +87,8 @@ var tests = new (string Name, Action Body)[]
     ("Post-startup DeckLink media starvation is fatal", PostStartupDeckLinkMediaStarvationIsDetected),
     ("DeckLink startup starvation is ignored", DeckLinkStartupStarvationIsIgnored),
     ("Owned supervisor captures DeckLink media starvation", SupervisorCapturesDeckLinkMediaStarvation),
+    ("Repeated AAC corruption is a retryable input failure", RepeatedAacCorruptionIsDetected),
+    ("FFmpeg media anomalies are counted per owned session", FfmpegMediaAnomaliesAreCounted),
     ("FFprobe media parsing", FfprobeMediaIsParsed),
     ("FFprobe scan type parsing", FfprobeScanTypeIsParsed),
     ("FFprobe accepts audio-led sparse video", FfprobeAcceptsAudioLedSparseVideo),
@@ -822,6 +826,42 @@ static void CoordinatorLivenessDetectsBlockedCycle()
     Throws<ArgumentOutOfRangeException>(() => CoordinatorLivenessPolicy.IsResponsive(snapshot, now, TimeSpan.Zero));
 }
 
+static void AuxiliaryLivenessDetectsStoppedLoop()
+{
+    var now = DateTimeOffset.UtcNow;
+    var snapshot = new AuxiliaryLoopLivenessSnapshot("SyntheticFastLoop", now.AddSeconds(-29), 2);
+    True(AuxiliaryLoopLivenessPolicy.IsResponsive(snapshot, now, TimeSpan.FromSeconds(30)));
+    True(!AuxiliaryLoopLivenessPolicy.IsResponsive(snapshot with { LastProgressAt = now.AddSeconds(-31) },
+        now, TimeSpan.FromSeconds(30)));
+    True(AuxiliaryLoopLivenessPolicy.IsResponsive(snapshot with { LastProgressAt = now.AddSeconds(1) },
+        now, TimeSpan.FromSeconds(30)));
+}
+
+static void CriticalAuxiliaryLoopsRestartAfterFaults()
+{
+    using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    var attempts = 0;
+    var reports = 0;
+    ResilientBackgroundLoop.RunAsync(
+        _ =>
+        {
+            if (Interlocked.Increment(ref attempts) == 1)
+                throw new InvalidOperationException("Synthetic auxiliary failure.");
+            cancellation.Cancel();
+            return Task.CompletedTask;
+        },
+        (_, _) =>
+        {
+            Interlocked.Increment(ref reports);
+            return Task.CompletedTask;
+        },
+        TimeSpan.Zero,
+        cancellation.Token).GetAwaiter().GetResult();
+
+    Equal(2, attempts);
+    Equal(1, reports);
+}
+
 static void CoordinatorWatchdogIsRegisteredAndHealthAware()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -832,7 +872,9 @@ static void CoordinatorWatchdogIsRegisteredAndHealthAware()
 
     True(program.Contains("AddHostedService<RouterCoordinatorWatchdog>()", StringComparison.Ordinal));
     True(program.Contains("CoordinatorLivenessPolicy.IsResponsive", StringComparison.Ordinal));
+    True(program.Contains("AuxiliaryLoopLivenessPolicy.IsResponsive", StringComparison.Ordinal));
     True(watchdog.Contains("Environment.FailFast", StringComparison.Ordinal));
+    True(watchdog.Contains("GetAuxiliaryLiveness", StringComparison.Ordinal));
     True(watchdog.Contains("CoordinatorWatchdog", StringComparison.Ordinal));
     True(supervisor.Contains("ProcessReapTimeout", StringComparison.Ordinal));
     True(supervisor.Contains("StreamDrainTimeout", StringComparison.Ordinal));
@@ -933,6 +975,10 @@ static void LocalFfmpegSupervisionPrecedesWowzaPolling()
     True(localSnapshot >= 0);
     True(!method.Contains("await SuperviseWowzaPublisherPresenceAsync", StringComparison.Ordinal));
     True(coordinator.Contains("RunFastPublisherSupervisionAsync", StringComparison.Ordinal));
+    True(coordinator.Contains("ResilientBackgroundLoop.RunAsync", StringComparison.Ordinal));
+    True(coordinator.Contains("RecordMediaRecoveryAsync", StringComparison.Ordinal));
+    True(coordinator.Contains("process.InputFailure is not null", StringComparison.Ordinal));
+    True(coordinator.Contains("var signature = $\"{process.ProcessId}:{outputCategory}\"", StringComparison.Ordinal));
     True(coordinator.Contains("Task.WhenAll(fastInputSupervision, fastPublisherSupervision)", StringComparison.Ordinal));
 }
 
@@ -1236,11 +1282,15 @@ static void PostStartupDeckLinkMediaStarvationIsDetected()
     var detector = new FfmpegMediaStarvationDetector();
     var startedAt = DateTimeOffset.UtcNow;
     var observedAt = startedAt.AddSeconds(30);
+    True(!detector.Observe("[decklink] There's no buffered audio. Audio will misbehave!",
+        observedAt, startedAt, TimeSpan.FromSeconds(5), out _, out _));
     True(detector.Observe("[decklink] There's no buffered audio. Audio will misbehave!",
-        observedAt, startedAt, TimeSpan.FromSeconds(5), out var audioCategory, out _));
+        observedAt.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5), out var audioCategory, out _));
     Equal("DeckLinkAudioStarved", audioCategory);
+    True(!detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
+        observedAt, startedAt, TimeSpan.FromSeconds(5), out _, out _));
     True(detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
-        observedAt, startedAt, TimeSpan.FromSeconds(5), out var videoCategory, out _));
+        observedAt.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5), out var videoCategory, out _));
     Equal("DeckLinkVideoStarved", videoCategory);
 }
 
@@ -1272,6 +1322,8 @@ static void SupervisorCapturesDeckLinkMediaStarvation()
     start.ArgumentList.Add("[Console]::Out.WriteLine('frame=1'); [Console]::Out.WriteLine('progress=continue'); "
         + "Start-Sleep -Seconds 6; "
         + "[Console]::Error.WriteLine('[decklink] There are not enough buffered video frames. Video may misbehave!'); "
+        + "Start-Sleep -Milliseconds 100; "
+        + "[Console]::Error.WriteLine('[decklink] There are not enough buffered video frames. Video may misbehave!'); "
         + "[Console]::Error.WriteLine(\"[decklink] There's no buffered audio. Audio will misbehave!\"); "
         + "Start-Sleep -Seconds 15");
 
@@ -1293,6 +1345,46 @@ static void SupervisorCapturesDeckLinkMediaStarvation()
         supervisor.StopAsync(owner, CancellationToken.None).GetAwaiter().GetResult();
         supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
+}
+
+static void FfmpegMediaAnomaliesAreCounted()
+{
+    var tracker = new FfmpegMediaHealthTracker();
+    var now = DateTimeOffset.UtcNow;
+    tracker.Observe("[decklink] There's no buffered audio. Audio will misbehave!", now);
+    tracker.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!", now.AddSeconds(1));
+    tracker.Observe("[aist#0:0/aac] [dec:aac] Error submitting packet to decoder: Invalid data found", now.AddSeconds(2));
+    tracker.Observe("[aist#0:0/aac] PTS 999, next:1 invalid dropping", now.AddSeconds(3));
+    tracker.Observe("[vist#0:1/h264] DTS 999, next:1 invalid dropping", now.AddSeconds(4));
+
+    var snapshot = tracker.Snapshot();
+    Equal(1, snapshot.AudioStarvationWarnings);
+    Equal(1, snapshot.VideoStarvationWarnings);
+    Equal(1, snapshot.AudioDecodeErrors);
+    Equal(1, snapshot.AudioTimestampDiscontinuities);
+    Equal(1, snapshot.VideoTimestampDiscontinuities);
+    True(snapshot.HasAnomalies);
+    True(snapshot.ToDiagnosticSummary().Contains("audio-decode-errors=1", StringComparison.Ordinal));
+}
+
+static void RepeatedAacCorruptionIsDetected()
+{
+    var detector = new FfmpegAudioFailureDetector();
+    var startedAt = DateTimeOffset.UtcNow;
+    var first = startedAt.AddSeconds(30);
+    const string decodeError = "[aist#0:0/aac] [dec:aac] Error submitting packet to decoder: Invalid data found";
+    True(!detector.Observe(decodeError, first, startedAt, TimeSpan.FromSeconds(5), out _, out _));
+    True(detector.Observe(decodeError, first.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5),
+        out var category, out var detail));
+    Equal("AudioDecoderCorrupt", category);
+    True(detail.Contains("repeatedly rejected AAC packets", StringComparison.Ordinal));
+
+    var timestampDetector = new FfmpegAudioFailureDetector();
+    const string timestampError = "[aist#0:0/aac] PTS 999, next:1 invalid dropping";
+    True(!timestampDetector.Observe(timestampError, first, startedAt, TimeSpan.FromSeconds(5), out _, out _));
+    True(timestampDetector.Observe(timestampError, first.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5),
+        out category, out _));
+    Equal("AudioTimestampDiscontinuous", category);
 }
 
 static void FfprobeMediaIsParsed()
@@ -1485,14 +1577,14 @@ static void WowzaIncomingStreamsAreParsed()
 {
     const string json = """
     {"serverName":"_defaultServer_","incomingStreams":[
-      {"name":"tip.stream","isConnected":true,"sourceIp":"10.0.0.5","uptime":42},
+      {"name":"sample-a.stream","isConnected":true,"sourceIp":"203.0.113.5","uptime":42},
       {"name":"offline.stream","isConnected":false}
     ]}
     """;
     using var document = System.Text.Json.JsonDocument.Parse(json);
     var streams = WowzaIncomingStreamParser.Parse(document.RootElement);
     Equal(2, streams.Count);
-    Equal("tip.stream", streams[0].StreamName);
+    Equal("sample-a.stream", streams[0].StreamName);
     True(streams[0].PublisherConnected);
     True(!streams[1].PublisherConnected);
 }

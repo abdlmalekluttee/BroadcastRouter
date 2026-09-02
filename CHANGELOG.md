@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.5.26 — 2026-09-02
+
+- Recover an owned live route when FFmpeg repeatedly reports post-startup DeckLink audio/video starvation, AAC decoder corruption, or invalid audio timestamps, even if synthetic video keeps normal output-progress telemetry advancing.
+- Debounce media anomalies within bounded confirmation windows so one damaged packet or isolated DeckLink warning does not interrupt an otherwise healthy broadcast; recovery stops and reaps only the exact owned PID, retains saved routing intent and port configuration, and retries automatically through silent standby.
+- Add compact per-process media anomaly counters and stable diagnostic signatures so operators receive actionable cause and timing evidence without unbounded SQLite log growth.
+- Make the independent fast input and publisher supervision loops self-restarting, expose their heartbeats through `/health`, cover them with the host watchdog, and retain normal reconciliation as a second route-scoped recovery path.
+- Remove an environment-derived sample stream label from the current source tree and use documentation-only sample identities in simulation and tests.
+- Expand regression coverage for auxiliary-loop failure recovery, health degradation, anomaly debouncing/counters, repeated AAC failure classification, and the normal-reconciliation safety path.
+
 ## 1.5.25 — 2026-08-21
 
 - Reuse confirmed standard-video metadata while the exact owned live FFmpeg process is running and reporting fresh frames, instead of launching redundant FFprobe/keyframe scans on every Wowza discovery cycle.

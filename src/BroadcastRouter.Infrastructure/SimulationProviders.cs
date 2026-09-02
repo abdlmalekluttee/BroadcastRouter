@@ -8,9 +8,9 @@ public sealed class SimulationDiscoveryProvider : IStreamDiscoveryProvider
     public Task<IReadOnlyList<DiscoveredSource>> DiscoverAsync(CancellationToken cancellationToken)
     {
         var source = new DiscoveredSource(
-            new SourceIdentity("SIM-WOWZA", "live", "_definst_", "tip.stream"),
+            new SourceIdentity("SIM-WOWZA", "live", "_definst_", "sample-a.stream"),
             "Simulation Feed",
-            new Uri("rtsp://127.0.0.1:1935/live/tip.stream"),
+            new Uri("rtsp://127.0.0.1:1935/live/sample-a.stream"),
             SourceState.Ready,
             100,
             new MediaProperties("h264", "aac", 1920, 1080, 25, 3_000_000, 48_000, 2, true),
