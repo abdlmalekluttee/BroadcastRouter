@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.5.27 — 2026-09-02
+
+- Publish a new FFmpeg owner only after Windows has associated and started its process, preventing concurrent supervision snapshots from observing an unstarted `Process` object during route/standby reconstruction.
+- Retain the immutable PID separately from the disposable process handle so a snapshot racing exact-owner teardown cannot throw after the handle is disposed.
+- Keep startup-failure cleanup exact and bounded by terminating only the newly created child if registration fails; saved routes, port configuration, and unrelated media processes remain untouched.
+- Add a production-derived regression guard for associated-process publication and stored-PID snapshots.
+
 ## 1.5.26 — 2026-09-02
 
 - Recover an owned live route when FFmpeg repeatedly reports post-startup DeckLink audio/video starvation, AAC decoder corruption, or invalid audio timestamps, even if synthetic video keeps normal output-progress telemetry advancing.
