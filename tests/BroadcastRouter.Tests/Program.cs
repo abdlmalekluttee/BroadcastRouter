@@ -674,6 +674,7 @@ static void FfmpegAudioLedRouteGeneratesBlackVideo()
     True(start.ArgumentList.Contains("-shortest"));
     True(start.ArgumentList.Contains("pcm_s16le"));
     True(!start.ArgumentList.Contains("-b:v"));
+    Equal("null", start.ArgumentList[start.ArgumentList.IndexOf("-vf") + 1]);
 
     var noAudioPreset = preset with { IncludeAudio = false };
     Throws<InvalidOperationException>(() => FfmpegCommandBuilder.Build(
@@ -1954,11 +1955,16 @@ static void FallbackCommandIsSafeAndUncompressed()
     var audioInput = arguments.IndexOf("anullsrc=r=48000:cl=stereo");
     var firstMap = arguments.IndexOf("-map");
     True(audioInput >= 0 && audioInput < firstMap);
+    Equal("null", start.ArgumentList[start.ArgumentList.IndexOf("-vf") + 1]);
 
     var interlaced = OutputPresetProfile.CommonDefaults().Single(item => item.Id == "1080i50").ToDomain();
     var interlacedStart = FfmpegCommandBuilder.BuildFallback(new FfmpegRouteOptions("ffmpeg.exe"), port, interlaced, FallbackMode.Black, null);
     True(interlacedStart.ArgumentList.Contains("color=c=black:size=1920x1080:rate=50/1"));
-    True(interlacedStart.ArgumentList.Any(argument => argument.Contains("tinterlace=interleave_top", StringComparison.Ordinal)));
+    var interlacedFilter = interlacedStart.ArgumentList[interlacedStart.ArgumentList.IndexOf("-vf") + 1];
+    True(interlacedFilter.Contains("tinterlace=interleave_top", StringComparison.Ordinal));
+    True(interlacedFilter.Contains("setfield=tff", StringComparison.Ordinal));
+    True(!interlacedFilter.Contains("scale=", StringComparison.Ordinal));
+    True(!interlacedFilter.Contains("fps=", StringComparison.Ordinal));
 }
 
 static void PortStandbyCommandIsBroadcastSafe()
@@ -1977,11 +1983,17 @@ static void PortStandbyCommandIsBroadcastSafe()
         True(start.ArgumentList.Contains("smptebars=size=1920x1080:rate=25/1"));
         True(start.ArgumentList.Contains("anullsrc=r=48000:cl=stereo"));
         True(start.ArgumentList.Contains("pcm_s16le"));
+        var threadLimit = start.ArgumentList.IndexOf("-filter_complex_threads");
+        True(threadLimit >= 0);
+        Equal("1", start.ArgumentList[threadLimit + 1]);
         var audioFilter = start.ArgumentList[start.ArgumentList.IndexOf("-af") + 1];
         True(audioFilter.Contains("volume=0", StringComparison.Ordinal));
         True(audioFilter.Contains("asetpts=N/SR/TB", StringComparison.Ordinal));
         True(start.CreateNoWindow && start.WindowStyle == System.Diagnostics.ProcessWindowStyle.Hidden);
         var graph = start.ArgumentList[start.ArgumentList.IndexOf("-filter_complex") + 1];
+        True(graph.StartsWith("[0:v:0]null[base]", StringComparison.Ordinal));
+        True(!graph.Contains("scale=1920:1080", StringComparison.Ordinal));
+        True(!graph.Contains("fps=25/1", StringComparison.Ordinal));
         True(graph.Contains("Transmission card  -  SDI 1", StringComparison.Ordinal));
         True(graph.Contains("Stream-3", StringComparison.Ordinal));
         True(graph.Contains("fontfile='C\\:/Windows/Fonts/arial.ttf'", StringComparison.Ordinal));
@@ -1992,7 +2004,20 @@ static void PortStandbyCommandIsBroadcastSafe()
         True(graph.Contains("x=(w-tw)/2", StringComparison.Ordinal));
         True(graph.Contains("y=h-th-", StringComparison.Ordinal));
         True(!start.ArgumentList.Contains("-b:v"));
+        var logoInput = start.ArgumentList.IndexOf(logoPath);
+        True(logoInput >= 2);
+        Equal("1", start.ArgumentList[logoInput - 2]);
+        Equal("-framerate", start.ArgumentList[logoInput - 3]);
         Equal(port.FfmpegName, start.ArgumentList[^1]);
+
+        var interlaced = OutputPresetProfile.CommonDefaults().Single(item => item.Id == "1080i50").ToDomain();
+        var interlacedStart = FfmpegCommandBuilder.BuildPortStandby(new FfmpegRouteOptions("ffmpeg.exe"), port,
+            interlaced, new PortStandbyConfiguration(StandbyPattern.SmpteHdBars, null, "Stream-3", true));
+        var interlacedGraph = interlacedStart.ArgumentList[interlacedStart.ArgumentList.IndexOf("-filter_complex") + 1];
+        True(interlacedStart.ArgumentList.Contains("smptehdbars=size=1920x1080:rate=50/1"));
+        True(interlacedGraph.StartsWith("[0:v:0]tinterlace=interleave_top:flags=vlpf,setfield=tff,", StringComparison.Ordinal));
+        True(!interlacedGraph.Contains("scale=1920:1080", StringComparison.Ordinal));
+        True(!interlacedGraph.Contains("fps=50/1", StringComparison.Ordinal));
     }
     finally
     {

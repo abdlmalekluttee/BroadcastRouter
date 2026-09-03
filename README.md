@@ -22,6 +22,7 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that invent
 - persistent preconfigured/manual routing for offline streams, with deterministic preconfigured → manual → automatic priority;
 - explicit output-port designation so input connectors can never be selected by routing;
 - per-port SMPTE/HD color bars with card/SDI identity, centered time and full date, bottom operator label, a configurable four-corner logo, and the NTP-synchronized Windows clock;
+- CPU-bounded synthetic standby generation that avoids redundant raster/rate conversion and full-rate decoding of unchanged logos while preserving exact progressive/interlaced DeckLink timing;
 - Blackmagic SDK persistent hardware identities that keep operator-defined physical-card names, connector names, and assignments attached when identical supported cards move between PCIe slots;
 - optional manifest-driven DeckLink product and connector visuals, loaded from an operator-supplied local asset pack without making images part of routing identity;
 - production-safe defaults: loopback binding, simulation disabled, and hardware starts blocked until validation passes;

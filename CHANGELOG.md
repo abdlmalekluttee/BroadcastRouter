@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.5.28 — 2026-09-03
+
+- Reduce continuous per-port standby CPU and memory pressure without enabling GPU acceleration or changing DeckLink ownership, output raster, cadence, field order, pixel format, or silent-audio behavior.
+- Avoid redundant scaling and frame-rate conversion for synthetic standby, generated fallback, and audio-led black video that is already created at the target raster and frame/field rate.
+- Decode unchanged standby logos at 1 fps and let FFmpeg repeat the last scaled overlay frame instead of decoding the same image at the full 25/50 Hz video cadence.
+- Bound each per-port standby complex filter graph to one worker while preserving 1080i50 as 1920×1080, 25 frames/50 top-first fields per second.
+- Expand command-generation regressions for progressive/interlaced timing, filter-thread limits, logo cadence, silent audio, and removal of redundant transforms.
+
 ## 1.5.27 — 2026-09-02
 
 - Publish a new FFmpeg owner only after Windows has associated and started its process, preventing concurrent supervision snapshots from observing an unstarted `Process` object during route/standby reconstruction.
