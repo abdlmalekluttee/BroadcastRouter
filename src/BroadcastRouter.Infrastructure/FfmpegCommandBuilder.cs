@@ -70,7 +70,7 @@ public static class FfmpegCommandBuilder
             Add(start, "-re", "-f", "lavfi", "-i", BlackVideoInput(preset));
             Add(start,
                 "-map", "1:v:0",
-                "-vf", BuildVideoFilter(preset, sourceIsInterlaced: false),
+                "-vf", BuildGeneratedVideoFilter(preset),
                 "-pix_fmt", preset.Mode.PixelFormat,
                 "-map", "0:a:0",
                 "-af", LiveAudioFilter,
@@ -146,7 +146,10 @@ public static class FfmpegCommandBuilder
         // such as -map. Declaring anullsrc after the video map makes FFmpeg
         // interpret the map as an input option for anullsrc and reject startup.
         if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
-        Add(start, "-map", "0:v:0", "-vf", BuildVideoFilter(preset, sourceIsInterlaced: false), "-pix_fmt", preset.Mode.PixelFormat);
+        var generatedVideo = mode is FallbackMode.TestPattern or FallbackMode.Black;
+        Add(start, "-map", "0:v:0", "-vf",
+            generatedVideo ? BuildGeneratedVideoFilter(preset) : BuildVideoFilter(preset, sourceIsInterlaced: false),
+            "-pix_fmt", preset.Mode.PixelFormat);
         if (preset.IncludeAudio) Add(start, "-map", "1:a:0", "-af", SilentAudioFilter,
             "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", "-shortest");
         else Add(start, "-an");
@@ -173,7 +176,8 @@ public static class FfmpegCommandBuilder
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden
         };
-        Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats");
+        Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats",
+            "-filter_complex_threads", "1");
         var rate = preset.Interlaced
             ? $"{checked(preset.Mode.FrameRateNumerator * 2)}/{preset.Mode.FrameRateDenominator}"
             : $"{preset.Mode.FrameRateNumerator}/{preset.Mode.FrameRateDenominator}";
@@ -190,7 +194,10 @@ public static class FfmpegCommandBuilder
         if (hasLogo)
         {
             if (!File.Exists(configuration.LogoPath)) throw new InvalidOperationException("The configured per-port standby logo does not exist.");
-            Add(start, "-loop", "1", "-framerate", rate, "-i", configuration.LogoPath!);
+            // The overlay repeats its most recent secondary frame. Decoding an
+            // unchanged logo once per second avoids decoding and scaling it at
+            // the full video/field rate while preserving identical output.
+            Add(start, "-loop", "1", "-framerate", "1", "-i", configuration.LogoPath!);
         }
         var audioInput = hasLogo ? 2 : 1;
         if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
@@ -219,7 +226,10 @@ public static class FfmpegCommandBuilder
         if (!string.IsNullOrWhiteSpace(outputLabel))
             textFilters.Add($"drawtext={windowsFont}text='{outputLabel}':fontcolor=white:fontsize={labelFontSize}:box=1:boxcolor=black@0.72:boxborderw={margin / 2}:x=(w-tw)/2:y=h-th-{margin}");
 
-        var baseFilter = BuildVideoFilter(preset, sourceIsInterlaced: false);
+        // Synthetic standby input is already generated at the target raster and
+        // frame/field rate. Re-scaling and frame-rate conversion here only burns
+        // CPU; interlaced output still needs explicit field weaving and metadata.
+        var baseFilter = BuildGeneratedVideoFilter(preset);
         string filterGraph;
         if (hasLogo)
         {
@@ -277,6 +287,12 @@ public static class FfmpegCommandBuilder
 
         var progressive = sourceIsInterlaced ? "yadif=mode=send_frame:parity=auto:deint=interlaced," : "";
         return $"{progressive}{scale},fps={outputRate}";
+    }
+
+    private static string BuildGeneratedVideoFilter(OutputPreset preset)
+    {
+        if (!preset.Interlaced) return "null";
+        return "tinterlace=interleave_top:flags=vlpf,setfield=tff";
     }
 
     private static string BlackVideoInput(OutputPreset preset)
