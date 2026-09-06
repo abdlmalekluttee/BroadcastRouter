@@ -6,12 +6,22 @@
 @inject BrowserPreviewSupervisor PreviewSupervisor
 @inject AuthorizedPreviewCommands PreviewCommands
 @inject OperatorErrorMessage OperatorErrors
+@inject NavigationManager Navigation
 @implements IDisposable
 
 <PageTitle>Sources · BroadcastRouter</PageTitle>
 <div class="page-head"><div><h1>Sources</h1><p class="lead">Wowza-discovered publishers and explicitly configured RTSP inputs.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@discoveryBusy" @onclick="RefreshDiscovery">@(discoveryBusy ? "Refreshing…" : "Refresh discovery")</button><a class="btn" href="/settings#manual">Add manual RTSP</a></div></Authorized></AuthorizeView></div>
 <NoticeBoard Severity="danger" @bind-Message="error" />
 <NoticeBoard Severity="success" @bind-Message="commandMessage" />
+<div class="filter-bar" role="search">
+    <label class="filter-search"><span>Filter sources</span><input data-operator-filter aria-label="Filter sources by name or ID" value="@Query" @oninput="UpdateQuery" placeholder="Name or source ID" /></label>
+    <div class="filter-chips" aria-label="Filter sources by state">
+        @foreach (var option in SourceFilterOptions)
+        {
+            <button type="button" class="filter-chip @(StateFilter == option.Value ? "active" : "")" aria-pressed="@(StateFilter == option.Value)" @onclick="() => SetStateFilter(option.Value)">@option.Label</button>
+        }
+    </div>
+</div>
 <div class="panel preview-panel">
     <div class="panel-head"><div><h2>Embedded browser preview</h2><span class="secondary-text">A compact 720×450 low-latency player stays inside this page. The audio VU meter is rendered into the video, with confidence audio controlled from the player.</span></div><div class="actions"><BroadcastRouter.Web.Components.Shared.StateBadge Value="preview.State" />@if(preview.State is PreviewState.Running or PreviewState.Starting){<button class="btn danger" disabled="@previewBusy" @onclick="StopPreview">Stop preview</button>}</div></div>
     <div class="preview-monitor">
@@ -45,7 +55,7 @@
     </div>
 </div>
 <div class="panel"><div class="table-wrap"><table><thead><tr><th>Source</th><th>Origin</th><th>RTSP</th><th>Media</th><th>Audio</th><th>State</th><th>Priority</th><th>Last observed</th><th>Actions</th></tr></thead><tbody>
-@foreach (var source in snapshot.Sources)
+@foreach (var source in FilteredSources)
 {
     var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source.Identity.Value);
     var routeAction = SourceRouteActionPolicy.Resolve(route);
@@ -66,10 +76,12 @@
             }
             <button class="btn small" disabled="@(previewBusy || source.Media is null)" title="Play an embedded browser preview with audio VU meter" @onclick='() => StartPreview(source.Identity.Value)'>Preview</button><button class="btn small" disabled="@(routeBusySource is not null)" @onclick='() => Run("reprobe", source.Identity.Value)'>Reprobe</button></div></Authorized></AuthorizeView></td></tr>
 }
-@if (snapshot.Sources.Count == 0) { <tr><td colspan="9"><div class="empty-state">No configured or discovered incoming streams. Check Wowza settings or add a manual RTSP source.</div></td></tr> }
+@if (FilteredSources.Count == 0) { <tr><td colspan="9"><div class="empty-state">@(snapshot.Sources.Count == 0 ? "No configured or discovered incoming streams. Check Wowza settings or add a manual RTSP source." : "No sources match the current filter.")</div></td></tr> }
 </tbody></table></div></div>
 
 @code {
+    [SupplyParameterFromQuery(Name = "q")] public string? Query { get; set; }
+    [SupplyParameterFromQuery(Name = "state")] public string? State { get; set; }
     private RouterSnapshot snapshot = null!;
     private PreviewSnapshot preview = PreviewSnapshot.Stopped;
     private string error = "";
@@ -77,9 +89,32 @@
     private bool previewBusy;
     private bool discoveryBusy;
     private string? routeBusySource;
+    private string StateFilter => string.IsNullOrWhiteSpace(State) ? "all" : State.ToLowerInvariant();
+    private static readonly (string Value, string Label)[] SourceFilterOptions = [("all", "All"), ("active", "Active"), ("offline", "Offline"), ("waiting", "Waiting"), ("failed", "Failed"), ("unassigned", "Unassigned")];
+    private IReadOnlyList<DiscoveredSource> FilteredSources => snapshot.Sources
+        .Where(source => string.IsNullOrWhiteSpace(Query) || source.FriendlyName.Contains(Query, StringComparison.OrdinalIgnoreCase) || source.Identity.Value.Contains(Query, StringComparison.OrdinalIgnoreCase))
+        .Where(MatchesState)
+        .OrderBy(source => source.FriendlyName, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
     protected override void OnInitialized() { snapshot = Coordinator.Snapshot; preview = PreviewSupervisor.Snapshot; Coordinator.Changed += Changed; PreviewSupervisor.Changed += PreviewChanged; }
     private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
     private void PreviewChanged() => _ = InvokeAsync(() => { preview = PreviewSupervisor.Snapshot; StateHasChanged(); });
+    private bool MatchesState(DiscoveredSource source)
+    {
+        var route = snapshot.Routes.FirstOrDefault(value => value.SourceId == source.Identity.Value);
+        return StateFilter switch
+        {
+            "active" => SourceAvailability(source) == "Active",
+            "offline" => SourceAvailability(source) == "Offline",
+            "waiting" => route?.State == RouteState.WaitingForStream,
+            "failed" => route?.State == RouteState.Failed,
+            "unassigned" => route is null,
+            _ => true
+        };
+    }
+    private void UpdateQuery(ChangeEventArgs args) { Query = args.Value?.ToString(); UpdateFilterAddress(); }
+    private void SetStateFilter(string value) { State = value == "all" ? null : value; UpdateFilterAddress(); }
+    private void UpdateFilterAddress() => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["q"] = string.IsNullOrWhiteSpace(Query) ? null : Query, ["state"] = State }), replace: true);
     private async Task Run(string action, string id)
     {
         if (routeBusySource is not null) return;

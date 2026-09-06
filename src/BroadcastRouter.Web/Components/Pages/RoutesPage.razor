@@ -5,6 +5,7 @@
 @inject AuthorizedRouterCommands Commands
 @inject DeckLinkAssetCatalog AssetCatalog
 @inject OperatorErrorMessage OperatorErrors
+@inject NavigationManager Navigation
 @implements IDisposable
 
 <PageTitle>Routes · BroadcastRouter</PageTitle>
@@ -15,6 +16,11 @@
 </div>
 <NoticeBoard Severity="danger" @bind-Message="error" />
 <NoticeBoard Severity="success" @bind-Message="confirmation" />
+<div class="filter-bar" role="search">
+    <label class="filter-search"><span>Filter routes</span><input data-operator-filter aria-label="Filter routes by source name or ID" value="@Query" @oninput="UpdateQuery" placeholder="Name or source ID" /></label>
+    <div class="filter-chips" aria-label="Filter routes by state">@foreach(var option in RouteFilterOptions){<button type="button" class="filter-chip @(StateFilter == option.Value ? "active" : "")" aria-pressed="@(StateFilter == option.Value)" @onclick="() => SetStateFilter(option.Value)">@option.Label</button>}</div>
+    <AuthorizeView Roles="Administrator"><Authorized><div class="bulk-actions" aria-label="Selected route actions"><span>@selectedRouteIds.Count selected</span><button class="btn small" disabled="@(selectedRouteIds.Count == 0 || pageBusy)" @onclick='() => BulkAction("restart")'>Restart</button><button class="btn small" disabled="@(selectedRouteIds.Count == 0 || pageBusy)" @onclick='() => BulkAction("stop")'>Stop</button><button class="btn small danger" disabled="@(selectedRouteIds.Count == 0 || pageBusy)" @onclick='() => BulkAction("release")'>Release</button></div></Authorized></AuthorizeView>
+</div>
 
 @if (OutputCardGroups().Count > 0)
 {
@@ -30,11 +36,11 @@
 }
 
 <div class="route-list">
-@foreach (var route in snapshot.Routes)
+@foreach (var route in FilteredRoutes)
 {
     <article class="route-editor" @key="route.SourceId">
         <header class="route-editor-head">
-            <div><strong>@route.SourceName</strong><span class="secondary-text mono">@route.SourceId</span></div>
+            <div class="route-title"><AuthorizeView Roles="Administrator"><Authorized><input type="checkbox" aria-label="Select route @route.SourceName" checked="@selectedRouteIds.Contains(route.SourceId)" @onchange="args => ToggleRoute(route.SourceId, args.Value)" /></Authorized></AuthorizeView><span><strong>@route.SourceName</strong><span class="secondary-text mono">@route.SourceId</span></span></div>
             <div class="route-state"><BroadcastRouter.Web.Components.Shared.StateBadge Value="RouteStatus(route)" /><span class="badge @AssignmentBadgeClass(route)">@AssignmentStatus(route)</span>@if (route.Locked) { <span class="badge warning">reserved</span> }</div>
         </header>
         <div class="route-summary-grid">
@@ -75,7 +81,7 @@
         @if (snapshot.SimulationMode) { <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls simulation-controls"><span class="secondary-text">Simulation:</span><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("simulate-failure", route.SourceId)'>Crash</button><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("simulate-stall", route.SourceId)'>Stall</button><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("clear-failure", route.SourceId)'>Recover</button></footer></Authorized></AuthorizeView> }
     </article>
 }
-@if (snapshot.Routes.Count == 0) { <div class="panel"><div class="empty-state">No desired routes are currently configured.</div></div> }
+@if (FilteredRoutes.Count == 0) { <div class="panel"><div class="empty-state">@(snapshot.Routes.Count == 0 ? "No desired routes are currently configured." : "No routes match the current filter.")</div></div> }
 </div>
 
 <AuthorizeView Roles="Administrator"><Authorized>
@@ -89,6 +95,8 @@
 </Authorized></AuthorizeView>
 
 @code {
+    [SupplyParameterFromQuery(Name = "q")] public string? Query { get; set; }
+    [SupplyParameterFromQuery(Name = "state")] public string? State { get; set; }
     private RouterSnapshot snapshot = null!;
     private IReadOnlyList<OutputPresetProfile> presets = [];
     private readonly Dictionary<string, string> selectedPorts = new(StringComparer.Ordinal);
@@ -104,7 +112,11 @@
     private string confirmation = "";
     private bool pageBusy;
     private readonly HashSet<string> busySourceIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> selectedRouteIds = new(StringComparer.Ordinal);
     private long settingsRevision = -1;
+    private string StateFilter => string.IsNullOrWhiteSpace(State) ? "all" : State.ToLowerInvariant();
+    private static readonly (string Value, string Label)[] RouteFilterOptions = [("all", "All"), ("running", "Running"), ("waiting", "Waiting"), ("failed", "Failed"), ("offline", "Offline"), ("unassigned", "Unassigned")];
+    private IReadOnlyList<RuntimeRoute> FilteredRoutes => snapshot.Routes.Where(route => string.IsNullOrWhiteSpace(Query) || route.SourceName.Contains(Query, StringComparison.OrdinalIgnoreCase) || route.SourceId.Contains(Query, StringComparison.OrdinalIgnoreCase)).Where(MatchesState).OrderBy(route => route.SourceName, StringComparer.OrdinalIgnoreCase).ToArray();
 
     protected override void OnInitialized()
     {
@@ -148,6 +160,21 @@
         .ToArray();
     private bool IsUnavailableOutput(string stableId) => !string.IsNullOrWhiteSpace(stableId)
         && !snapshot.Ports.Any(port => port.IsOutputPort && port.StableId.Equals(stableId, StringComparison.OrdinalIgnoreCase));
+    private bool MatchesState(RuntimeRoute route) => StateFilter switch { "running" => route.State == RouteState.Running, "waiting" => route.State == RouteState.WaitingForStream, "failed" => route.State == RouteState.Failed, "offline" => RouteStatus(route) == "Offline", "unassigned" => string.IsNullOrWhiteSpace(route.DesiredPortId ?? route.PortId), _ => true };
+    private void UpdateQuery(ChangeEventArgs args) { Query = args.Value?.ToString(); UpdateFilterAddress(); }
+    private void SetStateFilter(string value) { State = value == "all" ? null : value; UpdateFilterAddress(); }
+    private void UpdateFilterAddress() => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["q"] = string.IsNullOrWhiteSpace(Query) ? null : Query, ["state"] = State }), replace: true);
+    private void ToggleRoute(string sourceId, object? value) { if(value is bool selected && selected) selectedRouteIds.Add(sourceId); else selectedRouteIds.Remove(sourceId); }
+    private async Task BulkAction(string action)
+    {
+        var ids = selectedRouteIds.ToArray();
+        if(ids.Length == 0 || pageBusy) return;
+        var command = action == "release" ? "stop" : action;
+        if(!await confirmDialog.ShowAsync($"{action} selected routes", $"This will {action} {ids.Length} selected routes. Other routes are not affected.", $"{char.ToUpperInvariant(action[0])}{action[1..]} {ids.Length}", action is "stop" or "release")) return;
+        try { pageBusy = true; error = ""; foreach(var id in ids) await Commands.ExecuteAsync(command, id); selectedRouteIds.Clear(); confirmation = $"{ids.Length} routes received the {action} command."; }
+        catch(Exception ex) { error = OperatorErrors.Describe(ex, $"the bulk {action} command"); }
+        finally { pageBusy = false; }
+    }
 
     private async Task Run(string action, string source)
     {
