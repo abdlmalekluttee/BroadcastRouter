@@ -22,5 +22,6 @@ public static class RouteTelemetryPersistencePolicy
         || previous.DesiredPortId != current.DesiredPortId
         || previous.DesiredPortName != current.DesiredPortName
         || previous.ReserveWhileOffline != current.ReserveWhileOffline
-        || previous.AllowTemporaryUse != current.AllowTemporaryUse;
+        || previous.AllowTemporaryUse != current.AllowTemporaryUse
+        || previous.HoldOutputWhilePublisherLive != current.HoldOutputWhilePublisherLive;
 }

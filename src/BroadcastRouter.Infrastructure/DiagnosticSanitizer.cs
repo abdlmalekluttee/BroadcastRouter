@@ -38,6 +38,7 @@ public static class DiagnosticSanitizer
             route.Locked,
             route.ReserveWhileOffline,
             route.AllowTemporaryUse,
+            route.HoldOutputWhilePublisherLive,
             route.Priority,
             route.RestartCount,
             route.Frame,

@@ -2,6 +2,18 @@ using BroadcastRouter.Application;
 using BroadcastRouter.Domain;
 using BroadcastRouter.Infrastructure;
 
+if (args is ["--write-hold-simulation", var holdDatabase])
+{
+    var fixtureStore = new SqliteDataStore(holdDatabase);
+    await fixtureStore.InitializeAsync();
+    var fixtureSettings = new OperatorSettings { SimulationMode = true };
+    fixtureSettings.Security.Port = 5280;
+    fixtureSettings.Security.RequireAuthentication = false;
+    fixtureSettings.WowzaServers.Add(new() { ServerId = "SIM-WOWZA" });
+    await fixtureStore.SaveSettingsAsync(fixtureSettings);
+    return 0;
+}
+
 if (args is ["--write-simulation-settings", var databasePath, var portText, var authenticationText]
     && int.TryParse(portText, out var runtimePort) && bool.TryParse(authenticationText, out var runtimeAuthentication))
 {
@@ -19,6 +31,11 @@ if (args is ["--write-simulation-settings", var databasePath, var portText, var 
 
 var tests = new (string Name, Action Body)[]
 {
+    ("Publisher-live hold is opt-in, scoped, and preserves outage continuity", PublisherLiveHoldTests.Policy),
+    ("Recovery hold is durable, audited atomically, and backward compatible", PublisherLiveHoldTests.Persistence),
+    ("Recovery hold commands require admin and survive stale route writes", PublisherLiveHoldTests.Commands),
+    ("Live hold protects owned process in both watchdogs and disabling resumes recovery", PublisherLiveHoldTests.Watchdogs),
+    ("Live hold allows confirmed publisher-stop and process-exit recovery", PublisherLiveHoldTests.DisconnectAndExit),
     ("Persistent source identity", SourceIdentityIsUnambiguous),
     ("Unique generated IDs skip collisions", GeneratedIdsSkipCollisions),
     ("RTSP URL generation", RtspUrlIsGeneratedAndEscaped),
@@ -150,7 +167,7 @@ var failures = new List<string>();
 foreach (var test in tests)
 {
     try { test.Body(); Console.WriteLine($"PASS  {test.Name}"); }
-    catch (Exception ex) { failures.Add($"{test.Name}: {ex.Message}"); Console.WriteLine($"FAIL  {test.Name}: {ex.Message}"); }
+    catch (Exception ex) { failures.Add($"{test.Name}: {ex.Message}"); Console.WriteLine($"FAIL  {test.Name}: {ex}"); }
 }
 
 Console.WriteLine($"{tests.Length - failures.Count}/{tests.Length} tests passed.");

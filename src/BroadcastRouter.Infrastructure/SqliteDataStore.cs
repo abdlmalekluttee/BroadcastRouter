@@ -212,7 +212,8 @@ public sealed class SqliteDataStore
         finally { _writeGate.Release(); }
     }
 
-    public async Task SaveRouteAsync(RuntimeRoute route, RouteState? previousState = null, CancellationToken cancellationToken = default)
+    public async Task SaveRouteAsync(RuntimeRoute route, RouteState? previousState = null, CancellationToken cancellationToken = default,
+        ConfigurationAuditEntry? audit = null)
     {
         await _writeGate.WaitAsync(cancellationToken);
         try
@@ -246,6 +247,8 @@ public sealed class SqliteDataStore
                 history.Parameters.AddWithValue("$now", route.UpdatedAt.ToString("O"));
                 await history.ExecuteNonQueryAsync(cancellationToken);
             }
+            if (audit is not null)
+                await InsertConfigurationAuditAsync(connection, (SqliteTransaction)transaction, audit, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
         finally { _writeGate.Release(); }
@@ -313,7 +316,16 @@ public sealed class SqliteDataStore
         try
         {
             await using var connection = await OpenAsync(cancellationToken);
+            await InsertConfigurationAuditAsync(connection, null, entry, cancellationToken);
+        }
+        finally { _writeGate.Release(); }
+    }
+
+    private static async Task InsertConfigurationAuditAsync(SqliteConnection connection, SqliteTransaction? transaction,
+        ConfigurationAuditEntry entry, CancellationToken cancellationToken)
+    {
             await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
             command.CommandText = """
                 INSERT INTO configuration_audit(timestamp_utc,event_type,entity_id,card_name,port_name,
                     previous_state,new_state,actor,reason,backend_status,source_id)
@@ -331,8 +343,6 @@ public sealed class SqliteDataStore
             command.Parameters.AddWithValue("$status", LogRedactor.Redact(entry.BackendStatus));
             command.Parameters.AddWithValue("$source", (object?)entry.SourceId ?? DBNull.Value);
             await command.ExecuteNonQueryAsync(cancellationToken);
-        }
-        finally { _writeGate.Release(); }
     }
 
     public async Task<IReadOnlyList<ConfigurationAuditEntry>> ReadConfigurationAuditAsync(int limit = 1000,

@@ -1,5 +1,7 @@
 # Migration from batch files
 
+Version 1.5.29 adds an optional route JSON field, `HoldOutputWhilePublisherLive`, defaulting to false when absent. No schema migration is required. Existing routing and watchdog behavior is unchanged until an administrator enables it per Wowza stream. Back up the working installation before deployment; reverting to older software removes the hold behavior even if the newer JSON field is present.
+
 1. Inventory every existing batch route: RTSP URL, DeckLink name/connector, raster/rate/scan, pixel format, audio, transport, buffer and fallback expectation.
 2. Install BroadcastRouter in simulation and model those settings as output presets. The sample batch maps to a 1080p25 preset with TCP as desired, 256 MB input buffer, `uyvy422`, and the labeled DeckLink port.
 3. Configure Wowza discovery and an RTSP URL template instead of copying credentials/URLs into commands. Use manual RTSP sources only for inputs not discoverable through Wowza.

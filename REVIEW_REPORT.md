@@ -1,5 +1,18 @@
 # BroadcastRouter production-safety review
 
+## Focused 1.5.29 publisher-live hold review — 2026-09-06
+
+Scope: opt-in per-stream automatic recovery override, not a claim that all historical decoder issues are resolved. The application separates discovery/probing, durable route intent, exclusive port leases, and owned FFmpeg supervision. Multiple independent media recovery paths could recycle a live publisher; the new operator option must cover all of them without disabling process-exit or authoritative offline handling.
+
+- **Implemented:** persistent `HoldOutputWhilePublisherLive`, administrator-only command/UI, confirmation and continuous risk warning, one-per-PID suppression log, and atomic route-plus-audit persistence before acknowledgement. Serialized route writes retain the latest operator policy even when a stale runtime/reassignment snapshot is saved.
+- **Implemented:** presence seeded only for unknown publishers from initial discovery; the fast monitor subsequently controls live/offline truth. Failed management calls preserve the last confirmation. Exact running live-process ownership is mandatory; fallback and exited children are never protected by this option. Ordinary and fast watchdogs, media-mode changes, saved-route reconciliation, due retry and missing-source expiry respect it.
+- **Verified locally:** clean baseline 125/125 tests; final Release build with zero warnings/errors and 130/130 tests. New tests include real owned hidden test processes with synthetic RTSP failure evidence, both supervision paths, disabling hold, confirmed disconnect, API outage, process exit, legacy JSON, saved-intent reconstruction, authorization, stale writes, and transaction rollback after audit insertion failure. No physical hardware is used by these tests.
+- **Verified in local Chrome:** simulation on a separate loopback port; enable/confirm, reload persistence, disable, no page JavaScript errors, and no page overflow at 1920, 1366 and 768 pixels. Screenshots inspected locally. The Codex in-app browser failed initialization; the independent browser check is not presented as an in-app-browser pass.
+- **Limitations:** hold can retain frozen video, silent audio, generated black or a starting process indefinitely while Wowza last reported live. FFmpeg's own timeout/exit and operator/hardware configuration changes still take effect. Intentional still images and normal interlacing are not proven causes of FFmpeg progress duplicate bursts; no stream-name special cases were introduced.
+- **Not yet certified by this review:** physical SDI audio/video, multi-hour soak, and reboot/Session 0 acceptance for the new option. Follow `docs/PRODUCTION-VALIDATION.md` on an isolated route before unattended use.
+
+Changed areas: Domain route JSON; Application hold/persistence policy; Infrastructure route/audit transaction and sanitizer; Web coordinator and routing matrix; executable regression tests and operator documentation.
+
 Review date: 2026-08-21
 Review branch: `main`
 Current release branch: `main` (1.5.25)

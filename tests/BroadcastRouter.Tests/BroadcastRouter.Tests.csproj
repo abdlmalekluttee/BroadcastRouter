@@ -11,6 +11,7 @@
     <ProjectReference Include="..\..\src\BroadcastRouter.Domain\BroadcastRouter.Domain.csproj" />
     <ProjectReference Include="..\..\src\BroadcastRouter.Application\BroadcastRouter.Application.csproj" />
     <ProjectReference Include="..\..\src\BroadcastRouter.Infrastructure\BroadcastRouter.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj" />
   </ItemGroup>
 
 </Project>
