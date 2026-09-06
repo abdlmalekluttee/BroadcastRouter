@@ -5,6 +5,7 @@
 @inject AuthorizedRouterCommands Commands
 @inject IJSRuntime JS
 @inject DeckLinkAssetCatalog AssetCatalog
+@inject OperatorErrorMessage OperatorErrors
 @implements IDisposable
 
 <PageTitle>Routes · BroadcastRouter</PageTitle>
@@ -12,8 +13,8 @@
     <div><h1>Routes / Routing Matrix</h1><p class="lead">Every route acquires one atomic port lease before FFmpeg is allowed to start.</p></div>
     <AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@busy" @onclick='() => Run("rescan", "")'>Reconcile now</button><button class="btn danger" disabled="@busy" @onclick='() => Run("emergency-stop", "")'>Emergency stop</button></div></Authorized></AuthorizeView>
 </div>
-@if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger" role="alert">@error</div> }
-@if (!string.IsNullOrWhiteSpace(confirmation)) { <div class="notice success" role="status">@confirmation</div> }
+<NoticeBoard Severity="danger" @bind-Message="error" />
+<NoticeBoard Severity="success" @bind-Message="confirmation" />
 
 @if (OutputCardGroups().Count > 0)
 {
@@ -162,7 +163,7 @@
             if (action is "enable-live-hold" or "disable-live-hold")
                 confirmation = $"Recovery setting saved and applied successfully at {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}.";
         }
-        catch (Exception ex) { error = ex.Message; }
+        catch (Exception ex) { error = OperatorErrors.Describe(ex, "the route command"); }
         finally { busy = false; }
     }
 
@@ -183,7 +184,7 @@
             selectedPorts.Remove(route.SourceId);
             selectedPresets.Remove(route.SourceId);
         }
-        catch (Exception ex) { error = ex.Message; }
+        catch (Exception ex) { error = OperatorErrors.Describe(ex, "saving the route assignment"); }
         finally { busy = false; }
     }
 
@@ -192,7 +193,7 @@
         if (busy) return;
         try { busy = true; error = ""; await Commands.ExecuteAsync("save-assignment", selectedSource, selectedPort, selectedPreset,
             selectedMode, reserveWhileOffline: true, allowTemporaryUse: false); }
-        catch (Exception ex) { error = ex.Message; }
+        catch (Exception ex) { error = OperatorErrors.Describe(ex, "creating the route"); }
         finally { busy = false; }
     }
 

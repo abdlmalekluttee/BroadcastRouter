@@ -4,10 +4,11 @@
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject IJSRuntime JS
+@inject OperatorErrorMessage OperatorErrors
 
 <PageTitle>Wowza Servers · BroadcastRouter</PageTitle>
 <div class="page-head"><div><h1>Wowza Servers</h1><p class="lead">Supported management API discovery only; BroadcastRouter never scans the network.</p></div><div class="actions"><button class="btn" @onclick="Add">Add server</button><button class="btn primary" @onclick="Save">Save all</button></div></div>
-@if (!string.IsNullOrWhiteSpace(message)) { <div class="notice @messageClass">@message</div> }
+<NoticeBoard Severity="@messageClass" @bind-Message="message" />
 
 @foreach (var server in settings.WowzaServers)
 {
@@ -31,7 +32,7 @@
             <div class="form-group"><label>Connection timeout (seconds)</label><InputNumber aria-label="Connection timeout seconds" @bind-Value="server.ConnectionTimeoutSeconds" /></div>
             <div class="form-group wide"><label>RTSP URL template</label><InputText aria-label="RTSP URL template" @bind-Value="server.RtspUrlTemplate" /><span class="secondary-text">Tokens: {wowza-host}, {rtsp-port}, {application}, {application-instance}, {stream-name}, {server-id}</span></div>
         </div>
-        @if (health is not null) { <div class="notice @(health.Reachable && health.Authenticated ? "success" : "danger")" style="margin-top:15px;margin-bottom:0">@health.Summary · @health.ActiveStreamCount active stream(s) · checked @health.CheckedAt.ToLocalTime().ToString("HH:mm:ss")</div> }
+        @if (health is not null) { <div class="notice server-health @(health.Reachable && health.Authenticated ? "success" : "danger")">@health.Summary · @health.ActiveStreamCount active streams · checked @health.CheckedAt.ToLocalTime().ToString("HH:mm:ss")</div> }
         </div>
     </div>
 }
@@ -54,7 +55,7 @@
             var result = await Commands.SaveSettingsAsync(settings); settings = result.Settings; message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Discovery is refreshing automatically; backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success";
             passwords.Clear();
         }
-        catch (Exception ex) { message = ex.Message; messageClass = "danger"; }
+        catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving the Wowza server list"); messageClass = "danger"; }
     }
     private async Task Test(WowzaServerProfile server)
     {

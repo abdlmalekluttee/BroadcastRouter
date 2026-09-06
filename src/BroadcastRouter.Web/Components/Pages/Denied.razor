@@ -1,0 +1,9 @@
+@page "/denied"
+@attribute [Authorize]
+
+<PageTitle>Access denied · BroadcastRouter</PageTitle>
+<div class="empty-state access-denied">
+    <h1>Administrator access required</h1>
+    <p>This page changes protected broadcast configuration. Your signed-in account does not have the Administrator role.</p>
+    <a class="btn" href="/">Return to dashboard</a>
+</div>

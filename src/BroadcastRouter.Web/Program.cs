@@ -89,6 +89,7 @@ builder.Services.AddHostedService<RouterCoordinatorWatchdog>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<DatabaseIntegrityMonitor>());
 builder.Services.AddScoped<AuthorizedRouterCommands>();
 builder.Services.AddScoped<AuthorizedPreviewCommands>();
+builder.Services.AddSingleton<OperatorErrorMessage>();
 builder.Services.AddRazorComponents().AddInteractiveServerComponents(options => options.DetailedErrors = false);
 builder.Services.AddSignalR();
 builder.Services.AddHttpClient("WowzaValidated");
@@ -101,7 +102,7 @@ builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
 {
     options.LoginPath = "/login";
-    options.AccessDeniedPath = "/login";
+    options.AccessDeniedPath = "/denied";
     options.ExpireTimeSpan = TimeSpan.FromMinutes(sessionMinutes);
     options.SlidingExpiration = true;
     options.Cookie.Name = "BroadcastRouter.Auth";

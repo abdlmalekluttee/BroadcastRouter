@@ -1,15 +1,24 @@
 @page "/login"
 @attribute [AllowAnonymous]
+@inject NavigationManager Navigation
 <PageTitle>Sign in · BroadcastRouter</PageTitle>
 <div class="empty-state">
-    <div class="card" style="max-width:420px;margin:auto;text-align:left">
+    <div class="card login-card">
         <h1>Sign in</h1><p class="lead">Use the administrator or read-only operator account configured on this server.</p>
+        @if (Failed == 1)
+        {
+            <NoticeBoard Severity="danger" Message="That user name or password was not accepted. Check the account configured in BROADCASTROUTER_ADMIN_PASSWORD or BROADCASTROUTER_OPERATOR_PASSWORD on this server." />
+        }
         <form method="post" action="/auth/login">
             <AntiforgeryToken />
             <div class="form-group"><label for="login-username">User name</label><input id="login-username" name="username" autocomplete="username" required /></div>
-            <div class="form-group" style="margin-top:12px"><label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required /></div>
-            <button class="btn primary" type="submit" style="margin-top:18px;width:100%">Sign in</button>
+            <div class="form-group login-password"><label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required /></div>
+            <button class="btn primary login-submit" type="submit">Sign in</button>
         </form>
-        <p class="secondary-text" style="margin-top:16px">Credentials are read from the server environment and are never stored in the browser or logs.</p>
+        <p class="secondary-text login-help">Credentials are read from the server environment and are never stored in the browser or logs.</p>
     </div>
 </div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "failed")] public int? Failed { get; set; }
+}

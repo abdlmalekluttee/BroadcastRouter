@@ -2,9 +2,16 @@
     <Router AppAssembly="typeof(Program).Assembly">
         <Found Context="routeData">
             <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
-                <NotAuthorized>
+                <NotAuthorized Context="authenticationState">
                     <LayoutView Layout="typeof(Layout.MainLayout)">
-                        <div class="empty-state"><h1>Authentication required</h1><p><a href="/login">Sign in to continue.</a></p></div>
+                        @if (authenticationState.User.Identity?.IsAuthenticated == true)
+                        {
+                            <div class="empty-state"><h1>Administrator access required</h1><p>This page requires the Administrator role. You are signed in as @authenticationState.User.Identity.Name (Operator).</p><a class="btn" href="/">Return to dashboard</a></div>
+                        }
+                        else
+                        {
+                            <div class="empty-state"><h1>Authentication required</h1><p><a href="/login">Sign in to continue.</a></p></div>
+                        }
                     </LayoutView>
                 </NotAuthorized>
             </AuthorizeRouteView>

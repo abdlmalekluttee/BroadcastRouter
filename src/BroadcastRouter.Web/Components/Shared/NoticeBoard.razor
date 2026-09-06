@@ -1,0 +1,72 @@
+@implements IDisposable
+
+<div class="notice-slot" aria-live="off">
+    @if (!string.IsNullOrWhiteSpace(Message) || ChildContent is not null)
+    {
+        <div class="notice @SeverityClass" role="@Role">
+            <div class="notice-content">
+                @if (!string.IsNullOrWhiteSpace(Message))
+                {
+                    <span>@Message</span>
+                }
+                @ChildContent
+            </div>
+            <button type="button" class="btn small notice-dismiss" aria-label="Dismiss" @onclick="DismissAsync">Dismiss</button>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string Message { get; set; } = "";
+    [Parameter] public EventCallback<string> MessageChanged { get; set; }
+    [Parameter] public string Severity { get; set; } = "info";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private CancellationTokenSource? expiry;
+    private string observedMessage = "";
+    private string SeverityClass => Severity.ToLowerInvariant() switch
+    {
+        "success" => "success",
+        "warning" => "warning",
+        "danger" => "danger",
+        _ => "info"
+    };
+    private string Role => SeverityClass == "danger" ? "alert" : "status";
+
+    protected override void OnParametersSet()
+    {
+        if (Message == observedMessage) return;
+        observedMessage = Message;
+        expiry?.Cancel();
+        expiry?.Dispose();
+        expiry = null;
+        if (SeverityClass == "success" && !string.IsNullOrWhiteSpace(Message))
+        {
+            expiry = new CancellationTokenSource();
+            _ = AutoDismissAsync(expiry.Token);
+        }
+    }
+
+    private async Task AutoDismissAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(8), cancellationToken);
+            await InvokeAsync(DismissAsync);
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task DismissAsync()
+    {
+        observedMessage = "";
+        expiry?.Cancel();
+        await MessageChanged.InvokeAsync("");
+    }
+
+    public void Dispose()
+    {
+        expiry?.Cancel();
+        expiry?.Dispose();
+    }
+}

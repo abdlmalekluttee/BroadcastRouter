@@ -33,10 +33,10 @@
             var standby = snapshot.Standbys?.FirstOrDefault(value => value.PortId.Equals(port.StableId, StringComparison.OrdinalIgnoreCase));
             <article class="card port-card @(route is null ? "" : "occupied")" @key="port.StableId">
                 <span class="connector" aria-hidden="true"></span><span class="visually-hidden">@(route is null ? "Free" : $"Occupied by {route.SourceName}")</span><div class="stat-label">Connector @(port.SubdeviceIndex + 1)</div><h3 class="port-card-title">@DeckLinkDisplayName.Connector(port)</h3>
-                <span class="secondary-text">@DeckLinkDisplayName.Full(port)</span><div class="actions" style="margin-top:16px"><span class="badge @(port.IsOutputPort ? "success" : "warning")">@(port.IsOutputPort ? "Output port" : "Input / excluded")</span><BroadcastRouter.Web.Components.Shared.StateBadge Value="@(port.IsAvailable ? (route is null ? "Available" : "Reserved") : "Unavailable")" /><span class="badge @ReferenceClass(port)">@ReferenceSummary(port)</span>@if(standby is not null){<BroadcastRouter.Web.Components.Shared.StateBadge Value="standby.State" />}</div>
+                <span class="secondary-text">@DeckLinkDisplayName.Full(port)</span><div class="actions port-card-badges"><span class="badge @(port.IsOutputPort ? "success" : "warning")">@(port.IsOutputPort ? "Output port" : "Input / excluded")</span><BroadcastRouter.Web.Components.Shared.StateBadge Value="@(port.IsAvailable ? (route is null ? "Available" : "Reserved") : "Unavailable")" /><span class="badge @ReferenceClass(port)">@ReferenceSummary(port)</span>@if(standby is not null){<BroadcastRouter.Web.Components.Shared.StateBadge Value="standby.State" />}</div>
                 <dl><dt>Port group</dt><dd>@(string.IsNullOrWhiteSpace(port.PortGroup) ? "Default" : port.PortGroup) @(port.Reserved ? "· reserved from automatic routing" : "")</dd><dt>Genlock / reference</dt><dd>@ReferenceDetail(port)</dd><dt>Mapping confidence</dt><dd>@port.IdentityConfidence</dd><dt>Supported modes</dt><dd>@(port.SupportedModes.Count == 0 ? "Query not exposed / verified when FFmpeg starts" : string.Join(", ", port.SupportedModes.Select(Mode)))</dd></dl>
                 <details class="technical-identity"><summary>Technical identity</summary><dl><dt>FFmpeg address</dt><dd class="mono">@port.FfmpegName</dd><dt>Connector stable ID</dt><dd class="mono">@port.StableId</dd>@if(port.PersistentId is not null){<dt>Persistent connector ID</dt><dd class="mono">@port.PersistentId</dd>}@if(port.DeviceGroupId is not null){<dt>Physical card identity</dt><dd class="mono">@port.DeviceGroupId</dd>}@if(port.TopologicalId is not null){<dt>Current topology ID (not saved)</dt><dd class="mono">@port.TopologicalId</dd>}</dl></details>
-                @if (route is not null) { <div class="notice success" style="margin:12px 0 0"><strong>@route.SourceName</strong><br />@route.PresetId · @(route.Locked ? "locked" : "unlocked")</div> }
+                @if (route is not null) { <div class="notice success port-route-notice"><strong>@route.SourceName</strong><br />@route.PresetId · @(route.Locked ? "locked" : "unlocked")</div> }
                 @if (standby is not null) { <div class="standby-summary"><strong>@standby.Summary</strong>@if(!string.IsNullOrWhiteSpace(standby.ErrorMessage)){<span class="secondary-text">@standby.ErrorMessage</span>}</div> }
             </article>
         }
@@ -46,11 +46,11 @@
 @if (snapshot.Ports.Count == 0) { <div class="panel"><div class="empty-state">No DeckLink outputs enumerated. Configure a DeckLink-enabled FFmpeg build and install Blackmagic Desktop Video, then rescan.</div></div> }
 @if (snapshot.Ports.Any(port => port.PersistentId is null))
 {
-    <div class="notice warning" style="margin-top:18px">One or more outputs do not expose a unique Blackmagic persistent ID. Re-verify those fallback mappings after Desktop Video upgrades, topology changes, or card replacement.</div>
+    <div class="notice warning page-tail-notice">One or more outputs do not expose a unique Blackmagic persistent ID. Re-verify those fallback mappings after Desktop Video upgrades, topology changes, or card replacement.</div>
 }
 else if (snapshot.Ports.Count > 0)
 {
-    <div class="notice success" style="margin-top:18px">All outputs use Blackmagic persistent hardware IDs. Card names, connector names, and route references remain attached when identical cards move between PCIe slots.</div>
+    <div class="notice success page-tail-notice">All outputs use Blackmagic persistent hardware IDs. Card names, connector names, and route references remain attached when identical cards move between PCIe slots.</div>
 }
 
 @code {

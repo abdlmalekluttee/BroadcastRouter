@@ -5,12 +5,13 @@
 @inject AuthorizedRouterCommands Commands
 @inject BrowserPreviewSupervisor PreviewSupervisor
 @inject AuthorizedPreviewCommands PreviewCommands
+@inject OperatorErrorMessage OperatorErrors
 @implements IDisposable
 
 <PageTitle>Sources · BroadcastRouter</PageTitle>
 <div class="page-head"><div><h1>Sources</h1><p class="lead">Wowza-discovered publishers and explicitly configured RTSP inputs.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@discoveryBusy" @onclick="RefreshDiscovery">@(discoveryBusy ? "Refreshing…" : "Refresh discovery")</button><a class="btn" href="/settings#manual">Add manual RTSP</a></div></Authorized></AuthorizeView></div>
-@if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger" role="alert">@error</div> }
-@if (!string.IsNullOrWhiteSpace(commandMessage)) { <div class="notice" role="status">@commandMessage</div> }
+<NoticeBoard Severity="danger" @bind-Message="error" />
+<NoticeBoard Severity="success" @bind-Message="commandMessage" />
 <div class="panel preview-panel">
     <div class="panel-head"><div><h2>Embedded browser preview</h2><span class="secondary-text">A compact 720×450 low-latency player stays inside this page. The audio VU meter is rendered into the video, with confidence audio controlled from the player.</span></div><div class="actions"><BroadcastRouter.Web.Components.Shared.StateBadge Value="preview.State" />@if(preview.State is PreviewState.Running or PreviewState.Starting){<button class="btn danger" disabled="@previewBusy" @onclick="StopPreview">Stop preview</button>}</div></div>
     <div class="preview-monitor">
@@ -93,7 +94,7 @@
                 ? "Route request accepted. Use View route to monitor or change the output."
                 : "Source reprobe requested.";
         }
-        catch(Exception ex) { error = ex.Message; }
+        catch(Exception ex) { error = OperatorErrors.Describe(ex, "the source command"); }
         finally { routeBusySource = null; }
     }
     private async Task RefreshDiscovery()
@@ -109,7 +110,7 @@
             commandMessage = $"Source discovery completed and confirmed by the server at {snapshot.UpdatedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. "
                 + $"{snapshot.Sources.Count} incoming stream record(s) are visible.";
         }
-        catch (Exception ex) { error = ex.Message; commandMessage = ""; }
+        catch (Exception ex) { error = OperatorErrors.Describe(ex, "source discovery"); commandMessage = ""; }
         finally { discoveryBusy = false; }
     }
     private async Task StartPreview(string id)
@@ -117,7 +118,7 @@
         if (previewBusy) return;
         previewBusy = true;
         try { error = ""; await PreviewCommands.StartAsync(id); preview = PreviewSupervisor.Snapshot; }
-        catch(Exception ex) { error = ex.Message; }
+        catch(Exception ex) { error = OperatorErrors.Describe(ex, "starting the browser preview"); }
         finally { previewBusy = false; }
     }
     private async Task StopPreview()
@@ -125,7 +126,7 @@
         if (previewBusy) return;
         previewBusy = true;
         try { error = ""; await PreviewCommands.StopAsync(); preview = PreviewSupervisor.Snapshot; }
-        catch(Exception ex) { error = ex.Message; }
+        catch(Exception ex) { error = OperatorErrors.Describe(ex, "stopping the browser preview"); }
         finally { previewBusy = false; }
     }
     private string PreviewUptime() => preview.StartedAt is null ? "—" : FormatDuration(DateTimeOffset.UtcNow - preview.StartedAt.Value);

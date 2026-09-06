@@ -859,6 +859,26 @@ tr:hover td {
 .validation-list .warn { color: #ffd077; }
 .connector-dot.active { border-radius: 2px; }
 .preview-screen-content h3 { margin: 10px 0; font-size: 24px; }
+.notice-slot { min-height: 0; }
+.notice-slot:has(.notice) { min-height: 48px; }
+.notice-slot .notice { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.notice-content { min-width: 0; }
+.notice-dismiss { flex: none; }
+.login-card { max-width: 420px; margin: auto; text-align: left; }
+.login-password { margin-top: 12px; }
+.login-submit { width: 100%; margin-top: 18px; }
+.login-help { margin-top: 16px; }
+.access-denied { max-width: 640px; margin: 0 auto; }
+.validation-results { margin-top: 15px; }
+.field-error { color: #ffb4ba; font-size: 12px; }
+.port-card-badges { margin-top: 16px; }
+.port-route-notice { margin: 12px 0 0; }
+.page-tail-notice { margin-top: 18px; }
+.server-health { margin-top: 15px; margin-bottom: 0; }
+.log-search { width: 280px; }
+.log-message { min-width: 360px; white-space: normal; }
+.audit-state { min-width: 240px; white-space: normal; }
+.audit-reason { min-width: 260px; white-space: normal; }
 
 @media (max-width: 1050px) {
     .stats { grid-template-columns: repeat(2, 1fr); }

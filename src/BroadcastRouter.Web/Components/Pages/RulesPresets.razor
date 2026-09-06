@@ -4,10 +4,11 @@
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject IJSRuntime JS
+@inject OperatorErrorMessage OperatorErrors
 
 <PageTitle>Rules &amp; Presets · BroadcastRouter</PageTitle>
 <div class="page-head"><div><h1>Rules and presets</h1><p class="lead">Rules are evaluated by order using bounded wildcards or <span class="mono">regex:</span> patterns with a timeout.</p></div><div class="actions"><button class="btn" @onclick="AddRule">Add rule</button><button class="btn" @onclick="AddPreset">Add preset</button><button class="btn primary" @onclick="Save">Save changes</button></div></div>
-@if (!string.IsNullOrWhiteSpace(message)) { <div class="notice @messageClass" role="status">@message</div> }
+<NoticeBoard Severity="@messageClass" @bind-Message="message" />
 
 <div class="panel"><div class="panel-head"><div><h2>Routing rules</h2><span class="secondary-text">Each rule uses a responsive editor; lower order numbers run first.</span></div></div><div class="panel-body rule-list">
 @foreach (var rule in settings.Rules.OrderBy(x => x.Order))
@@ -76,5 +77,5 @@
         if (routeReferences > 0) { message = $"Preset '{preset.Name}' is used by {routeReferences} active or waiting route(s). Reassign or stop those routes first."; messageClass = "danger"; return; }
         if (await JS.InvokeAsync<bool>("confirm", $"Remove output preset '{preset.Name}'?")) settings.Presets.Remove(preset);
     }
-    private async Task Save() { try { var result = await Commands.SaveSettingsAsync(settings); settings = result.Settings; message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success"; } catch (Exception ex) { message = ex.Message; messageClass = "danger"; } }
+    private async Task Save() { try { var result = await Commands.SaveSettingsAsync(settings); settings = result.Settings; message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success"; } catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving rules and presets"); messageClass = "danger"; } }
 }
