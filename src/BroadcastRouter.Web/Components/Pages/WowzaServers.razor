@@ -7,7 +7,8 @@
 @inject OperatorErrorMessage OperatorErrors
 
 <PageTitle>Wowza Servers · BroadcastRouter</PageTitle>
-<div class="page-head"><div><h1>Wowza Servers</h1><p class="lead">Supported management API discovery only; BroadcastRouter never scans the network.</p></div><div class="actions"><button class="btn" @onclick="Add">Add server</button><button class="btn primary" @onclick="Save">Save all</button></div></div>
+<NavigationLock ConfirmExternalNavigation="@IsDirty" OnBeforeInternalNavigation="ConfirmNavigation" />
+<div class="page-head"><div><h1>Wowza Servers</h1><p class="lead">Supported management API discovery only; BroadcastRouter never scans the network.</p></div><div class="actions">@if(IsDirty){<span class="badge warning">Unsaved changes</span>}<button class="btn" disabled="@saving" @onclick="Add">Add server</button><button class="btn" disabled="@(!IsDirty || saving)" @onclick="Discard">Discard</button><button class="btn primary" disabled="@(!IsDirty || saving)" @onclick="Save">@(saving ? "Saving…" : "Save all")</button></div></div>
 <NoticeBoard Severity="@messageClass" @bind-Message="message" />
 
 @foreach (var server in settings.WowzaServers)
@@ -43,23 +44,33 @@
     private readonly Dictionary<WowzaServerProfile, string> passwords = new();
     private string message = "";
     private string messageClass = "";
-    protected override void OnInitialized() => settings = Coordinator.GetSettings();
+    private string savedFingerprint = "";
+    private bool saving;
+    private bool IsDirty => savedFingerprint.Length > 0 && (OperatorSettingsDraft.Fingerprint(settings) != savedFingerprint || passwords.Values.Any(value => !string.IsNullOrEmpty(value)));
+    protected override void OnInitialized() { settings = OperatorSettingsDraft.Copy(Coordinator.GetSettings()); MarkClean(); }
     private void Add() { var server = new WowzaServerProfile { ServerId = UniqueIdGenerator.Next("WOWZA", settings.WowzaServers.Select(x => x.ServerId)) }; settings.WowzaServers.Add(server); passwords[server] = ""; }
     private async Task Remove(WowzaServerProfile server) { if (!await JS.InvokeAsync<bool>("confirm", $"Remove Wowza server '{server.FriendlyName}' from the pending settings? Its unlocked routes may be released after the configured grace period.")) return; settings.WowzaServers.Remove(server); passwords.Remove(server); }
     private string Password(WowzaServerProfile server) => passwords.GetValueOrDefault(server, "");
     private async Task Save()
     {
+        if (saving) return;
         try
         {
+            saving = true;
             foreach (var pair in passwords.Where(x => !string.IsNullOrEmpty(x.Value))) await Coordinator.SetWowzaPasswordAsync(pair.Key, pair.Value);
-            var result = await Commands.SaveSettingsAsync(settings); settings = result.Settings; message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Discovery is refreshing automatically; backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success";
+            var result = await Commands.SaveSettingsAsync(settings); settings = OperatorSettingsDraft.Copy(result.Settings); message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Discovery is refreshing automatically; backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success";
             passwords.Clear();
+            MarkClean();
         }
         catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving the Wowza server list"); messageClass = "danger"; }
+        finally { saving = false; }
     }
     private async Task Test(WowzaServerProfile server)
     {
         var result = await Coordinator.TestWowzaAsync(server, string.IsNullOrEmpty(Password(server)) ? null : Password(server));
         message = result.Summary; messageClass = result.Authenticated ? "success" : "danger";
     }
+    private void MarkClean() => savedFingerprint = OperatorSettingsDraft.Fingerprint(settings);
+    private void Discard() { settings = OperatorSettingsDraft.Copy(Coordinator.GetSettings()); passwords.Clear(); MarkClean(); message = "Unsaved server changes were discarded."; messageClass = "info"; }
+    private async Task ConfirmNavigation(LocationChangingContext context) { if(IsDirty && !await JS.InvokeAsync<bool>("confirm", "Discard unsaved Wowza server changes?")) context.PreventNavigation(); }
 }

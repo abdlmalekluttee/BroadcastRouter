@@ -7,7 +7,8 @@
 @inject OperatorErrorMessage OperatorErrors
 
 <PageTitle>Rules &amp; Presets · BroadcastRouter</PageTitle>
-<div class="page-head"><div><h1>Rules and presets</h1><p class="lead">Rules are evaluated by order using bounded wildcards or <span class="mono">regex:</span> patterns with a timeout.</p></div><div class="actions"><button class="btn" @onclick="AddRule">Add rule</button><button class="btn" @onclick="AddPreset">Add preset</button><button class="btn primary" @onclick="Save">Save changes</button></div></div>
+<NavigationLock ConfirmExternalNavigation="@IsDirty" OnBeforeInternalNavigation="ConfirmNavigation" />
+<div class="page-head"><div><h1>Rules and presets</h1><p class="lead">Rules are evaluated by order using bounded wildcards or <span class="mono">regex:</span> patterns with a timeout.</p></div><div class="actions">@if(IsDirty){<span class="badge warning">Unsaved changes</span>}<button class="btn" disabled="@saving" @onclick="AddRule">Add rule</button><button class="btn" disabled="@saving" @onclick="AddPreset">Add preset</button><button class="btn" disabled="@(!IsDirty || saving)" @onclick="Discard">Discard</button><button class="btn primary" disabled="@(!IsDirty || saving)" @onclick="Save">@(saving ? "Saving…" : "Save changes")</button></div></div>
 <NoticeBoard Severity="@messageClass" @bind-Message="message" />
 
 <div class="panel"><div class="panel-head"><div><h2>Routing rules</h2><span class="secondary-text">Each rule uses a responsive editor; lower order numbers run first.</span></div></div><div class="panel-body rule-list">
@@ -59,7 +60,10 @@
     private OperatorSettings settings = null!;
     private string message = "";
     private string messageClass = "";
-    protected override void OnInitialized() => settings = Coordinator.GetSettings();
+    private string savedFingerprint = "";
+    private bool saving;
+    private bool IsDirty => savedFingerprint.Length > 0 && OperatorSettingsDraft.Fingerprint(settings) != savedFingerprint;
+    protected override void OnInitialized() { settings = OperatorSettingsDraft.Copy(Coordinator.GetSettings()); MarkClean(); }
     private void AddRule() => settings.Rules.Add(new RoutingRuleProfile { Order = settings.Rules.Select(x => x.Order).DefaultIfEmpty(0).Max() + 10, PresetId = settings.Presets.First().Id });
     private void AddPreset() => settings.Presets.Add(new OutputPresetProfile { Id = UniqueIdGenerator.Next("preset", settings.Presets.Select(x => x.Id)), Name = "New preset" });
     private IOrderedEnumerable<DeckLinkPort> OrderedPorts() => Coordinator.Snapshot.Ports
@@ -77,5 +81,8 @@
         if (routeReferences > 0) { message = $"Preset '{preset.Name}' is used by {routeReferences} active or waiting route(s). Reassign or stop those routes first."; messageClass = "danger"; return; }
         if (await JS.InvokeAsync<bool>("confirm", $"Remove output preset '{preset.Name}'?")) settings.Presets.Remove(preset);
     }
-    private async Task Save() { try { var result = await Commands.SaveSettingsAsync(settings); settings = result.Settings; message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success"; } catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving rules and presets"); messageClass = "danger"; } }
+    private async Task Save() { if(saving) return; try { saving = true; var result = await Commands.SaveSettingsAsync(settings); settings = OperatorSettingsDraft.Copy(result.Settings); MarkClean(); message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success"; } catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving rules and presets"); messageClass = "danger"; } finally { saving = false; } }
+    private void MarkClean() => savedFingerprint = OperatorSettingsDraft.Fingerprint(settings);
+    private void Discard() { settings = OperatorSettingsDraft.Copy(Coordinator.GetSettings()); MarkClean(); message = "Unsaved rule and preset changes were discarded."; messageClass = "info"; }
+    private async Task ConfirmNavigation(LocationChangingContext context) { if(IsDirty && !await JS.InvokeAsync<bool>("confirm", "Discard unsaved rule and preset changes?")) context.PreventNavigation(); }
 }
