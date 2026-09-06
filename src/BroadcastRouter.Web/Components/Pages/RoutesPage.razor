@@ -3,12 +3,12 @@
 @using BroadcastRouter.Application
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
-@inject IJSRuntime JS
 @inject DeckLinkAssetCatalog AssetCatalog
 @inject OperatorErrorMessage OperatorErrors
 @implements IDisposable
 
 <PageTitle>Routes · BroadcastRouter</PageTitle>
+<ConfirmDialog @ref="confirmDialog" />
 <div class="page-head">
     <div><h1>Routes / Routing Matrix</h1><p class="lead">Every route acquires one atomic port lease before FFmpeg is allowed to start.</p></div>
     <AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@busy" @onclick='() => Run("rescan", "")'>Reconcile now</button><button class="btn danger" disabled="@busy" @onclick='() => Run("emergency-stop", "")'>Emergency stop</button></div></Authorized></AuthorizeView>
@@ -151,10 +151,10 @@
     private async Task Run(string action, string source)
     {
         if (busy) return;
-        if (action == "emergency-stop" && !await JS.InvokeAsync<bool>("confirm", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes. Continue?")) return;
+        if (action == "emergency-stop" && !await confirmDialog.ShowAsync("Emergency stop", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes.", "Stop all outputs")) return;
         var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source);
-        if (action == "enable-live-hold" && !await JS.InvokeAsync<bool>("confirm", "Disable automatic media recovery while Wowza last reports live? A frozen picture or muted audio may persist until you manually restart. Publisher-stop and process-exit recovery remain enabled.")) return;
-        if (action == "remove-assignment" && !await JS.InvokeAsync<bool>("confirm", "Remove this saved routing entry and release its output?")) return;
+        if (action == "enable-live-hold" && !await confirmDialog.ShowAsync("Disable media recovery", "A frozen picture or muted audio may persist until you manually restart while Wowza last reports live. Publisher-stop and process-exit recovery remain enabled.", "Disable recovery")) return;
+        if (action == "remove-assignment" && !await confirmDialog.ShowAsync("Remove saved assignment", "This removes the saved routing entry and releases its output for other streams.", "Remove assignment")) return;
         try
         {
             busy = true; error = ""; confirmation = "";
@@ -172,9 +172,6 @@
         if (busy) return;
         var port = SelectedPort(route);
         var preset = SelectedPreset(route);
-        var presetName = presets.FirstOrDefault(item => item.Id.Equals(preset, StringComparison.OrdinalIgnoreCase))?.Name ?? preset;
-        var portName = string.IsNullOrWhiteSpace(port) ? "Automatic" : snapshot.Ports.FirstOrDefault(item => item.StableId.Equals(port, StringComparison.OrdinalIgnoreCase)) is { } selected ? DeckLinkDisplayName.Full(selected) : port;
-        if (!await JS.InvokeAsync<bool>("confirm", $"Apply output '{portName}' and preset '{presetName}'? The current output will stop before the new assignment is reserved.")) return;
         try
         {
             busy = true;
@@ -198,6 +195,7 @@
     }
 
     public void Dispose() => Coordinator.Changed -= Changed;
+    private ConfirmDialog confirmDialog = null!;
     private bool IsWowzaSource(RuntimeRoute route) => snapshot.Sources.Any(source =>
         source.Identity.Value == route.SourceId && !source.Identity.ServerId.Equals("MANUAL", StringComparison.OrdinalIgnoreCase));
     private string RouteStatus(RuntimeRoute route)

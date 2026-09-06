@@ -3,10 +3,10 @@
 @rendermode InteractiveServer
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
-@inject IJSRuntime JS
 @inject OperatorErrorMessage OperatorErrors
 
 <PageTitle>Rules &amp; Presets · BroadcastRouter</PageTitle>
+<ConfirmDialog @ref="confirmDialog" />
 <NavigationLock ConfirmExternalNavigation="@IsDirty" OnBeforeInternalNavigation="ConfirmNavigation" />
 <div class="page-head"><div><h1>Rules and presets</h1><p class="lead">Rules are evaluated by order using bounded wildcards or <span class="mono">regex:</span> patterns with a timeout.</p></div><div class="actions">@if(IsDirty){<span class="badge warning">Unsaved changes</span>}<button class="btn" disabled="@saving" @onclick="AddRule">Add rule</button><button class="btn" disabled="@saving" @onclick="AddPreset">Add preset</button><button class="btn" disabled="@(!IsDirty || saving)" @onclick="Discard">Discard</button><button class="btn primary" disabled="@(!IsDirty || saving)" @onclick="Save">@(saving ? "Saving…" : "Save changes")</button></div></div>
 <NoticeBoard Severity="@messageClass" @bind-Message="message" />
@@ -72,17 +72,18 @@
         .ThenBy(DeckLinkDisplayName.Connector, StringComparer.OrdinalIgnoreCase);
     private bool IsMissingPort(string stableId) => !string.IsNullOrWhiteSpace(stableId) && !Coordinator.Snapshot.Ports.Any(port => port.IsOutputPort && port.StableId.Equals(stableId, StringComparison.OrdinalIgnoreCase));
     private static void SetScan(OutputPresetProfile preset, string? value) { if (OutputScanSelection.TryParse(value, out var interlaced)) preset.Interlaced = interlaced; }
-    private async Task RemoveRule(RoutingRuleProfile rule) { if (await JS.InvokeAsync<bool>("confirm", $"Remove routing rule '{rule.Name}'? Automatic assignments may change after save.")) settings.Rules.Remove(rule); }
+    private async Task RemoveRule(RoutingRuleProfile rule) { if (await confirmDialog.ShowAsync("Remove routing rule", $"Removing '{rule.Name}' may change automatic assignments after the settings are saved.", "Remove rule")) settings.Rules.Remove(rule); }
     private async Task RemovePreset(OutputPresetProfile preset)
     {
         var references = settings.Rules.Count(rule => rule.PresetId.Equals(preset.Id, StringComparison.OrdinalIgnoreCase));
         if (references > 0) { message = $"Preset '{preset.Name}' is referenced by {references} routing rule(s). Reassign or remove those rules first."; messageClass = "danger"; return; }
         var routeReferences = Coordinator.Snapshot.Routes.Count(route => route.State is not RouteState.Released and not RouteState.Disabled && route.PresetId.Equals(preset.Id, StringComparison.OrdinalIgnoreCase));
         if (routeReferences > 0) { message = $"Preset '{preset.Name}' is used by {routeReferences} active or waiting route(s). Reassign or stop those routes first."; messageClass = "danger"; return; }
-        if (await JS.InvokeAsync<bool>("confirm", $"Remove output preset '{preset.Name}'?")) settings.Presets.Remove(preset);
+        if (await confirmDialog.ShowAsync("Remove output preset", $"Remove output preset '{preset.Name}' from the pending settings?", "Remove preset")) settings.Presets.Remove(preset);
     }
     private async Task Save() { if(saving) return; try { saving = true; var result = await Commands.SaveSettingsAsync(settings); settings = OperatorSettingsDraft.Copy(result.Settings); MarkClean(); message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success"; } catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving rules and presets"); messageClass = "danger"; } finally { saving = false; } }
     private void MarkClean() => savedFingerprint = OperatorSettingsDraft.Fingerprint(settings);
     private void Discard() { settings = OperatorSettingsDraft.Copy(Coordinator.GetSettings()); MarkClean(); message = "Unsaved rule and preset changes were discarded."; messageClass = "info"; }
-    private async Task ConfirmNavigation(LocationChangingContext context) { if(IsDirty && !await JS.InvokeAsync<bool>("confirm", "Discard unsaved rule and preset changes?")) context.PreventNavigation(); }
+    private async Task ConfirmNavigation(LocationChangingContext context) { if(IsDirty && !await confirmDialog.ShowAsync("Discard unsaved changes", "Your unsaved rule and preset changes will be lost.", "Discard changes")) context.PreventNavigation(); }
+    private ConfirmDialog confirmDialog = null!;
 }

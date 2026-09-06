@@ -1,0 +1,59 @@
+@using System.Threading.Tasks
+
+@if (visible)
+{
+    <div class="dialog-scrim" aria-hidden="true"></div>
+    <dialog class="confirm-dialog" open aria-labelledby="@titleId" aria-describedby="@bodyId" @onkeydown="HandleKeyDown">
+        <h2 id="@titleId">@title</h2>
+        <p id="@bodyId">@body</p>
+        <div class="confirm-dialog-actions">
+            <button @ref="cancelButton" type="button" class="btn" autofocus @onclick="Cancel">Cancel</button>
+            <button @ref="confirmButton" type="button" class="btn @(danger ? "danger" : "primary")" @onclick="Confirm">@confirmLabel</button>
+        </div>
+    </dialog>
+}
+
+@code {
+    private readonly string titleId = $"confirm-title-{Guid.NewGuid():N}";
+    private readonly string bodyId = $"confirm-body-{Guid.NewGuid():N}";
+    private TaskCompletionSource<bool>? completion;
+    private ElementReference cancelButton;
+    private ElementReference confirmButton;
+    private bool visible;
+    private bool danger;
+    private string title = "Confirm action";
+    private string body = "";
+    private string confirmLabel = "Continue";
+
+    public async Task<bool> ShowAsync(string heading, string message, string actionLabel, bool isDanger = true)
+    {
+        completion?.TrySetResult(false);
+        title = heading;
+        body = message;
+        confirmLabel = actionLabel;
+        danger = isDanger;
+        visible = true;
+        completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await InvokeAsync(StateHasChanged);
+        await Task.Yield();
+        await cancelButton.FocusAsync();
+        return await completion.Task;
+    }
+
+    private void Confirm() => Close(true);
+    private void Cancel() => Close(false);
+    private void Close(bool result)
+    {
+        visible = false;
+        completion?.TrySetResult(result);
+        completion = null;
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape") { Cancel(); return; }
+        if (args.Key != "Tab") return;
+        if (args.ShiftKey) await confirmButton.FocusAsync();
+        else await cancelButton.FocusAsync();
+    }
+}

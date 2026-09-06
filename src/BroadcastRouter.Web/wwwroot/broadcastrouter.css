@@ -880,6 +880,11 @@ tr:hover td {
 .audit-state { min-width: 240px; white-space: normal; }
 .audit-reason { min-width: 260px; white-space: normal; }
 .settings-save-bar { position: sticky; z-index: 12; bottom: 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 9px; background: #111b2e; box-shadow: 0 8px 30px rgba(0, 0, 0, .34); }
+.dialog-scrim { position: fixed; z-index: 89; inset: 0; background: rgba(3, 8, 16, .76); }
+.confirm-dialog { position: fixed; z-index: 90; inset: 50% auto auto 50%; width: min(92vw, 520px); margin: 0; padding: 20px; transform: translate(-50%, -50%); border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 24px 70px rgba(0, 0, 0, .55); }
+.confirm-dialog h2 { margin: 0 0 10px; }
+.confirm-dialog p { margin: 0; color: #c7d3e2; line-height: 1.55; }
+.confirm-dialog-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 22px; }
 
 @media (max-width: 1050px) {
     .stats { grid-template-columns: repeat(2, 1fr); }

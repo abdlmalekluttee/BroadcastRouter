@@ -4,11 +4,11 @@
 @implements IDisposable
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
-@inject IJSRuntime JS
 @inject DeckLinkAssetCatalog AssetCatalog
 @inject OperatorErrorMessage OperatorErrors
 
 <PageTitle>Settings · BroadcastRouter</PageTitle>
+<ConfirmDialog @ref="confirmDialog" />
 <NavigationLock ConfirmExternalNavigation="@IsDirty" OnBeforeInternalNavigation="ConfirmNavigation" />
 <div class="page-head"><div><h1>Settings</h1><p class="lead">Persistent SQLite configuration, DPAPI credentials, media-tool validation, routing policy, and manual inputs.</p></div>@if(IsDirty){<span class="badge warning">Unsaved changes</span>}</div>
 <NoticeBoard Severity="@messageClass" @bind-Message="message" />
@@ -124,12 +124,11 @@
     {
         ValidateRetryDelays();
         if (retryDelaysError is not null) return;
-        if (SecurityChanged() && !await JS.InvokeAsync<bool>("confirm", "Changing bind, authentication, HTTPS, allowlist, or proxy trust can interrupt or lock out remote operators after restart. Save these security changes?")) return;
+        if (SecurityChanged() && !await confirmDialog.ShowAsync("Save security changes", "Changing bind address, authentication, HTTPS, client networks, or proxy trust can interrupt or lock out remote operators after the next restart.", "Save security settings")) return;
         var securityChanged = SecurityChanged();
         var newlyEnabledStandby = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort && value.StandbyEnabled && !originalOutputPorts.Contains(value.StableId)).ToArray();
-        if (newlyEnabledStandby.Length > 0 && !await JS.InvokeAsync<bool>("confirm", $"Saving will start an FFmpeg standby screen on {newlyEnabledStandby.Length} newly enabled output port(s) after Media Tools validation. Continue?")) return;
         saving = true;
-        try { settings.Routing.RetryDelaysSeconds = retryDelays.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(int.Parse).ToArray(); var result = await Commands.SaveSettingsAsync(settings); settings = OperatorSettingsDraft.Copy(result.Settings); retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); originalSecurity = CopySecurity(settings.Security); originalOutputPorts = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort).Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase); MarkClean(); message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Backend revision {result.ConfigurationRevision} confirmed." + (securityChanged ? " Host/bind/security changes require a restart; routing, output-port, and standby changes do not." : " No restart is required."); messageClass = "success"; }
+        try { settings.Routing.RetryDelaysSeconds = retryDelays.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(int.Parse).ToArray(); var result = await Commands.SaveSettingsAsync(settings); settings = OperatorSettingsDraft.Copy(result.Settings); retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); originalSecurity = CopySecurity(settings.Security); originalOutputPorts = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort).Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase); MarkClean(); message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Backend revision {result.ConfigurationRevision} confirmed." + (newlyEnabledStandby.Length > 0 ? $" {newlyEnabledStandby.Length} newly enabled standby screens are starting." : "") + (securityChanged ? " Host/bind/security changes require a restart; routing, output-port, and standby changes do not." : " No restart is required."); messageClass = "success"; }
         catch(Exception ex) { message = OperatorErrors.Describe(ex, "saving settings"); messageClass = "danger"; }
         finally { saving = false; }
     }
@@ -144,8 +143,9 @@
     private async Task Validate() { await Save(); if(messageClass == "success") { await Commands.ExecuteAsync("rescan"); message = "Validation and hardware rescan requested."; } }
     private void MarkClean() { savedFingerprint = OperatorSettingsDraft.Fingerprint(settings); savedRetryDelays = retryDelays; }
     private void Discard() { settings = OperatorSettingsDraft.Copy(Coordinator.GetSettings()); retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); retryDelaysError = null; originalSecurity = CopySecurity(settings.Security); originalOutputPorts = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort).Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase); MarkClean(); message = "Unsaved settings were discarded."; messageClass = "info"; }
-    private async Task ConfirmNavigation(LocationChangingContext context) { if(IsDirty && !await JS.InvokeAsync<bool>("confirm", "Discard unsaved settings?")) context.PreventNavigation(); }
-    private async Task RemoveManual(ManualSourceProfile source) { if (await JS.InvokeAsync<bool>("confirm", $"Remove manual source '{source.FriendlyName}' from the pending settings?")) settings.ManualSources.Remove(source); }
+    private async Task ConfirmNavigation(LocationChangingContext context) { if(IsDirty && !await confirmDialog.ShowAsync("Discard unsaved settings", "Every unsaved setting on this page will be lost.", "Discard settings")) context.PreventNavigation(); }
+    private async Task RemoveManual(ManualSourceProfile source) { if (await confirmDialog.ShowAsync("Remove manual source", $"Remove manual source '{source.FriendlyName}' from the pending settings?", "Remove source")) settings.ManualSources.Remove(source); }
+    private ConfirmDialog confirmDialog = null!;
     private bool SecurityChanged() => originalSecurity.BindAddress != settings.Security.BindAddress || originalSecurity.Port != settings.Security.Port
         || originalSecurity.RequireAuthentication != settings.Security.RequireAuthentication || originalSecurity.HttpsEnabled != settings.Security.HttpsEnabled
         || originalSecurity.AllowedNetworks != settings.Security.AllowedNetworks || originalSecurity.TrustedProxies != settings.Security.TrustedProxies
