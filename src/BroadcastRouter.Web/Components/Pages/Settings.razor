@@ -1,11 +1,11 @@
 @page "/settings"
 @attribute [Authorize(Roles = "Administrator")]
-@rendermode InteractiveServer
 @implements IDisposable
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject DeckLinkAssetCatalog AssetCatalog
 @inject OperatorErrorMessage OperatorErrors
+@inject NavigationManager Navigation
 
 <PageTitle>Settings · BroadcastRouter</PageTitle>
 <ConfirmDialog @ref="confirmDialog" />
@@ -143,7 +143,29 @@
     private async Task Validate() { await Save(); if(messageClass == "success") { await Commands.ExecuteAsync("rescan"); message = "Validation and hardware rescan requested."; } }
     private void MarkClean() { savedFingerprint = OperatorSettingsDraft.Fingerprint(settings); savedRetryDelays = retryDelays; }
     private void Discard() { settings = OperatorSettingsDraft.Copy(Coordinator.GetSettings()); retryDelays = string.Join(",", settings.Routing.RetryDelaysSeconds); retryDelaysError = null; originalSecurity = CopySecurity(settings.Security); originalOutputPorts = settings.DeckLinkPortOverrides.Where(value => value.IsOutputPort).Select(value => value.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase); MarkClean(); message = "Unsaved settings were discarded."; messageClass = "info"; }
-    private async Task ConfirmNavigation(LocationChangingContext context) { if(IsDirty && !await confirmDialog.ShowAsync("Discard unsaved settings", "Every unsaved setting on this page will be lost.", "Discard settings")) context.PreventNavigation(); }
+    private string? pendingNavigation;
+    private bool navigationApproved;
+    private Task ConfirmNavigation(LocationChangingContext context)
+    {
+        if (!IsDirty || navigationApproved) return Task.CompletedTask;
+        context.PreventNavigation();
+        if (pendingNavigation is null)
+        {
+            pendingNavigation = context.TargetLocation;
+            _ = InvokeAsync(ConfirmPendingNavigation);
+        }
+        return Task.CompletedTask;
+    }
+    private async Task ConfirmPendingNavigation()
+    {
+        var target = pendingNavigation;
+        if (target is not null && await confirmDialog.ShowAsync("Discard unsaved settings", "Every unsaved setting on this page will be lost.", "Discard settings"))
+        {
+            navigationApproved = true;
+            Navigation.NavigateTo(target);
+        }
+        pendingNavigation = null;
+    }
     private async Task RemoveManual(ManualSourceProfile source) { if (await confirmDialog.ShowAsync("Remove manual source", $"Remove manual source '{source.FriendlyName}' from the pending settings?", "Remove source")) settings.ManualSources.Remove(source); }
     private ConfirmDialog confirmDialog = null!;
     private bool SecurityChanged() => originalSecurity.BindAddress != settings.Security.BindAddress || originalSecurity.Port != settings.Security.Port

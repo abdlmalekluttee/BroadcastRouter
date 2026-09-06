@@ -94,6 +94,7 @@ a {
     display: flex;
     flex: 1;
     align-items: center;
+    justify-content: flex-start !important;
     gap: 12px;
     min-width: 0;
     margin: 0;
@@ -443,6 +444,7 @@ button:hover {
     color: #fff;
 }
 
+.br-nav-collapse .nav-link:focus-visible,
 .btn:focus-visible,
 button:focus-visible,
 input:focus-visible,
@@ -451,9 +453,9 @@ textarea:focus-visible,
 summary:focus-visible,
 a:focus-visible,
 [tabindex]:focus-visible {
-    outline: 2px solid var(--blue);
-    outline-offset: 2px;
-    box-shadow: 0 0 0 4px rgba(66, 153, 255, .25);
+    outline: 2px solid var(--blue) !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 0 4px rgba(66, 153, 255, .25) !important;
 }
 
 .btn.primary {
@@ -689,7 +691,7 @@ tr:hover td {
     background: #111c2e;
 }
 
-@media (min-width: 992px) {
+@media (min-width: 1051px) {
     .br-sidebar .navbar-toggler {
         display: none;
     }

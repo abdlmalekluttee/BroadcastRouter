@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.6.0 — 2026-09-06
+
+- Replace the stacked route editors with a source-by-output routing matrix grouped by physical DeckLink card, including sticky headers, a sticky source column, keyboard cell navigation, compact density, explicit state shapes, and a single responsive detail panel.
+- Consolidate the authored interface into one cache-busted stylesheet, remove decorative background effects and the icon-only navigation breakpoint, and keep the runtime environment plus On-air count visible down to 360 pixels.
+- Add source/route filters, bulk route actions, keyboard shortcuts, live-tail and virtualized diagnostics tables, actionable notices, field validation, scoped busy feedback, and instructional empty states.
+- Add accessible application dialogs for destructive actions, working unsaved-change protection on every settings editor, and 30-second undo actions for Emergency stop and saved-assignment removal.
+- Standardize operator copy, relative recency timestamps, state labels, focus indicators, headings, tap targets, and authorization feedback without changing routing, FFmpeg, discovery, persistence, or DeckLink behavior.
+- Verify the isolated simulation UI across all eight pages, six responsive widths, authenticated and unauthenticated sessions, 4/8/16-column and 0/5/30-source matrix layouts, keyboard traversal, failure messages, and simulation recovery controls.
+
 ## 1.5.29 — 2026-09-06
 
 - Add an administrator-only, per-stream **Hold while Wowza live** control in the routing matrix, off by default. Saving it immediately persists the setting and audit record atomically without restarting an output.

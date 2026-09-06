@@ -1,5 +1,4 @@
 @page "/routes"
-@rendermode InteractiveServer
 @using BroadcastRouter.Application
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
@@ -13,7 +12,7 @@
 <ConfirmDialog @ref="confirmDialog" />
 <div class="page-head">
     <div><h1>Routes / Routing Matrix</h1><p class="lead">Every route acquires one atomic port lease before FFmpeg is allowed to start.</p></div>
-    <AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@pageBusy" @onclick='() => Run("rescan", "")'>@(pageBusy ? "Reconciling…" : "Reconcile now")</button><button class="btn danger" disabled="@pageBusy" @onclick='() => Run("emergency-stop", "")'>@(pageBusy ? "Stopping…" : "Emergency stop")</button></div></Authorized></AuthorizeView>
+    <AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@pageBusy" @onclick='() => Run("rescan")'>@(pageBusy ? "Reconciling…" : "Reconcile now")</button><button class="btn danger" disabled="@pageBusy" @onclick='() => Run("emergency-stop")'>@(pageBusy ? "Stopping…" : "Emergency stop")</button></div></Authorized></AuthorizeView>
 </div>
 <NoticeBoard Severity="danger" @bind-Message="error" />
 <NoticeBoard Severity="success" @bind-Message="confirmation" />
@@ -73,20 +72,10 @@
     [SupplyParameterFromQuery(Name = "state")] public string? State { get; set; }
     private RouterSnapshot snapshot = null!;
     private IReadOnlyList<OutputPresetProfile> presets = [];
-    private readonly Dictionary<string, string> selectedPorts = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, string> selectedPresets = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, AssignmentMode> selectedModes = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, bool> reserveOffline = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, bool> allowTemporary = new(StringComparer.Ordinal);
-    private string selectedSource = "";
-    private string selectedPort = "";
-    private string selectedPreset = "";
-    private AssignmentMode selectedMode = AssignmentMode.Manual;
     private string error = "";
     private string confirmation = "";
     private bool pageBusy;
     private DateTimeOffset? emergencyUndoExpiresAt;
-    private readonly HashSet<string> busySourceIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> selectedRouteIds = new(StringComparer.Ordinal);
     private string? detailSourceId;
     private string? detailPortId;
@@ -98,7 +87,6 @@
     private long settingsRevision = -1;
     private string StateFilter => string.IsNullOrWhiteSpace(State) ? "all" : State.ToLowerInvariant();
     private static readonly (string Value, string Label)[] RouteFilterOptions = [("all", "All"), ("running", "Running"), ("waiting", "Waiting"), ("failed", "Failed"), ("offline", "Offline"), ("unassigned", "Unassigned")];
-    private IReadOnlyList<RuntimeRoute> FilteredRoutes => snapshot.Routes.Where(route => string.IsNullOrWhiteSpace(Query) || route.SourceName.Contains(Query, StringComparison.OrdinalIgnoreCase) || route.SourceId.Contains(Query, StringComparison.OrdinalIgnoreCase)).Where(MatchesState).OrderBy(route => route.SourceName, StringComparer.OrdinalIgnoreCase).ToArray();
     private IReadOnlyList<DeckLinkPort> MatrixPorts => OrderedPorts().ToArray();
     private IReadOnlyList<CardView> MatrixCardGroups => MatrixPorts.GroupBy(port => port.DeviceGroupId ?? $"legacy-card-{port.CardIndex}", StringComparer.OrdinalIgnoreCase).Select(group => new CardView(group.Key, group.ToArray())).ToArray();
     private IReadOnlyList<MatrixRow> MatrixRows
@@ -135,22 +123,8 @@
         var settings = Coordinator.GetSettings();
         settingsRevision = settings.ConfigurationRevision;
         presets = settings.Presets;
-        if (presets.Count > 0 && !presets.Any(preset => preset.Id.Equals(selectedPreset, StringComparison.OrdinalIgnoreCase))) selectedPreset = presets[0].Id;
     }
 
-    private string SelectedPort(RuntimeRoute route) => selectedPorts.TryGetValue(route.SourceId, out var value) ? value : route.DesiredPortId ?? route.PortId ?? "";
-    private string SelectedPreset(RuntimeRoute route) => selectedPresets.TryGetValue(route.SourceId, out var value) ? value : route.PresetId;
-    private AssignmentMode SelectedMode(RuntimeRoute route) => selectedModes.TryGetValue(route.SourceId, out var value) ? value : route.AssignmentMode == AssignmentMode.Preconfigured ? AssignmentMode.Preconfigured : AssignmentMode.Manual;
-    private bool ReserveOffline(RuntimeRoute route) => reserveOffline.TryGetValue(route.SourceId, out var value) ? value : route.ReserveWhileOffline;
-    private bool AllowTemporary(RuntimeRoute route) => allowTemporary.TryGetValue(route.SourceId, out var value) ? value : route.AllowTemporaryUse;
-    private string RoutePortName(RuntimeRoute route) => (route.DesiredPortId ?? route.PortId) is { Length: > 0 } portId
-        && snapshot.Ports.FirstOrDefault(port => port.StableId.Equals(portId, StringComparison.OrdinalIgnoreCase)) is { } port
-        ? DeckLinkDisplayName.Full(port) : route.PortName ?? "Unassigned";
-    private void SelectPort(string sourceId, string? value) => selectedPorts[sourceId] = value?.Trim() ?? "";
-    private void SelectPreset(string sourceId, string? value) => selectedPresets[sourceId] = value?.Trim() ?? "";
-    private void SelectMode(string sourceId, string? value) => selectedModes[sourceId] = Enum.TryParse<AssignmentMode>(value, out var mode) ? mode : AssignmentMode.Manual;
-    private void SetReserveOffline(string sourceId, object? value) => reserveOffline[sourceId] = value is bool selected && selected;
-    private void SetAllowTemporary(string sourceId, object? value) => allowTemporary[sourceId] = value is bool selected && selected;
     private IOrderedEnumerable<DeckLinkPort> OrderedPorts() => snapshot.Ports
         .Where(port => port.IsOutputPort)
         .OrderBy(DeckLinkDisplayName.Card, StringComparer.OrdinalIgnoreCase)
@@ -161,8 +135,6 @@
         .Select(group => new CardView(group.Key, group.OrderBy(port => port.SubdeviceIndex).ToArray()))
         .OrderBy(card => DeckLinkDisplayName.Card(card.Ports[0]), StringComparer.OrdinalIgnoreCase)
         .ToArray();
-    private bool IsUnavailableOutput(string stableId) => !string.IsNullOrWhiteSpace(stableId)
-        && !snapshot.Ports.Any(port => port.IsOutputPort && port.StableId.Equals(stableId, StringComparison.OrdinalIgnoreCase));
     private bool MatchesState(RuntimeRoute route) => StateFilter switch { "running" => route.State == RouteState.Running, "waiting" => route.State == RouteState.WaitingForStream, "failed" => route.State == RouteState.Failed, "offline" => RouteStatus(route) == "Offline", "unassigned" => string.IsNullOrWhiteSpace(route.DesiredPortId ?? route.PortId), _ => true };
     private void UpdateQuery(ChangeEventArgs args) { Query = args.Value?.ToString(); UpdateFilterAddress(); }
     private void SetStateFilter(string value) { State = value == "all" ? null : value; UpdateFilterAddress(); }
@@ -243,67 +215,32 @@
         await JS.InvokeVoidAsync("broadcastRouter.focusMatrixCell", nextRow, nextColumn);
     }
 
-    private async Task Run(string action, string source)
+    private async Task Run(string action)
     {
-        var isPageCommand = string.IsNullOrWhiteSpace(source);
-        if (isPageCommand ? pageBusy : IsBusy(source)) return;
+        if (pageBusy) return;
         if (action == "emergency-stop" && !await confirmDialog.ShowAsync("Emergency stop", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes.", "Stop all outputs")) return;
-        var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source);
-        if (action == "enable-live-hold" && !await confirmDialog.ShowAsync("Disable media recovery", "A frozen picture or muted audio may persist until you manually restart while Wowza last reports live. Publisher-stop and process-exit recovery remain enabled.", "Disable recovery")) return;
-        if (action == "remove-assignment" && !await confirmDialog.ShowAsync("Remove saved assignment", "This removes the saved routing entry and releases its output for other streams.", "Remove assignment")) return;
         try
         {
-            if (isPageCommand) pageBusy = true; else busySourceIds.Add(source);
+            pageBusy = true;
             error = ""; confirmation = "";
-            await Commands.ExecuteAsync(action, string.IsNullOrWhiteSpace(source) ? null : source);
+            await Commands.ExecuteAsync(action);
             snapshot = Coordinator.Snapshot;
             if (action == "emergency-stop") emergencyUndoExpiresAt = DateTimeOffset.UtcNow.AddSeconds(30);
             if (action == "clear-emergency") emergencyUndoExpiresAt = null;
-            if (action is "enable-live-hold" or "disable-live-hold")
-                confirmation = "Recovery setting saved and applied.";
+            if (action == "rescan") confirmation = "Reconciliation complete.";
         }
         catch (Exception ex) { error = OperatorErrors.Describe(ex, "the route command"); }
-        finally { if (isPageCommand) pageBusy = false; else busySourceIds.Remove(source); }
+        finally { pageBusy = false; }
     }
 
     private async Task UndoEmergencyStop()
     {
         if (pageBusy || emergencyUndoExpiresAt is null || emergencyUndoExpiresAt <= DateTimeOffset.UtcNow) return;
-        await Run("clear-emergency", "");
-    }
-
-    private async Task ApplyAssignment(RuntimeRoute route)
-    {
-        if (IsBusy(route.SourceId)) return;
-        var port = SelectedPort(route);
-        var preset = SelectedPreset(route);
-        try
-        {
-            busySourceIds.Add(route.SourceId);
-            error = "";
-            await Commands.ExecuteAsync("save-assignment", route.SourceId, port, preset, SelectedMode(route),
-                ReserveOffline(route), AllowTemporary(route));
-            selectedPorts.Remove(route.SourceId);
-            selectedPresets.Remove(route.SourceId);
-        }
-        catch (Exception ex) { error = OperatorErrors.Describe(ex, "saving the route assignment"); }
-        finally { busySourceIds.Remove(route.SourceId); }
-    }
-
-    private async Task CreateRoute()
-    {
-        if (pageBusy) return;
-        try { pageBusy = true; error = ""; await Commands.ExecuteAsync("save-assignment", selectedSource, selectedPort, selectedPreset,
-            selectedMode, reserveWhileOffline: true, allowTemporaryUse: false); }
-        catch (Exception ex) { error = OperatorErrors.Describe(ex, "creating the route"); }
-        finally { pageBusy = false; }
+        await Run("clear-emergency");
     }
 
     public void Dispose() => Coordinator.Changed -= Changed;
     private ConfirmDialog confirmDialog = null!;
-    private bool IsBusy(string sourceId) => pageBusy || busySourceIds.Contains(sourceId);
-    private bool IsWowzaSource(RuntimeRoute route) => snapshot.Sources.Any(source =>
-        source.Identity.Value == route.SourceId && !source.Identity.ServerId.Equals("MANUAL", StringComparison.OrdinalIgnoreCase));
     private string RouteStatus(RuntimeRoute route)
     {
         var source = snapshot.Sources.FirstOrDefault(value => value.Identity.Value == route.SourceId);
@@ -312,21 +249,6 @@
         if (source is null || source.State is SourceState.PublisherDisconnected or SourceState.RtspUnavailable or SourceState.Disabled) return "Offline";
         return route.State.ToString();
     }
-    private static string AssignmentStatus(RuntimeRoute route) => route.AssignmentMode switch
-    {
-        AssignmentMode.Preconfigured or AssignmentMode.Fixed or AssignmentMode.Rule => "Preconfigured",
-        AssignmentMode.Manual => "Manually assigned",
-        AssignmentMode.Automatic => "Automatically assigned",
-        _ => "Unassigned"
-    };
-    private static string AssignmentBadgeClass(RuntimeRoute route) => route switch
-    {
-        { FailureCategory: "RoutingConflict" } => "danger",
-        { AssignmentMode: AssignmentMode.Preconfigured or AssignmentMode.Fixed or AssignmentMode.Rule } => "preconfigured",
-        { AssignmentMode: AssignmentMode.Manual } => "manual",
-        { AssignmentMode: AssignmentMode.Automatic } => "automatic",
-        _ => "unassigned"
-    };
     private sealed record CardView(string Key, IReadOnlyList<DeckLinkPort> Ports);
     private sealed record MatrixRow(string Id, string Name, DiscoveredSource? Source, RuntimeRoute? Route);
 }

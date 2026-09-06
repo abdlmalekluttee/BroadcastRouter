@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Production Wowza-to-Blackmagic DeckLink routing control for Windows.</strong></p>
 
-The production operator interface uses locally bundled [Tabler](https://github.com/tabler/tabler) assets. Routing, persistence, process supervision, Wowza, FFmpeg, and DeckLink operation remain server-owned and continue when the browser is closed.
+The production operator interface uses locally bundled [Tabler](https://github.com/tabler/tabler) assets. Its source-by-output matrix, filters, keyboard controls, visible environment state, guarded settings editors, and reversible destructive actions are designed for fast control-room operation. Routing, persistence, process supervision, Wowza, FFmpeg, and DeckLink operation remain server-owned and continue when the browser is closed.
 
 ### Optional publisher-live recovery hold
 
@@ -35,7 +35,7 @@ BroadcastRouter is a self-contained .NET 8 Blazor Server application that invent
 - optional manifest-driven DeckLink product and connector visuals, loaded from an operator-supplied local asset pack without making images part of routing identity;
 - production-safe defaults: loopback binding, simulation disabled, and hardware starts blocked until validation passes;
 - SQLite persistence, DPAPI-protected Wowza credentials, structured redacted logs, minimal health checks, and sanitized diagnostics that never embed the production database;
-- a responsive dark operator UI for servers, sources, outputs, routes, rules, presets, logs, and settings;
+- a responsive dark operator UI for servers, sources, outputs, routes, rules, presets, logs, and settings, including a physical-card-grouped routing matrix, filters, bulk controls, keyboard shortcuts, and 30-second undo for emergency stop and assignment removal;
 - saved output-preset selection for manual route creation and confirmed route reassignment;
 - an administrator-controlled 720×450 embedded browser preview with confidence audio, a real VU overlay, and live process statistics;
 - self-contained Windows releases and a credential-aware automatic Windows Service installer with crash recovery;
@@ -57,10 +57,10 @@ FFmpeg, Blackmagic Desktop Video, and Wowza are not bundled. Their licenses and 
 ## Quick start
 
 1. Download the latest `BroadcastRouter-production-win-x64-*.zip` from [Releases](https://github.com/abdlmalekluttee/BroadcastRouter/releases).
-2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.5.25`.
+2. Extract it to a versioned directory such as `C:\BroadcastRouter\1.6.0`.
 3. Run `BroadcastRouter.Server.exe` once as the dedicated Windows broadcast account to complete configuration and hardware validation.
 4. Open `http://127.0.0.1:5080`.
-5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Validate / rescan**.
+5. Under **Settings**, select the DeckLink-enabled `ffmpeg.exe` and matching `ffprobe.exe`, then run **Save and validate**.
 6. Under **Wowza Servers**, configure the REST URL, credentials, RTSP host/port, applications, and instances. Test the connection and save.
 7. Mark only the intended SDI connectors as **Output ports**, configure each standby screen, and verify the Windows clock is synchronized to NTP.
 8. Prepare preconfigured/manual routes for active or offline streams, then enable automatic routing for unassigned active streams.
@@ -128,7 +128,7 @@ dotnet run --project .\src\BroadcastRouter.Web\BroadcastRouter.Web.csproj --conf
 Create a clean self-contained release:
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Version 1.5.1
+.\scripts\Publish-Release.ps1 -Version 1.6.0
 ```
 
 The publisher removes build-path PDBs and runs `scripts\Test-ReleasePrivacy.ps1` before creating the archive. Packaging fails if it finds a database, diagnostics/log artifact, credential-bearing URL, user-profile path, private network address, private key, or common service token.

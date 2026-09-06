@@ -4,6 +4,8 @@
 <PageTitle>Access denied · BroadcastRouter</PageTitle>
 <div class="empty-state access-denied">
     <h1>Administrator access required</h1>
-    <p>This page changes protected broadcast configuration. Your signed-in account does not have the Administrator role.</p>
+    <AuthorizeView Context="authenticationState"><Authorized>
+        <p>This page requires the Administrator role. You are signed in as @authenticationState.User.Identity?.Name (@(authenticationState.User.IsInRole("Operator") ? "Operator" : "non-administrator")).</p>
+    </Authorized></AuthorizeView>
     <a class="btn" href="/">Return to dashboard</a>
 </div>

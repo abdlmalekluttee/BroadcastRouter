@@ -1,9 +1,9 @@
 @page "/wowza"
 @attribute [Authorize(Roles = "Administrator")]
-@rendermode InteractiveServer
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject OperatorErrorMessage OperatorErrors
+@inject NavigationManager Navigation
 
 <PageTitle>Wowza Servers · BroadcastRouter</PageTitle>
 <ConfirmDialog @ref="confirmDialog" />
@@ -73,6 +73,28 @@
     }
     private void MarkClean() => savedFingerprint = OperatorSettingsDraft.Fingerprint(settings);
     private void Discard() { settings = OperatorSettingsDraft.Copy(Coordinator.GetSettings()); passwords.Clear(); MarkClean(); message = "Unsaved server changes were discarded."; messageClass = "info"; }
-    private async Task ConfirmNavigation(LocationChangingContext context) { if(IsDirty && !await confirmDialog.ShowAsync("Discard unsaved changes", "Your unsaved Wowza server changes will be lost.", "Discard changes")) context.PreventNavigation(); }
+    private string? pendingNavigation;
+    private bool navigationApproved;
+    private Task ConfirmNavigation(LocationChangingContext context)
+    {
+        if (!IsDirty || navigationApproved) return Task.CompletedTask;
+        context.PreventNavigation();
+        if (pendingNavigation is null)
+        {
+            pendingNavigation = context.TargetLocation;
+            _ = InvokeAsync(ConfirmPendingNavigation);
+        }
+        return Task.CompletedTask;
+    }
+    private async Task ConfirmPendingNavigation()
+    {
+        var target = pendingNavigation;
+        if (target is not null && await confirmDialog.ShowAsync("Discard unsaved changes", "Your unsaved Wowza server changes will be lost.", "Discard changes"))
+        {
+            navigationApproved = true;
+            Navigation.NavigateTo(target);
+        }
+        pendingNavigation = null;
+    }
     private ConfirmDialog confirmDialog = null!;
 }

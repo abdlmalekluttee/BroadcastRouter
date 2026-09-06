@@ -1,9 +1,9 @@
 @page "/rules"
 @attribute [Authorize(Roles = "Administrator")]
-@rendermode InteractiveServer
 @inject RouterCoordinator Coordinator
 @inject AuthorizedRouterCommands Commands
 @inject OperatorErrorMessage OperatorErrors
+@inject NavigationManager Navigation
 
 <PageTitle>Rules &amp; Presets · BroadcastRouter</PageTitle>
 <ConfirmDialog @ref="confirmDialog" />
@@ -85,6 +85,28 @@
     private async Task Save() { if(saving) return; try { saving = true; var result = await Commands.SaveSettingsAsync(settings); settings = OperatorSettingsDraft.Copy(result.Settings); MarkClean(); message = "Rules and presets saved."; messageTitle = $"Backend revision {result.ConfigurationRevision}"; messageClass = "success"; } catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving rules and presets"); messageTitle = ""; messageClass = "danger"; } finally { saving = false; } }
     private void MarkClean() => savedFingerprint = OperatorSettingsDraft.Fingerprint(settings);
     private void Discard() { settings = OperatorSettingsDraft.Copy(Coordinator.GetSettings()); MarkClean(); message = "Unsaved rule and preset changes were discarded."; messageClass = "info"; }
-    private async Task ConfirmNavigation(LocationChangingContext context) { if(IsDirty && !await confirmDialog.ShowAsync("Discard unsaved changes", "Your unsaved rule and preset changes will be lost.", "Discard changes")) context.PreventNavigation(); }
+    private string? pendingNavigation;
+    private bool navigationApproved;
+    private Task ConfirmNavigation(LocationChangingContext context)
+    {
+        if (!IsDirty || navigationApproved) return Task.CompletedTask;
+        context.PreventNavigation();
+        if (pendingNavigation is null)
+        {
+            pendingNavigation = context.TargetLocation;
+            _ = InvokeAsync(ConfirmPendingNavigation);
+        }
+        return Task.CompletedTask;
+    }
+    private async Task ConfirmPendingNavigation()
+    {
+        var target = pendingNavigation;
+        if (target is not null && await confirmDialog.ShowAsync("Discard unsaved changes", "Your unsaved rule and preset changes will be lost.", "Discard changes"))
+        {
+            navigationApproved = true;
+            Navigation.NavigateTo(target);
+        }
+        pendingNavigation = null;
+    }
     private ConfirmDialog confirmDialog = null!;
 }

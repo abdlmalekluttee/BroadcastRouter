@@ -328,3 +328,9 @@ Current 1.5.25 production results: Release restore/build passed with 0 warnings/
 2. Add a full authenticated operator/admin integration matrix through the deployment reverse proxy.
 3. Consider decomposing `RouterCoordinator` only after hardware validation establishes stable operational boundaries.
 4. Complete physical SDI picture/audio observation and an 8–24 hour multi-port soak before declaring full broadcast certification.
+
+## 1.6.0 GUI remediation addendum
+
+The twelve presentation-layer work packages from the supplied GUI remediation brief are complete. The operator surface now uses one authored stylesheet, retains runtime/On-air state at every breakpoint, provides actionable notices and working dirty-edit guards, replaces stacked route cards with a keyboard-accessible source-by-output matrix, and offers 30-second undo for Emergency stop and assignment removal. No routing, media, hardware, coordinator, or persistence behavior was changed.
+
+Release verification passed with zero build warnings/errors, 130/130 regressions, 76/76 unauthenticated simulation-browser checks, 16/16 authenticated checks, and full keyboard traversal of all enabled controls on all eight pages. Responsive checks covered 360–1920 CSS pixels; matrix layout fixtures covered 4/8/16 columns and 0/5/30 sources. See `docs/GUI-REMEDIATION-REPORT.md` for per-package files, evidence, and limitations.
