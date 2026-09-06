@@ -1,13 +1,17 @@
 @page "/login"
 @attribute [AllowAnonymous]
-@inject NavigationManager Navigation
 <PageTitle>Sign in · BroadcastRouter</PageTitle>
 <div class="empty-state">
     <div class="card login-card">
         <h1>Sign in</h1><p class="lead">Use the administrator or read-only operator account configured on this server.</p>
         @if (Failed == 1)
         {
-            <NoticeBoard Severity="danger" Message="That user name or password was not accepted. Check the account configured in BROADCASTROUTER_ADMIN_PASSWORD or BROADCASTROUTER_OPERATOR_PASSWORD on this server." />
+            <div class="notice-slot" aria-live="off">
+                <div class="notice danger" role="alert">
+                    <div class="notice-content"><span>That user name or password was not accepted. Check the account configured in BROADCASTROUTER_ADMIN_PASSWORD or BROADCASTROUTER_OPERATOR_PASSWORD on this server.</span></div>
+                    <button type="button" class="btn small notice-dismiss" aria-label="Dismiss" data-dismiss-notice>Dismiss</button>
+                </div>
+            </div>
         }
         <form method="post" action="/auth/login">
             <AntiforgeryToken />

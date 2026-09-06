@@ -44,4 +44,9 @@
             timer = setTimeout(() => pendingG = false, 1200);
         }
     });
+
+    document.addEventListener('click', event => {
+        const dismiss = event.target.closest('[data-dismiss-notice]');
+        if (dismiss) dismiss.closest('.notice-slot')?.remove();
+    });
 })();

@@ -12,10 +12,10 @@
     <link rel="icon" type="image/png" sizes="32x32" href="images/broadcastrouter-logo-32.png" />
     <link rel="apple-touch-icon" href="images/broadcastrouter-logo-192.png" />
     <link rel="manifest" href="site.webmanifest" />
-    <HeadOutlet @rendermode="InteractiveServer" />
+    <HeadOutlet @rendermode="PageRenderMode" />
 </head>
 <body>
-    <Routes @rendermode="InteractiveServer" />
+    <Routes @rendermode="PageRenderMode" />
     <script src="vendor/tabler/1.4.0/js/tabler.min.js"></script>
     <script src="@($"broadcastrouter.js?v={AssetVersion}")"></script>
     <script src="_framework/blazor.web.js"></script>
@@ -23,5 +23,11 @@
 </html>
 
 @code {
-    private static string AssetVersion => typeof(App).Assembly.GetName().Version?.ToString(3) ?? "1";
+    [CascadingParameter] private HttpContext HttpContext { get; set; } = default!;
+    private static string AssetVersion => typeof(App).Assembly.GetName().Version?.ToString(4) ?? "1";
+    private IComponentRenderMode? PageRenderMode =>
+        HttpContext.Request.Path.StartsWithSegments("/login", StringComparison.OrdinalIgnoreCase)
+        || HttpContext.Request.Path.StartsWithSegments("/error", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : InteractiveServer;
 }

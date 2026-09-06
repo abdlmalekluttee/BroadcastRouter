@@ -76,6 +76,7 @@ var tests = new (string Name, Action Body)[]
     ("Critical auxiliary loops restart after faults", CriticalAuxiliaryLoopsRestartAfterFaults),
     ("Coordinator watchdog is registered and health-aware", CoordinatorWatchdogIsRegisteredAndHealthAware),
     ("Health requests use cached database integrity", HealthRequestsUseCachedDatabaseIntegrity),
+    ("Login bootstrap is public without exposing protected endpoints", LoginBootstrapIsNarrowlyAnonymous),
     ("Transient media validation retains the last confirmed state", TransientMediaValidationRetainsLastConfirmedState),
     ("DeckLink reference failures use bounded backoff", DeckLinkReferenceFailuresUseBoundedBackoff),
     ("Unchanged DeckLink rediscovery is not audited", UnchangedDeckLinkRediscoveryIsNotAudited),
@@ -914,6 +915,27 @@ static void HealthRequestsUseCachedDatabaseIntegrity()
     True(program.Contains("GetRequiredService<DatabaseIntegrityMonitor>().RefreshAsync()", StringComparison.Ordinal));
     True(monitor.Contains("TimeSpan.FromMinutes(1)", StringComparison.Ordinal));
     True(monitor.Contains("BackgroundService", StringComparison.Ordinal));
+}
+
+static void LoginBootstrapIsNarrowlyAnonymous()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Program.cs"));
+    var app = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Components", "App.razor"));
+    var login = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "Components", "Pages", "Login.razor"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "BroadcastRouter.Web", "wwwroot", "broadcastrouter.js"));
+    var routing = program.IndexOf("app.UseRouting();", StringComparison.Ordinal);
+    var authorization = program.IndexOf("app.UseAuthorization();", StringComparison.Ordinal);
+    var bootstrap = program.IndexOf("context.Request.Path.Equals(\"/_framework/blazor.web.js\"", StringComparison.Ordinal);
+    True(routing >= 0 && bootstrap > routing && authorization > bootstrap);
+    True(program.Contains("new AllowAnonymousAttribute()", StringComparison.Ordinal));
+    True(!program.Contains("StartsWithSegments(\"/_framework\"", StringComparison.Ordinal));
+    True(!program.Contains("MapRazorComponents<App>().AddInteractiveServerRenderMode().AllowAnonymous", StringComparison.Ordinal));
+    True(program.Contains("app.MapHub<StatusHub>(\"/hubs/status\").RequireAuthorization()", StringComparison.Ordinal));
+    True(app.Contains("HttpContext.Request.Path.StartsWithSegments(\"/login\"", StringComparison.Ordinal));
+    True(app.Contains("? null", StringComparison.Ordinal));
+    True(login.Contains("data-dismiss-notice", StringComparison.Ordinal));
+    True(script.Contains("[data-dismiss-notice]", StringComparison.Ordinal));
 }
 
 static void DeckLinkIdentityPollingIsIsolatedAndBounded()

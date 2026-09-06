@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.6.1 — 2026-09-07
+
+- Permit anonymous retrieval of only the immutable Blazor bootstrap script, and render public login/error routes without starting an unauthorized server circuit, preventing authentication redirects from returning HTML to JavaScript loaders.
+- Keep failed-login feedback dismissible through the existing static client script while the login form remains a normal antiforgery-protected server post.
+- Keep every application page, SignalR endpoint, preview, diagnostics package, and DeckLink hardware asset under the existing authentication and authorization policies.
+- Add a regression guard for middleware order and the exact-path authorization exception; verify unauthenticated bootstrap delivery, authenticated page access, and login-page interactivity.
+
 ## 1.6.0 — 2026-09-06
 
 - Replace the stacked route editors with a source-by-output routing matrix grouped by physical DeckLink card, including sticky headers, a sticky source column, keyboard cell navigation, compact density, explicit state shapes, and a single responsive detail panel.

@@ -166,6 +166,22 @@ app.Use(async (context, next) =>
 });
 app.UseStaticFiles();
 app.UseRouting();
+app.Use(async (context, next) =>
+{
+    // The login page is interactive, so its bootstrap must load before a cookie exists.
+    // Add anonymous metadata only to the immutable framework bootstrap asset; application
+    // pages, the SignalR endpoint, previews, diagnostics, and hardware assets stay protected.
+    if (context.Request.Path.Equals("/_framework/blazor.web.js", StringComparison.OrdinalIgnoreCase)
+        && context.GetEndpoint() is { } endpoint
+        && endpoint.Metadata.GetMetadata<IAllowAnonymous>() is null)
+    {
+        var metadata = endpoint.Metadata.ToList();
+        metadata.Add(new AllowAnonymousAttribute());
+        context.SetEndpoint(new Endpoint(endpoint.RequestDelegate,
+            new EndpointMetadataCollection(metadata), endpoint.DisplayName));
+    }
+    await next();
+});
 app.UseRateLimiter();
 app.UseAntiforgery();
 app.UseAuthentication();
