@@ -64,7 +64,7 @@
         <td class="mono" title="@Sanitize(source.RtspUri)">@Sanitize(source.RtspUri)</td>
         <td>@FormatVideo(source.Media)</td>
         <td>@(source.Media?.AudioCodec is null ? "None" : $"{source.Media.AudioCodec} · {source.Media.AudioSampleRate} Hz · {source.Media.AudioChannels} ch")</td>
-        <td><div class="source-status-stack"><BroadcastRouter.Web.Components.Shared.StateBadge Value="SourceAvailability(source)" />@if (route?.State == RouteState.WaitingForStream) { <span class="badge warning">Waiting for stream</span> }<span class="badge @AssignmentBadgeClass(route)">@SourceAssignment(route)</span></div></td><td>@source.Priority</td><td>@source.LastObservedAt?.ToLocalTime().ToString("HH:mm:ss")</td>
+        <td><div class="source-status-stack"><BroadcastRouter.Web.Components.Shared.StateBadge Value="SourceAvailability(source)" />@if (route?.State == RouteState.WaitingForStream) { <span class="badge warning">Waiting for stream</span> }<span class="badge @AssignmentBadgeClass(route)">@SourceAssignment(route)</span></div></td><td>@source.Priority</td><td title="@source.LastObservedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")">@OperatorTime.Relative(source.LastObservedAt)</td>
         <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions">
             @if (routeAction == SourceRouteActionKind.View)
             {
@@ -142,8 +142,7 @@
             commandMessage = "Source discovery request received by the server…";
             await Commands.ExecuteAsync("refresh-sources");
             snapshot = Coordinator.Snapshot;
-            commandMessage = $"Source discovery completed and confirmed by the server at {snapshot.UpdatedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. "
-                + $"{snapshot.Sources.Count} incoming stream record(s) are visible.";
+            commandMessage = $"Source discovery completed. {snapshot.Sources.Count} incoming {(snapshot.Sources.Count == 1 ? "stream is" : "streams are")} visible.";
         }
         catch (Exception ex) { error = OperatorErrors.Describe(ex, "source discovery"); commandMessage = ""; }
         finally { discoveryBusy = false; }

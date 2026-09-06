@@ -9,7 +9,7 @@
 <ConfirmDialog @ref="confirmDialog" />
 <NavigationLock ConfirmExternalNavigation="@IsDirty" OnBeforeInternalNavigation="ConfirmNavigation" />
 <div class="page-head"><div><h1>Wowza Servers</h1><p class="lead">Supported management API discovery only; BroadcastRouter never scans the network.</p></div><div class="actions">@if(IsDirty){<span class="badge warning">Unsaved changes</span>}<button class="btn" disabled="@saving" @onclick="Add">Add server</button><button class="btn" disabled="@(!IsDirty || saving)" @onclick="Discard">Discard</button><button class="btn primary" disabled="@(!IsDirty || saving)" @onclick="Save">@(saving ? "Saving…" : "Save all")</button></div></div>
-<NoticeBoard Severity="@messageClass" @bind-Message="message" />
+<NoticeBoard Severity="@messageClass" Title="@messageTitle" @bind-Message="message" />
 
 @foreach (var server in settings.WowzaServers)
 {
@@ -33,7 +33,7 @@
             <div class="form-group"><label>Connection timeout (seconds)</label><InputNumber aria-label="Connection timeout seconds" @bind-Value="server.ConnectionTimeoutSeconds" /></div>
             <div class="form-group wide"><label>RTSP URL template</label><InputText aria-label="RTSP URL template" @bind-Value="server.RtspUrlTemplate" /><span class="secondary-text">Tokens: {wowza-host}, {rtsp-port}, {application}, {application-instance}, {stream-name}, {server-id}</span></div>
         </div>
-        @if (health is not null) { <div class="notice server-health @(health.Reachable && health.Authenticated ? "success" : "danger")">@health.Summary · @health.ActiveStreamCount active streams · checked @health.CheckedAt.ToLocalTime().ToString("HH:mm:ss")</div> }
+        @if (health is not null) { <div class="notice server-health @(health.Reachable && health.Authenticated ? "success" : "danger")">@health.Summary · @health.ActiveStreamCount @(health.ActiveStreamCount == 1 ? "active stream" : "active streams") · checked @OperatorTime.Relative(health.CheckedAt)</div> }
         </div>
     </div>
 }
@@ -44,6 +44,7 @@
     private readonly Dictionary<WowzaServerProfile, string> passwords = new();
     private string message = "";
     private string messageClass = "";
+    private string messageTitle = "";
     private string savedFingerprint = "";
     private bool saving;
     private bool IsDirty => savedFingerprint.Length > 0 && (OperatorSettingsDraft.Fingerprint(settings) != savedFingerprint || passwords.Values.Any(value => !string.IsNullOrEmpty(value)));
@@ -58,11 +59,11 @@
         {
             saving = true;
             foreach (var pair in passwords.Where(x => !string.IsNullOrEmpty(x.Value))) await Coordinator.SetWowzaPasswordAsync(pair.Key, pair.Value);
-            var result = await Commands.SaveSettingsAsync(settings); settings = OperatorSettingsDraft.Copy(result.Settings); message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Discovery is refreshing automatically; backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success";
+            var result = await Commands.SaveSettingsAsync(settings); settings = OperatorSettingsDraft.Copy(result.Settings); message = "Wowza server settings saved. Discovery is refreshing automatically."; messageTitle = $"Backend revision {result.ConfigurationRevision}"; messageClass = "success";
             passwords.Clear();
             MarkClean();
         }
-        catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving the Wowza server list"); messageClass = "danger"; }
+        catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving the Wowza server list"); messageTitle = ""; messageClass = "danger"; }
         finally { saving = false; }
     }
     private async Task Test(WowzaServerProfile server)

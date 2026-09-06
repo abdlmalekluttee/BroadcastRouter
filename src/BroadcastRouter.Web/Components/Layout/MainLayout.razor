@@ -26,7 +26,7 @@
         <header class="topbar br-topbar navbar navbar-expand-md d-print-none">
             <div class="br-runtime-status">
                 <span class="br-runtime-icon"><img src="vendor/tabler-icons/3.46.0/activity-heartbeat.svg" alt="" /></span>
-                <span><strong role="status" aria-live="polite">@snapshot.StatusMessage</strong><small aria-hidden="true">Last update @snapshot.UpdatedAt.ToLocalTime().ToString("HH:mm:ss")</small></span>
+                <span><strong role="status" aria-live="polite">@snapshot.StatusMessage</strong><small aria-hidden="true">Updated @OperatorTime.Relative(snapshot.UpdatedAt)</small></span>
             </div>
             <div class="br-topbar-right">
                 <div class="br-environment @EnvironmentClass" aria-label="Runtime environment: @EnvironmentLabel">

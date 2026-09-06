@@ -256,7 +256,7 @@
             await Commands.ExecuteAsync(action, string.IsNullOrWhiteSpace(source) ? null : source);
             snapshot = Coordinator.Snapshot;
             if (action is "enable-live-hold" or "disable-live-hold")
-                confirmation = $"Recovery setting saved and applied successfully at {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}.";
+                confirmation = "Recovery setting saved and applied.";
         }
         catch (Exception ex) { error = OperatorErrors.Describe(ex, "the route command"); }
         finally { if (isPageCommand) pageBusy = false; else busySourceIds.Remove(source); }

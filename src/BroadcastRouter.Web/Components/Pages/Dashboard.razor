@@ -15,7 +15,7 @@
     </div></Authorized></AuthorizeView>
 </div>
 <NoticeBoard Severity="danger" @bind-Message="error" />
-<div class="secondary-text"><span aria-hidden="true">Status updated @snapshot.UpdatedAt.ToLocalTime().ToString("HH:mm:ss") · </span><span>@snapshot.StatusMessage</span></div>
+<div class="secondary-text"><span aria-hidden="true">Updated @OperatorTime.Relative(snapshot.UpdatedAt) · </span><span>@snapshot.StatusMessage</span></div>
 @if ((DateTimeOffset.UtcNow - snapshot.UpdatedAt) > TimeSpan.FromSeconds(5))
 {
     <div class="notice warning" role="status" aria-live="polite">Runtime data may be stale. Check the server connection before issuing a control command.</div>

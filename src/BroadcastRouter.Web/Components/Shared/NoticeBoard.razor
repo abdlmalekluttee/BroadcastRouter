@@ -3,7 +3,7 @@
 <div class="notice-slot" aria-live="off">
     @if (!string.IsNullOrWhiteSpace(Message) || ChildContent is not null)
     {
-        <div class="notice @SeverityClass" role="@Role">
+        <div class="notice @SeverityClass" role="@Role" title="@Title">
             <div class="notice-content">
                 @if (!string.IsNullOrWhiteSpace(Message))
                 {
@@ -20,6 +20,7 @@
     [Parameter] public string Message { get; set; } = "";
     [Parameter] public EventCallback<string> MessageChanged { get; set; }
     [Parameter] public string Severity { get; set; } = "info";
+    [Parameter] public string? Title { get; set; }
     [Parameter] public RenderFragment? ChildContent { get; set; }
 
     private CancellationTokenSource? expiry;

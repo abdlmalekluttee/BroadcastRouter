@@ -9,7 +9,7 @@
 <ConfirmDialog @ref="confirmDialog" />
 <NavigationLock ConfirmExternalNavigation="@IsDirty" OnBeforeInternalNavigation="ConfirmNavigation" />
 <div class="page-head"><div><h1>Rules and presets</h1><p class="lead">Rules are evaluated by order using bounded wildcards or <span class="mono">regex:</span> patterns with a timeout.</p></div><div class="actions">@if(IsDirty){<span class="badge warning">Unsaved changes</span>}<button class="btn" disabled="@saving" @onclick="AddRule">Add rule</button><button class="btn" disabled="@saving" @onclick="AddPreset">Add preset</button><button class="btn" disabled="@(!IsDirty || saving)" @onclick="Discard">Discard</button><button class="btn primary" disabled="@(!IsDirty || saving)" @onclick="Save">@(saving ? "Saving…" : "Save changes")</button></div></div>
-<NoticeBoard Severity="@messageClass" @bind-Message="message" />
+<NoticeBoard Severity="@messageClass" Title="@messageTitle" @bind-Message="message" />
 
 <div class="panel"><div class="panel-head"><div><h2>Routing rules</h2><span class="secondary-text">Each rule uses a responsive editor; lower order numbers run first.</span></div></div><div class="panel-body rule-list">
 @foreach (var rule in settings.Rules.OrderBy(x => x.Order))
@@ -60,6 +60,7 @@
     private OperatorSettings settings = null!;
     private string message = "";
     private string messageClass = "";
+    private string messageTitle = "";
     private string savedFingerprint = "";
     private bool saving;
     private bool IsDirty => savedFingerprint.Length > 0 && OperatorSettingsDraft.Fingerprint(settings) != savedFingerprint;
@@ -76,12 +77,12 @@
     private async Task RemovePreset(OutputPresetProfile preset)
     {
         var references = settings.Rules.Count(rule => rule.PresetId.Equals(preset.Id, StringComparison.OrdinalIgnoreCase));
-        if (references > 0) { message = $"Preset '{preset.Name}' is referenced by {references} routing rule(s). Reassign or remove those rules first."; messageClass = "danger"; return; }
+        if (references > 0) { message = $"Preset '{preset.Name}' is referenced by {references} routing {(references == 1 ? "rule" : "rules")}. Reassign or remove those rules first."; messageClass = "danger"; return; }
         var routeReferences = Coordinator.Snapshot.Routes.Count(route => route.State is not RouteState.Released and not RouteState.Disabled && route.PresetId.Equals(preset.Id, StringComparison.OrdinalIgnoreCase));
-        if (routeReferences > 0) { message = $"Preset '{preset.Name}' is used by {routeReferences} active or waiting route(s). Reassign or stop those routes first."; messageClass = "danger"; return; }
+        if (routeReferences > 0) { message = $"Preset '{preset.Name}' is used by {routeReferences} active or waiting {(routeReferences == 1 ? "route" : "routes")}. Reassign or stop those routes first."; messageClass = "danger"; return; }
         if (await confirmDialog.ShowAsync("Remove output preset", $"Remove output preset '{preset.Name}' from the pending settings?", "Remove preset")) settings.Presets.Remove(preset);
     }
-    private async Task Save() { if(saving) return; try { saving = true; var result = await Commands.SaveSettingsAsync(settings); settings = OperatorSettingsDraft.Copy(result.Settings); MarkClean(); message = $"Configuration saved and applied successfully at {result.AppliedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}. Backend revision {result.ConfigurationRevision} confirmed."; messageClass = "success"; } catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving rules and presets"); messageClass = "danger"; } finally { saving = false; } }
+    private async Task Save() { if(saving) return; try { saving = true; var result = await Commands.SaveSettingsAsync(settings); settings = OperatorSettingsDraft.Copy(result.Settings); MarkClean(); message = "Rules and presets saved."; messageTitle = $"Backend revision {result.ConfigurationRevision}"; messageClass = "success"; } catch (Exception ex) { message = OperatorErrors.Describe(ex, "saving rules and presets"); messageTitle = ""; messageClass = "danger"; } finally { saving = false; } }
     private void MarkClean() => savedFingerprint = OperatorSettingsDraft.Fingerprint(settings);
     private void Discard() { settings = OperatorSettingsDraft.Copy(Coordinator.GetSettings()); MarkClean(); message = "Unsaved rule and preset changes were discarded."; messageClass = "info"; }
     private async Task ConfirmNavigation(LocationChangingContext context) { if(IsDirty && !await confirmDialog.ShowAsync("Discard unsaved changes", "Your unsaved rule and preset changes will be lost.", "Discard changes")) context.PreventNavigation(); }
