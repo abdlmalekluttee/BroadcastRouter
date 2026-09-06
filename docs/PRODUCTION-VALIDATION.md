@@ -6,6 +6,8 @@ The live preview check can be repeated with `BroadcastRouter.Verify --database <
 
 Before broadcast use, verify:
 
+- On an isolated Wowza route, toggle **Hold while Wowza live**, confirm immediate audited persistence without a PID change, reload the page and restart the test host to confirm persistence. Inject media failure while publisher live: the owned PID must remain and a `RecoveryHold` warning must appear. Disable the option and confirm recovery resumes. With hold enabled, stop the publisher (two confirmed missing observations), restore it, and terminate only the exact owned test PID; require automatic standby/recovery and no effect on other outputs. API unavailability alone must not clear hold. Check manual restart and emergency stop still take effect. A held output can remain frozen/silent; physically monitor it.
+
 - FFmpeg/FFprobe versions, DeckLink compilation, RTSP demuxer timeout support, route filters, `drawtext`/`overlay`/`smptebars`/`smptehdbars`/`testsrc2` standby filters, `uyvy422`, rawvideo, and every enumerated output pass in Media Tools.
 - The Sources page plays a 720×450 embedded preview; video, muted-autoplay/unmute, stereo confidence audio, peak/dB VU overlay, browser-disconnect cleanup, and repeated source switching work without orphan processes.
 - Every supported output reports a unique `BMDDeckLinkPersistentID`; verify all detected IDs are unique, each device group contains the expected subdevices for that model, and both physical-card and connector operator names remain attached after swapping identical cards between PCIe slots.

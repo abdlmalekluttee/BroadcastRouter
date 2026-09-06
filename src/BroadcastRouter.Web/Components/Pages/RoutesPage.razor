@@ -13,6 +13,7 @@
     <AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@busy" @onclick='() => Run("rescan", "")'>Reconcile now</button><button class="btn danger" disabled="@busy" @onclick='() => Run("emergency-stop", "")'>Emergency stop</button></div></Authorized></AuthorizeView>
 </div>
 @if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger" role="alert">@error</div> }
+@if (!string.IsNullOrWhiteSpace(confirmation)) { <div class="notice success" role="status">@confirmation</div> }
 
 @if (OutputCardGroups().Count > 0)
 {
@@ -54,6 +55,21 @@
                 </NotAuthorized>
             </AuthorizeView>
         </div>
+        @if (route.HoldOutputWhilePublisherLive)
+        {
+            <div class="notice warning" role="status">Hold while Wowza live is ON. Frozen picture, silence, input errors, and media-mode changes will not trigger a restart while the owned live process is running and Wowza last confirmed live. API outages retain that confirmation. Publisher stop, process exit, and manual commands still take effect.</div>
+        }
+        <AuthorizeView Roles="Administrator"><Authorized>
+            @if (route.HoldOutputWhilePublisherLive || IsWowzaSource(route))
+            {
+                <div class="route-controls">
+                    <button class="btn small @(route.HoldOutputWhilePublisherLive ? "warning" : "")" disabled="@busy"
+                            aria-pressed="@route.HoldOutputWhilePublisherLive.ToString().ToLowerInvariant()"
+                            @onclick='() => Run(route.HoldOutputWhilePublisherLive ? "disable-live-hold" : "enable-live-hold", route.SourceId)'>Hold while Wowza live: @(route.HoldOutputWhilePublisherLive ? "On" : "Off")</button>
+                    <span class="secondary-text">Saved immediately per stream. Manual restart and crash recovery remain available.</span>
+                </div>
+            }
+        </Authorized></AuthorizeView>
         <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls"><button class="btn small primary" disabled="@busy" @onclick='() => Run("restore", route.SourceId)'>Activate / restore</button><button class="btn small" disabled="@busy" @onclick='() => Run("restart", route.SourceId)'>Restart live output</button>@if(DesiredRoutePolicy.HasSavedAssignment(route)){<button class="btn small danger" disabled="@busy" @onclick='() => Run("remove-assignment", route.SourceId)'>Remove saved assignment</button>}else{<button class="btn small danger" disabled="@busy" @onclick='() => Run("stop", route.SourceId)'>Release automatic route</button>}</footer></Authorized></AuthorizeView>
         @if (snapshot.SimulationMode) { <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls simulation-controls"><span class="secondary-text">Simulation:</span><button class="btn small" disabled="@busy" @onclick='() => Run("simulate-failure", route.SourceId)'>Crash</button><button class="btn small" disabled="@busy" @onclick='() => Run("simulate-stall", route.SourceId)'>Stall</button><button class="btn small" disabled="@busy" @onclick='() => Run("clear-failure", route.SourceId)'>Recover</button></footer></Authorized></AuthorizeView> }
     </article>
@@ -84,6 +100,7 @@
     private string selectedPreset = "";
     private AssignmentMode selectedMode = AssignmentMode.Manual;
     private string error = "";
+    private string confirmation = "";
     private bool busy;
     private long settingsRevision = -1;
 
@@ -135,8 +152,16 @@
         if (busy) return;
         if (action == "emergency-stop" && !await JS.InvokeAsync<bool>("confirm", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes. Continue?")) return;
         var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source);
+        if (action == "enable-live-hold" && !await JS.InvokeAsync<bool>("confirm", "Disable automatic media recovery while Wowza last reports live? A frozen picture or muted audio may persist until you manually restart. Publisher-stop and process-exit recovery remain enabled.")) return;
         if (action == "remove-assignment" && !await JS.InvokeAsync<bool>("confirm", "Remove this saved routing entry and release its output?")) return;
-        try { busy = true; error = ""; await Commands.ExecuteAsync(action, string.IsNullOrWhiteSpace(source) ? null : source); }
+        try
+        {
+            busy = true; error = ""; confirmation = "";
+            await Commands.ExecuteAsync(action, string.IsNullOrWhiteSpace(source) ? null : source);
+            snapshot = Coordinator.Snapshot;
+            if (action is "enable-live-hold" or "disable-live-hold")
+                confirmation = $"Recovery setting saved and applied successfully at {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}.";
+        }
         catch (Exception ex) { error = ex.Message; }
         finally { busy = false; }
     }
@@ -172,6 +197,8 @@
     }
 
     public void Dispose() => Coordinator.Changed -= Changed;
+    private bool IsWowzaSource(RuntimeRoute route) => snapshot.Sources.Any(source =>
+        source.Identity.Value == route.SourceId && !source.Identity.ServerId.Equals("MANUAL", StringComparison.OrdinalIgnoreCase));
     private string RouteStatus(RuntimeRoute route)
     {
         var source = snapshot.Sources.FirstOrDefault(value => value.Identity.Value == route.SourceId);

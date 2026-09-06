@@ -46,7 +46,8 @@ public sealed record RuntimeRoute(
     string? DesiredPortId = null,
     string? DesiredPortName = null,
     bool ReserveWhileOffline = true,
-    bool AllowTemporaryUse = false);
+    bool AllowTemporaryUse = false,
+    bool HoldOutputWhilePublisherLive = false);
 
 public enum PortStandbyState { Disabled, Configured, Starting, Running, Live, Failed }
 

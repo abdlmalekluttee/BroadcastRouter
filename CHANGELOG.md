@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.5.29 — 2026-09-06
+
+- Add an administrator-only, per-stream **Hold while Wowza live** control in the routing matrix, off by default. Saving it immediately persists the setting and audit record atomically without restarting an output.
+- While Wowza last confirms the publisher live and its owned live FFmpeg process remains running, suppress automatic input-error, startup/stall, duplicate-frame, stale-probe, and media-mode recovery. Preserve the last confirmation during management-API outages; confirmed publisher loss still invokes standby/recovery. Manual controls, emergency stop, process-exit handling, hardware validation, and exclusive output ownership remain enabled.
+- Keep recovery policy through route reconstruction, reassignments, and application restart; prevent stale runtime snapshots from overwriting the operator choice. Recheck the exact process after acquiring its route gate before normal supervision acts.
+- Show an explicit warning: this continuity override can retain frozen video or muted audio and is not proof of healthy media. Record suppressed automatic recovery once per owned process.
+- Add deterministic policy, persistence/transaction rollback, authorization, and coordinator-owned-process regression tests. No stream-specific exceptions or private operational identifiers are included.
+
 ## 1.5.28 — 2026-09-03
 
 - Reduce continuous per-port standby CPU and memory pressure without enabling GPU acceleration or changing DeckLink ownership, output raster, cadence, field order, pixel format, or silent-audio behavior.

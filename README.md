@@ -8,6 +8,14 @@
 
 The production operator interface uses locally bundled [Tabler](https://github.com/tabler/tabler) assets. Routing, persistence, process supervision, Wowza, FFmpeg, and DeckLink operation remain server-owned and continue when the browser is closed.
 
+### Optional publisher-live recovery hold
+
+In **Routes / Routing Matrix**, administrators can enable **Hold while Wowza live** for an individual Wowza stream. It saves immediately without restarting that output and survives reassignment/application restart. It is **off by default**.
+
+While the publisher was last authoritatively confirmed live and its owned live FFmpeg process still runs, automatic media-error, freeze, startup/stall, stale-probe, and media-mode restarts are suppressed. API failures retain the last confirmation; two confirmed missing/disconnected publisher observations restore normal standby/recovery. Process exits, manual restart/removal, emergency stop, and operator configuration changes are not suppressed. Manual RTSP sources cannot enable this Wowza-dependent option.
+
+**Warning:** Wowza "live" does not prove that the decoder or SDI audio/video is healthy. A frozen picture or silence can persist until manual intervention. Use confidence monitoring. This option does not disable FFmpeg's own network timeout or guarantee uninterrupted playout. Automatic media-mode promotion is deferred while held, so an audio-led output may retain generated black until the next start or manual restart.
+
 The browser assets are self-contained: Tabler Core 1.4.0 and Tabler Icons 3.46.0 are vendored under `src/BroadcastRouter.Web/wwwroot/vendor`. No CDN is contacted at runtime. See `src/BroadcastRouter.Web/wwwroot/THIRD-PARTY-NOTICES.md`.
 
 BroadcastRouter is a self-contained .NET 8 Blazor Server application that inventories active and offline Wowza publishers, validates active RTSP media with FFprobe, atomically reserves operator-designated DeckLink output ports, and supervises FFmpeg playout and standby screens. The browser is only a control surface: closing or refreshing it does not stop the routing host.

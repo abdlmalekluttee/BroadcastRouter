@@ -31,6 +31,9 @@ public sealed class RouterCoordinator(
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _portGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _settingsMutationGate = new(1, 1);
     private readonly SemaphoreSlim _discoveryGate = new(1, 1);
+    private readonly SemaphoreSlim _routePersistenceGate = new(1, 1);
+    private readonly PublisherLiveHoldPolicy _publisherLiveHold = new();
+    private readonly Dictionary<string, int> _heldRecoveryLoggedPid = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PortStandbyStatus> _standbys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _standbyRetryAt = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _standbyConfigurationSignatures = new(StringComparer.OrdinalIgnoreCase);
@@ -256,6 +259,10 @@ public sealed class RouterCoordinator(
         lock (_gate) _routes.TryGetValue(sourceId, out route);
         switch (action)
         {
+            case "enable-live-hold":
+            case "disable-live-hold":
+                await SavePublisherLiveHoldAsync(sourceId, action == "enable-live-hold", actor, cancellationToken);
+                break;
             case "start":
                 RouteControlSafety.EnsureStartAllowed(_emergencyStopped);
                 await SaveDesiredRouteAsync(sourceId, portId, presetId, requestedMode, reserveWhileOffline, allowTemporaryUse, actor, cancellationToken);
@@ -459,6 +466,12 @@ public sealed class RouterCoordinator(
                     var frozen = failure is null && IsInputFrozen(current, DateTimeOffset.UtcNow);
                     if (failure is null && !frozen) continue;
 
+                    if (ShouldHoldLiveOutput(route, current))
+                    {
+                        await RecordHeldRecoveryAsync(route, current, cancellationToken);
+                        continue;
+                    }
+
                     await supervisor.StopForOutputHandoffAsync(observed.Source, cancellationToken);
                     if (failure is not null)
                     {
@@ -549,6 +562,8 @@ public sealed class RouterCoordinator(
                 var publisherConnected = connected.Contains(candidate.SourceId);
                 if (publisherConnected)
                 {
+                    _publisherLiveHold.Observe(candidate.SourceId, true);
+                    _publisherDisconnectDetector.ObserveConnected(candidate.SourceId);
                     var reconcileConnectedRoute = false;
                     var recoveryGate = _routeGates.GetOrAdd(candidate.SourceId, static _ => new SemaphoreSlim(1, 1));
                     if (!await recoveryGate.WaitAsync(0, cancellationToken)) continue;
@@ -606,6 +621,7 @@ public sealed class RouterCoordinator(
                 }
 
                 if (!_publisherDisconnectDetector.Observe(candidate.SourceId, publisherConnected: false)) continue;
+                _publisherLiveHold.Observe(candidate.SourceId, false);
 
                 var routeGate = _routeGates.GetOrAdd(candidate.SourceId, static _ => new SemaphoreSlim(1, 1));
                 if (!await routeGate.WaitAsync(0, cancellationToken)) continue;
@@ -638,7 +654,7 @@ public sealed class RouterCoordinator(
                         _sourceMissingSince[candidate.SourceId] = DateTimeOffset.UtcNow;
                     }
                     await LogAsync("Warning", "PublisherPresence",
-                        $"Wowza reported the publisher missing twice within the 100 ms supervision loop; FFmpeg process {current.ProcessId} was reaped before stale SDI output could persist.",
+                        $"Wowza reported the publisher missing twice in the fast publisher monitor; FFmpeg process {current.ProcessId} was reaped before stale SDI output could persist.",
                         candidate.SourceId, cancellationToken: cancellationToken);
                     await ScheduleRetryAsync(route, "PublisherDisconnected",
                         "Wowza reported a rapid publisher interruption; silent standby is active while the saved route retries.",
@@ -882,8 +898,7 @@ public sealed class RouterCoordinator(
             .ToArray();
         foreach (var route in migrated)
         {
-            lock (_gate) _routes[route.SourceId] = route;
-            await store.SaveRouteAsync(route, route.State, cancellationToken);
+            await ReplaceRouteAsync(route, route.State, cancellationToken);
         }
         if (migrated.Length > 0)
             await LogAsync("Information", "DeckLinkIdentity",
@@ -916,6 +931,8 @@ public sealed class RouterCoordinator(
                 if (poll.Error is null)
                 {
                     observations.AddRange(poll.Discovered);
+                    foreach (var discovered in poll.Discovered.Where(value => value.State == SourceState.PublisherActive))
+                        _publisherLiveHold.SeedConnected(discovered.Identity.Value);
                     successfullyPolledServerIds.Add(poll.Profile.ServerId);
                     if (poll.Recovered)
                         await LogAsync("Information", "WowzaDiscovery",
@@ -1340,6 +1357,7 @@ public sealed class RouterCoordinator(
             var ownedProcess = _settings.SimulationMode
                 ? null
                 : _supervisor?.Snapshot().FirstOrDefault(value => value.Source.Value == route.SourceId && value.Running);
+            if (ownsLease && ShouldHoldLiveOutput(route, ownedProcess)) return;
             // A healthy owned decoder is stronger evidence than an overlapping FFprobe timeout.
             // This prevents a slow discovery sample from tearing down a route that has already
             // reconnected and is producing actual source video.
@@ -1475,6 +1493,8 @@ public sealed class RouterCoordinator(
                     continue;
                 }
                 if (route.RetryAt is not null && route.RetryAt > DateTimeOffset.UtcNow) continue;
+
+                if (ShouldHoldLiveOutput(route)) continue;
 
                 if (_supervisor is not null) await _supervisor.StopAsync(source.Identity, cancellationToken);
                 var restarting = route with
@@ -1911,20 +1931,29 @@ public sealed class RouterCoordinator(
         }
 
         if (_supervisor is null) return;
-        foreach (var process in _supervisor.Snapshot())
+        foreach (var observedProcess in _supervisor.Snapshot())
         {
             try
             {
-                var routeGate = _routeGates.GetOrAdd(process.Source.Value, static _ => new SemaphoreSlim(1, 1));
+                var routeGate = _routeGates.GetOrAdd(observedProcess.Source.Value, static _ => new SemaphoreSlim(1, 1));
                 await routeGate.WaitAsync(cancellationToken);
                 try
                 {
+                var process = _supervisor.Snapshot().FirstOrDefault(value =>
+                    value.Source == observedProcess.Source && value.ProcessId == observedProcess.ProcessId);
+                if (process is null) continue;
                 RuntimeRoute? route;
                 lock (_gate) _routes.TryGetValue(process.Source.Value, out route);
                 if (route is null) continue;
                 var progress = process.Progress;
                 var now = DateTimeOffset.UtcNow;
-            if (process.Purpose == RouteProcessPurpose.Live && process.Running && process.InputFailure is not null)
+                var hold = ShouldHoldLiveOutput(route, process);
+                if (hold && (process.InputFailure is not null
+                    || FfmpegStallDetector.IsFirstProgressTimedOut(true, progress, process.StartedAt, now,
+                        TimeSpan.FromSeconds(_settings.Routing.FirstProgressTimeoutSeconds))
+                    || FfmpegStallDetector.IsStalled(true, progress, now, TimeSpan.FromSeconds(_settings.Routing.StallTimeoutSeconds))))
+                    await RecordHeldRecoveryAsync(route, process, cancellationToken);
+            if (!hold && process.Purpose == RouteProcessPurpose.Live && process.Running && process.InputFailure is not null)
             {
                 // The 100 ms path is the primary recovery mechanism. Re-check
                 // the exact PID here so the normal reconciler remains a safe
@@ -1937,19 +1966,19 @@ public sealed class RouterCoordinator(
                 await _supervisor.StopForOutputHandoffAsync(process.Source, cancellationToken);
                 await RecordMediaRecoveryAsync(current, route, "normal process reconciliation", cancellationToken);
             }
-            else if (FfmpegStallDetector.IsFirstProgressTimedOut(process.Running, progress, process.StartedAt, now,
+            else if (!hold && FfmpegStallDetector.IsFirstProgressTimedOut(process.Running, progress, process.StartedAt, now,
                     TimeSpan.FromSeconds(_settings.Routing.FirstProgressTimeoutSeconds)))
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await ScheduleRetryAsync(route, "NoFirstProgress", "FFmpeg started but produced no progress before the startup deadline.", cancellationToken);
             }
-            else if (process.Purpose == RouteProcessPurpose.Live
+            else if (!hold && process.Purpose == RouteProcessPurpose.Live
                      && process.Running && FfmpegStallDetector.IsStalled(true, progress, now, TimeSpan.FromSeconds(_settings.Routing.StallTimeoutSeconds)))
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await ScheduleRetryAsync(route, "VideoStalled", "FFmpeg remained alive but stopped producing progress.", cancellationToken);
             }
-            else if (process.Purpose == RouteProcessPurpose.Live && process.Running && IsInputFrozen(process, now))
+            else if (!hold && process.Purpose == RouteProcessPurpose.Live && process.Running && IsInputFrozen(process, now))
             {
                 await _supervisor.StopAsync(process.Source, cancellationToken);
                 await LogAsync("Warning", "InputLiveness",
@@ -2050,8 +2079,8 @@ public sealed class RouterCoordinator(
             catch (Exception ex)
             {
                 await LogAsync("Error", "ProcessSupervision",
-                    $"Owned FFmpeg process {process.ProcessId} could not be reconciled; other routes will continue. {LogRedactor.Redact(ex.Message)}",
-                    process.Source.Value, cancellationToken: cancellationToken);
+                    $"Owned FFmpeg process {observedProcess.ProcessId} could not be reconciled; other routes will continue. {LogRedactor.Redact(ex.Message)}",
+                    observedProcess.Source.Value, cancellationToken: cancellationToken);
             }
         }
     }
@@ -2147,6 +2176,7 @@ public sealed class RouterCoordinator(
                 preset = current is null ? null : _settings.Presets.FirstOrDefault(x => x.Id == current.PresetId);
             }
             if (current?.PortId is null || source is null || port is null || preset is null) return;
+            if (!force && ShouldHoldLiveOutput(current)) return;
             if (!force && (current.State is not (RouteState.Reconnecting or RouteState.Fallback)
                 || current.RetryAt is null || current.RetryAt > DateTimeOffset.UtcNow)) return;
             if (_simulationFaults.ContainsKey(current.SourceId)) return;
@@ -2259,6 +2289,7 @@ public sealed class RouterCoordinator(
                 continue;
             }
             if (!RouteLeaseRetentionPolicy.ShouldRelease(route.Locked, item.Value, now, grace)) continue;
+            if (ShouldHoldLiveOutput(route)) continue;
             await StopRouteAsync(item.Key, forceRelease: false, cancellationToken);
             await LogAsync("Warning", "Discovery", "Source remained absent beyond its reservation grace period; its unlocked output was released.",
                 item.Key, cancellationToken: cancellationToken);
@@ -2340,8 +2371,79 @@ public sealed class RouterCoordinator(
         }
     }
 
+    private bool ShouldHoldLiveOutput(RuntimeRoute route, RouteProcessSnapshot? process)
+    {
+        bool wowzaEnabled;
+        lock (_gate) wowzaEnabled = _sources.TryGetValue(route.SourceId, out var source)
+            && source.State != SourceState.Disabled
+            && _settings.WowzaServers.Any(server => server.Enabled
+                && server.ServerId.Equals(source.Identity.ServerId, StringComparison.OrdinalIgnoreCase));
+        return _publisherLiveHold.ShouldHold(route, wowzaEnabled,
+            process is { Running: true, Purpose: RouteProcessPurpose.Live } && process.Source.Value == route.SourceId);
+    }
+
+    private bool ShouldHoldLiveOutput(RuntimeRoute route) => ShouldHoldLiveOutput(route,
+        _supervisor?.Snapshot().FirstOrDefault(value => value.Source.Value == route.SourceId));
+
+    private async Task RecordHeldRecoveryAsync(RuntimeRoute route, RouteProcessSnapshot process, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            if (_heldRecoveryLoggedPid.GetValueOrDefault(route.SourceId) == process.ProcessId) return;
+            _heldRecoveryLoggedPid[route.SourceId] = process.ProcessId;
+        }
+        await LogAsync("Warning", "RecoveryHold",
+            $"Automatic media recovery suppressed for owned FFmpeg process {process.ProcessId}: hold while publisher live is enabled. "
+            + "Wowza last confirmed live; picture/audio may be unhealthy. Manual restart and exited-process recovery remain available.",
+            route.SourceId, cancellationToken: cancellationToken);
+    }
+
+    private async Task SavePublisherLiveHoldAsync(string sourceId, bool enabled, string actor, CancellationToken cancellationToken)
+    {
+        var routeGate = _routeGates.GetOrAdd(sourceId, static _ => new SemaphoreSlim(1, 1));
+        await routeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await _routePersistenceGate.WaitAsync(cancellationToken);
+            try
+            {
+                RuntimeRoute previous;
+                DeckLinkPort? port;
+                lock (_gate)
+                {
+                    if (!_routes.TryGetValue(sourceId, out previous!))
+                        throw new InvalidOperationException("Save a routing entry before changing recovery behavior.");
+                    if (enabled && (!_sources.TryGetValue(sourceId, out var source)
+                        || !_settings.WowzaServers.Any(server => server.Enabled
+                            && server.ServerId.Equals(source.Identity.ServerId, StringComparison.OrdinalIgnoreCase))))
+                        throw new InvalidOperationException("Publisher-live hold requires a source on an enabled Wowza server.");
+                    port = _ports.GetValueOrDefault(previous.DesiredPortId ?? previous.PortId ?? "");
+                }
+                if (previous.HoldOutputWhilePublisherLive == enabled) return;
+                var updated = previous with { HoldOutputWhilePublisherLive = enabled, UpdatedAt = DateTimeOffset.UtcNow };
+                var audit = new ConfigurationAuditEntry(0, updated.UpdatedAt, "PublisherLiveRecoveryHold", sourceId,
+                    port is null ? "" : DeckLinkDisplayName.Card(port), port is null ? "" : DeckLinkDisplayName.Connector(port),
+                    previous.HoldOutputWhilePublisherLive.ToString(), enabled.ToString(), actor,
+                    "Operator changed automatic recovery hold; no media process was restarted", "Persisted and applied", sourceId);
+                // Commit the option and its audit together before exposing success or changing runtime behavior.
+                await store.SaveRouteAsync(updated, previous.State, cancellationToken, audit);
+                lock (_gate)
+                {
+                    _routes[sourceId] = updated;
+                    _inputFreezeDetectors.Remove(sourceId);
+                    _heldRecoveryLoggedPid.Remove(sourceId);
+                }
+            }
+            finally { _routePersistenceGate.Release(); }
+        }
+        finally { routeGate.Release(); }
+    }
+
     private async Task ReplaceRouteAsync(RuntimeRoute route, RouteState? previousState, CancellationToken cancellationToken, bool persistHistory = true)
     {
+        await _routePersistenceGate.WaitAsync(cancellationToken);
+        try
+        {
         RouteState? persistedPrevious;
         RuntimeRoute? currentRoute;
         lock (_gate)
@@ -2351,6 +2453,8 @@ public sealed class RouterCoordinator(
                 if (previousState is not null && current.State != previousState) return;
                 persistedPrevious = current.State;
                 currentRoute = current;
+                // Recovery snapshots and reconstructed assignments must never overwrite operator policy.
+                route = route with { HoldOutputWhilePublisherLive = current.HoldOutputWhilePublisherLive };
             }
             else
             {
@@ -2359,11 +2463,17 @@ public sealed class RouterCoordinator(
             }
             if (persistedPrevious is not null && !_stateMachine.CanTransition(persistedPrevious.Value, route.State))
                 throw new InvalidOperationException($"Invalid route transition {persistedPrevious} -> {route.State} for {route.SourceId}.");
-            _routes[route.SourceId] = route;
         }
         if (!persistHistory && currentRoute is not null
-            && !RouteTelemetryPersistencePolicy.RequiresPersistence(currentRoute, route)) return;
+            && !RouteTelemetryPersistencePolicy.RequiresPersistence(currentRoute, route))
+        {
+            lock (_gate) _routes[route.SourceId] = route;
+            return;
+        }
         await store.SaveRouteAsync(route, persistHistory ? persistedPrevious : route.State, cancellationToken);
+        lock (_gate) _routes[route.SourceId] = route;
+        }
+        finally { _routePersistenceGate.Release(); }
     }
 
     private void EnsureSupervisor(string ffmpegPath, bool useWindowsDeckLinkSafeTerminate)

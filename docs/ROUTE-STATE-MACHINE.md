@@ -39,6 +39,8 @@ stateDiagram-v2
 
 API-unreachable is server health, not a destructive route transition. Healthy `Running` routes remain running until RTSP/progress or process evidence says otherwise.
 
+When **Hold while Wowza live** is enabled, a running live process is not automatically recycled for media/stall evidence while the publisher is last confirmed live. `Starting` may therefore remain `Starting` beyond its usual media deadline, or `Running` may have unhealthy audio/video. The warning remains visible; state is not a media-quality guarantee. Confirmed publisher disconnect and actual process exit still enter recovery; operator commands override the hold. The setting is retained through all transient states and startup reconstruction.
+
 Saved preconfigured/manual assignments retain their desired port and preset independently of transient process state. Their ports remain reserved while offline unless temporary automatic use is explicitly enabled. Preconfigured ownership outranks manual ownership; both outrank automatic routes. A lower-priority saved entry remains in `WaitingForPort` with a routing-conflict reason rather than being overwritten.
 
 Preconfigured and manual entries do not lose their retry intent after the automatic-route attempt cap. Stream loss returns the connector to its configured standby owner, while monitoring continues. A recovered publisher or temporary DeckLink/reference condition re-enters probing and startup without changing the output-port designation.
