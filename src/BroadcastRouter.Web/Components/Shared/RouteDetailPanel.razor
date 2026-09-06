@@ -10,6 +10,7 @@
 
     <NoticeBoard Severity="danger" @bind-Message="error" />
     <NoticeBoard Severity="success" @bind-Message="confirmation" />
+    <UndoBar Message="The saved assignment was removed." ActionLabel="Restore assignment" ExpiresAt="@assignmentUndoExpiresAt" Busy="@busy" UndoRequested="UndoAssignmentRemoval" />
 
     @if (SelectedSourceId is not null)
     {
@@ -85,6 +86,8 @@
     private bool busy;
     private string error = "";
     private string confirmation = "";
+    private DateTimeOffset? assignmentUndoExpiresAt;
+    private RemovedAssignment? removedAssignment;
     private ConfirmDialog confirmDialog = null!;
     private RuntimeRoute? Route => SelectedSourceId is null ? null : Snapshot.Routes.FirstOrDefault(value => value.SourceId == SelectedSourceId);
     private DiscoveredSource? Source => SelectedSourceId is null ? null : Snapshot.Sources.FirstOrDefault(value => value.Identity.Value == SelectedSourceId);
@@ -126,10 +129,42 @@
         if (busy || SelectedSourceId is null) return;
         if (action == "enable-live-hold" && !await confirmDialog.ShowAsync("Disable media recovery", "A frozen picture or muted audio may persist until manually restarted while the publisher remains live.", "Disable recovery")) return;
         if (action == "remove-assignment" && !await confirmDialog.ShowAsync("Remove saved assignment", "This removes the saved routing entry and releases its output for other streams.", "Remove assignment")) return;
-        try { busy = true; error = ""; await Commands.ExecuteAsync(action, SelectedSourceId); confirmation = "Route command applied."; await Refreshed.InvokeAsync(); }
+        var routeBeforeCommand = Route;
+        try
+        {
+            busy = true;
+            error = "";
+            await Commands.ExecuteAsync(action, SelectedSourceId);
+            if (action == "remove-assignment" && routeBeforeCommand is not null && (routeBeforeCommand.DesiredPortId ?? routeBeforeCommand.PortId) is { Length: > 0 } portId)
+            {
+                removedAssignment = new RemovedAssignment(routeBeforeCommand.SourceId, portId, routeBeforeCommand.PresetId, routeBeforeCommand.AssignmentMode, routeBeforeCommand.ReserveWhileOffline, routeBeforeCommand.AllowTemporaryUse);
+                assignmentUndoExpiresAt = DateTimeOffset.UtcNow.AddSeconds(30);
+            }
+            confirmation = "Route command applied.";
+            await Refreshed.InvokeAsync();
+        }
         catch(Exception ex) { error = OperatorErrors.Describe(ex, "the route command"); }
         finally { busy = false; }
     }
 
+    private async Task UndoAssignmentRemoval()
+    {
+        if (busy || removedAssignment is null || assignmentUndoExpiresAt is null || assignmentUndoExpiresAt <= DateTimeOffset.UtcNow) return;
+        try
+        {
+            busy = true;
+            error = "";
+            var previous = removedAssignment;
+            await Commands.ExecuteAsync("save-assignment", previous.SourceId, previous.PortId, previous.PresetId, previous.Mode, previous.ReserveWhileOffline, previous.AllowTemporaryUse);
+            removedAssignment = null;
+            assignmentUndoExpiresAt = null;
+            confirmation = "The previous assignment was restored.";
+            await Refreshed.InvokeAsync();
+        }
+        catch (Exception ex) { error = OperatorErrors.Describe(ex, "restoring the route assignment"); }
+        finally { busy = false; }
+    }
+
     private Task Close() => Closed.InvokeAsync();
+    private sealed record RemovedAssignment(string SourceId, string PortId, string PresetId, AssignmentMode Mode, bool ReserveWhileOffline, bool AllowTemporaryUse);
 }

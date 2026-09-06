@@ -1,0 +1,66 @@
+@implements IAsyncDisposable
+
+@if (RemainingSeconds > 0)
+{
+    <section class="undo-bar" role="status" aria-live="polite" aria-label="Undo available">
+        <div>
+            <strong>@Message</strong>
+            <span>@RemainingSeconds seconds remaining</span>
+        </div>
+        <button type="button" class="btn primary" disabled="@Busy" @onclick="Undo">
+            @(Busy ? "Restoring…" : ActionLabel)
+        </button>
+    </section>
+}
+
+@code {
+    [Parameter] public string Message { get; set; } = "Action completed.";
+    [Parameter] public string ActionLabel { get; set; } = "Undo";
+    [Parameter] public DateTimeOffset? ExpiresAt { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback UndoRequested { get; set; }
+
+    private DateTimeOffset? observedExpiry;
+    private CancellationTokenSource? timerCancellation;
+    private int RemainingSeconds => ExpiresAt is { } expiry
+        ? Math.Max(0, (int)Math.Ceiling((expiry - DateTimeOffset.UtcNow).TotalSeconds))
+        : 0;
+
+    protected override void OnParametersSet()
+    {
+        if (ExpiresAt == observedExpiry) return;
+        observedExpiry = ExpiresAt;
+        timerCancellation?.Cancel();
+        timerCancellation?.Dispose();
+        timerCancellation = null;
+        if (RemainingSeconds > 0)
+        {
+            timerCancellation = new CancellationTokenSource();
+            _ = TickAsync(timerCancellation.Token);
+        }
+    }
+
+    private async Task TickAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        try
+        {
+            while (RemainingSeconds > 0 && await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private Task Undo() => UndoRequested.InvokeAsync();
+
+    public ValueTask DisposeAsync()
+    {
+        timerCancellation?.Cancel();
+        timerCancellation?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

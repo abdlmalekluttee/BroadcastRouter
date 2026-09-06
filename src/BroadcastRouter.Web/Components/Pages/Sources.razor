@@ -142,7 +142,7 @@
             commandMessage = "Source discovery request received by the server…";
             await Commands.ExecuteAsync("refresh-sources");
             snapshot = Coordinator.Snapshot;
-            commandMessage = $"Source discovery completed. {snapshot.Sources.Count} incoming {(snapshot.Sources.Count == 1 ? "stream is" : "streams are")} visible.";
+            commandMessage = $"Source discovery completed and confirmed by the server. {snapshot.Sources.Count} incoming {(snapshot.Sources.Count == 1 ? "stream is" : "streams are")} visible.";
         }
         catch (Exception ex) { error = OperatorErrors.Describe(ex, "source discovery"); commandMessage = ""; }
         finally { discoveryBusy = false; }

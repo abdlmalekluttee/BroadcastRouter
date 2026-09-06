@@ -15,6 +15,7 @@
     </div></Authorized></AuthorizeView>
 </div>
 <NoticeBoard Severity="danger" @bind-Message="error" />
+<UndoBar Message="All BroadcastRouter outputs were stopped." ActionLabel="Undo emergency stop" ExpiresAt="@emergencyUndoExpiresAt" Busy="@busy" UndoRequested="UndoEmergencyStop" />
 <div class="secondary-text"><span aria-hidden="true">Updated @OperatorTime.Relative(snapshot.UpdatedAt) · </span><span>@snapshot.StatusMessage</span></div>
 @if ((DateTimeOffset.UtcNow - snapshot.UpdatedAt) > TimeSpan.FromSeconds(5))
 {
@@ -75,6 +76,7 @@
     private HashSet<string> occupiedPorts = new(StringComparer.OrdinalIgnoreCase);
     private string error = "";
     private bool busy;
+    private DateTimeOffset? emergencyUndoExpiresAt;
     private int FreePorts => snapshot.Ports.Count(port => !occupiedPorts.Contains(port.StableId));
     private string RoutePortName(RuntimeRoute route) => route.PortId is { Length: > 0 } portId
         && portsById.TryGetValue(portId, out var port)
@@ -91,7 +93,26 @@
             .Select(route => route.PortId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
     private ConfirmDialog confirmDialog = null!;
-    private async Task Run(string action, string? source = null) { if (busy) return; if (action == "emergency-stop" && !await confirmDialog.ShowAsync("Emergency stop", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes.", "Stop all outputs")) return; try { busy = true; error = ""; await Commands.ExecuteAsync(action, source); } catch(Exception ex) { error = OperatorErrors.Describe(ex, action == "emergency-stop" ? "the emergency stop" : $"the {action} command"); } finally { busy = false; } }
+    private async Task Run(string action, string? source = null)
+    {
+        if (busy) return;
+        if (action == "emergency-stop" && !await confirmDialog.ShowAsync("Emergency stop", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes.", "Stop all outputs")) return;
+        try
+        {
+            busy = true;
+            error = "";
+            await Commands.ExecuteAsync(action, source);
+            if (action == "emergency-stop") emergencyUndoExpiresAt = DateTimeOffset.UtcNow.AddSeconds(30);
+            if (action == "clear-emergency") emergencyUndoExpiresAt = null;
+        }
+        catch(Exception ex) { error = OperatorErrors.Describe(ex, action == "emergency-stop" ? "the emergency stop" : $"the {action} command"); }
+        finally { busy = false; }
+    }
+    private async Task UndoEmergencyStop()
+    {
+        if (busy || emergencyUndoExpiresAt is null || emergencyUndoExpiresAt <= DateTimeOffset.UtcNow) return;
+        await Run("clear-emergency");
+    }
     public void Dispose() => Coordinator.Changed -= OnChanged;
     private static string FormatMedia(MediaProperties? media) => media is null ? "Unknown" : $"{media.Width}×{media.Height} {FormatRate(media)} · {media.VideoCodec}";
     private static string FormatRate(MediaProperties media) => media.Interlaced is null

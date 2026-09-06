@@ -880,6 +880,10 @@ tr:hover td {
 .audit-state { min-width: 240px; white-space: normal; }
 .audit-reason { min-width: 260px; white-space: normal; }
 .settings-save-bar { position: sticky; z-index: 12; bottom: 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 9px; background: #111b2e; box-shadow: 0 8px 30px rgba(0, 0, 0, .34); }
+.undo-bar { position: fixed; z-index: 70; inset: auto 24px 24px auto; display: flex; width: min(520px, calc(100vw - 48px)); align-items: center; justify-content: space-between; gap: 18px; padding: 14px 16px; border: 1px solid #5688c3; border-radius: 10px; background: #13253d; box-shadow: 0 16px 44px rgba(0, 0, 0, .48); color: var(--text); }
+.undo-bar strong, .undo-bar span { display: block; }
+.undo-bar span { margin-top: 3px; color: #b8c7d9; font-size: 12px; }
+@media (max-width: 520px) { .undo-bar { inset: auto 12px 12px; width: auto; align-items: stretch; flex-direction: column; } .undo-bar .btn { width: 100%; } }
 .dialog-scrim { position: fixed; z-index: 89; inset: 0; background: rgba(3, 8, 16, .76); }
 .confirm-dialog { position: fixed; z-index: 90; inset: 50% auto auto 50%; width: min(92vw, 520px); margin: 0; padding: 20px; transform: translate(-50%, -50%); border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 24px 70px rgba(0, 0, 0, .55); }
 .confirm-dialog h2 { margin: 0 0 10px; }
