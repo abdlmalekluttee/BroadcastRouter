@@ -449,19 +449,11 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible,
-.btn:focus-visible,
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-summary:focus-visible,
 a:focus-visible,
 [tabindex]:focus-visible {
     outline: 2px solid var(--blue);
     outline-offset: 2px;
     box-shadow: 0 0 0 4px rgba(66, 153, 255, .25);
-    outline: 3px solid rgba(66, 153, 255, .42);
-    outline-offset: 2px;
 }
 
 .btn.primary {
@@ -836,3 +828,44 @@ tr:hover td {
 @media(max-width:720px){.decklink-visual,.decklink-visual.compact{grid-template-columns:1fr}.decklink-product-well{min-height:150px}.decklink-port-map{grid-template-columns:1fr}.decklink-port-map-item{grid-template-columns:auto minmax(0,1fr)}.decklink-port-owner{grid-column:2;text-align:left;max-width:none}.decklink-guide-grid{grid-template-columns:1fr}.decklink-guide-image img{height:auto;max-height:260px}.route-hardware-guide>summary{align-items:flex-start}.route-hardware-guide>summary .badge{flex:none}}
 @media(max-width:720px){.decklink-visual,.decklink-visual.compact{grid-template-columns:1fr}.decklink-product-well{min-height:150px}.decklink-port-map{grid-template-columns:1fr}.decklink-port-map-item{grid-template-columns:auto minmax(0,1fr)}.decklink-port-owner{grid-column:2;text-align:left;max-width:none}.decklink-guide-grid{grid-template-columns:1fr}.decklink-guide-image img{height:auto;max-height:260px}.decklink-update-source{align-items:flex-start;flex-direction:column}.route-hardware-guide>summary{align-items:flex-start}.route-hardware-guide>summary .badge{flex:none}}
 @container (max-width:620px){.decklink-card-setting .decklink-visual.compact{grid-template-columns:1fr}.decklink-card-setting .decklink-card-facts{grid-template-columns:1fr}.decklink-card-setting .decklink-card-facts .wide{grid-column:auto}.decklink-card-setting .decklink-guide-grid{grid-template-columns:1fr}}
+
+/* Shared structural primitives retained from the original production surface. */
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.actions:has(.danger) { gap: 12px; }
+.grid { display: grid; gap: 16px; }
+.panel-body { padding: 18px; }
+.primary-text { font-weight: 650; }
+.secondary-text { display: block; max-width: 350px; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; }
+.form-grid { display: grid; grid-template-columns: repeat(3, minmax(200px, 1fr)); gap: 14px; }
+.form-group { display: flex; flex-direction: column; gap: 6px; }
+.form-group.wide { grid-column: 1 / -1; }
+.check { display: flex; align-items: center; gap: 8px; margin-top: 20px; }
+.two-col { grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); }
+.port-grid { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.port-card { position: relative; }
+.port-card .connector { position: absolute; inset-block-start: 18px; inset-inline-end: 18px; width: 16px; height: 16px; border: 3px solid #54708e; border-radius: 50%; background: #142031; }
+.port-card.occupied .connector { border-color: #8be7bc; border-radius: 3px; background: var(--green); }
+.port-card-title { margin: 8px 0 0; font-size: 17px; }
+.meter { height: 5px; margin-top: 8px; overflow: hidden; border-radius: 4px; background: #1d2e44; }
+.meter span { display: block; height: 100%; background: var(--accent); }
+.log-error { color: #ff929a; }
+.log-warning { color: #ffd077; }
+.mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+.validation-list { margin: 0; padding: 0; list-style: none; }
+.validation-list li { padding: 7px 0; border-bottom: 1px solid #1d2d42; }
+.validation-list li:last-child { border: 0; }
+.validation-list .pass { color: #6ce4b0; }
+.validation-list .fail { color: #ff929a; }
+.validation-list .warn { color: #ffd077; }
+.connector-dot.active { border-radius: 2px; }
+.preview-screen-content h3 { margin: 10px 0; font-size: 24px; }
+
+@media (max-width: 1050px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .form-grid, .two-col { grid-template-columns: 1fr; }
+    .form-group.wide { grid-column: auto; }
+}
+
+@media (max-width: 650px) {
+    .stats { grid-template-columns: 1fr 1fr; }
+}

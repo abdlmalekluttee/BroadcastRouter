@@ -14,7 +14,11 @@
     </div></Authorized></AuthorizeView>
 </div>
 @if (!string.IsNullOrWhiteSpace(error)) { <div class="notice danger" role="alert">@error</div> }
-<div class="secondary-text" role="status">Status updated @snapshot.UpdatedAt.ToLocalTime().ToString("HH:mm:ss")@((DateTimeOffset.UtcNow - snapshot.UpdatedAt) > TimeSpan.FromSeconds(5) ? " · data may be stale" : "") · @snapshot.StatusMessage</div>
+<div class="secondary-text"><span aria-hidden="true">Status updated @snapshot.UpdatedAt.ToLocalTime().ToString("HH:mm:ss") · </span><span>@snapshot.StatusMessage</span></div>
+@if ((DateTimeOffset.UtcNow - snapshot.UpdatedAt) > TimeSpan.FromSeconds(5))
+{
+    <div class="notice warning" role="status" aria-live="polite">Runtime data may be stale. Check the server connection before issuing a control command.</div>
+}
 
 @if (snapshot.SimulationMode)
 {

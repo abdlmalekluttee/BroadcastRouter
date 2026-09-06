@@ -31,8 +31,8 @@
             @foreach (var port in Ports.OrderBy(value => value.SubdeviceIndex))
             {
                 var route = AssignedRoute(port);
-                <div class="decklink-port-map-item" @key="port.StableId">
-                    <span class="connector-dot @(route is null ? "" : "active")"></span>
+                <div class="decklink-port-map-item" @key="port.StableId" aria-label="@(route is null ? $"{DeckLinkDisplayName.Connector(port)}: Free" : $"{DeckLinkDisplayName.Connector(port)}: Occupied by {route.SourceName}")">
+                    <span class="connector-dot @(route is null ? "" : "active")" aria-hidden="true"></span>
                     <span><strong>Connector @(port.SubdeviceIndex + 1) · @DeckLinkDisplayName.Connector(port)</strong><small>@(port.IsOutputPort ? "Output" : "Input / excluded") · @(port.IsAvailable ? "available" : "unavailable")</small></span>
                     <span class="decklink-port-owner">@(route?.SourceName ?? (port.IsOutputPort ? "Standby / idle" : "Not routable"))</span>
                 </div>
