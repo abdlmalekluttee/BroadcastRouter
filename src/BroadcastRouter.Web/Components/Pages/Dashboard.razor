@@ -56,7 +56,7 @@
                 <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn small" @onclick='() => Run("restart", route.SourceId)'>Restart</button><button class="btn small" @onclick='() => Run("stop", route.SourceId)'>Stop</button></div></Authorized></AuthorizeView></td>
             </tr>
         }
-        @if (snapshot.Routes.Count == 0) { <tr><td colspan="9"><div class="empty-state">No routes have been created.</div></td></tr> }
+        @if (snapshot.Routes.Count == 0) { <tr><td colspan="9"><div class="empty-state"><strong>No routes have been created.</strong><p>A route connects an incoming source to an enabled DeckLink output.</p><a class="btn primary" href="/routes">Open routing matrix</a></div></td></tr> }
         </tbody></table>
     </div>
 </div>

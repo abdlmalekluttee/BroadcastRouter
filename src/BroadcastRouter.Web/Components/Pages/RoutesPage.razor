@@ -11,7 +11,7 @@
 <ConfirmDialog @ref="confirmDialog" />
 <div class="page-head">
     <div><h1>Routes / Routing Matrix</h1><p class="lead">Every route acquires one atomic port lease before FFmpeg is allowed to start.</p></div>
-    <AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@busy" @onclick='() => Run("rescan", "")'>Reconcile now</button><button class="btn danger" disabled="@busy" @onclick='() => Run("emergency-stop", "")'>Emergency stop</button></div></Authorized></AuthorizeView>
+    <AuthorizeView Roles="Administrator"><Authorized><div class="actions"><button class="btn" disabled="@pageBusy" @onclick='() => Run("rescan", "")'>@(pageBusy ? "Reconciling…" : "Reconcile now")</button><button class="btn danger" disabled="@pageBusy" @onclick='() => Run("emergency-stop", "")'>@(pageBusy ? "Stopping…" : "Emergency stop")</button></div></Authorized></AuthorizeView>
 </div>
 <NoticeBoard Severity="danger" @bind-Message="error" />
 <NoticeBoard Severity="success" @bind-Message="confirmation" />
@@ -44,10 +44,10 @@
             <AuthorizeView Roles="Administrator">
                 <Authorized>
                     <div class="route-assignment-fields">
-                        <div class="form-group"><label>DeckLink output</label><select aria-label="Output for @route.SourceName" disabled="@busy" value="@SelectedPort(route)" @onchange="eventArgs => SelectPort(route.SourceId, eventArgs.Value?.ToString())"><option value="">Automatic / unassigned</option>@if(IsUnavailableOutput(SelectedPort(route))){<option value="@SelectedPort(route)">Saved output unavailable or excluded (@DeckLinkDisplayName.ShortIdentity(SelectedPort(route)))</option>}@foreach (var port in OrderedPorts()) { <option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option> }</select></div>
-                        <div class="form-group"><label>Output preset</label><select aria-label="Preset for @route.SourceName" disabled="@busy" value="@SelectedPreset(route)" @onchange="eventArgs => SelectPreset(route.SourceId, eventArgs.Value?.ToString())">@foreach (var preset in presets) { <option value="@preset.Id">@preset.Name</option> }</select></div>
+                        <div class="form-group"><label>DeckLink output</label><select aria-label="Output for @route.SourceName" disabled="@IsBusy(route.SourceId)" value="@SelectedPort(route)" @onchange="eventArgs => SelectPort(route.SourceId, eventArgs.Value?.ToString())"><option value="">Automatic / unassigned</option>@if(IsUnavailableOutput(SelectedPort(route))){<option value="@SelectedPort(route)">Saved output unavailable or excluded (@DeckLinkDisplayName.ShortIdentity(SelectedPort(route)))</option>}@foreach (var port in OrderedPorts()) { <option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option> }</select></div>
+                        <div class="form-group"><label>Output preset</label><select aria-label="Preset for @route.SourceName" disabled="@IsBusy(route.SourceId)" value="@SelectedPreset(route)" @onchange="eventArgs => SelectPreset(route.SourceId, eventArgs.Value?.ToString())">@foreach (var preset in presets) { <option value="@preset.Id">@preset.Name</option> }</select></div>
                         <div class="form-group"><label>Saved routing priority</label><select aria-label="Assignment type for @route.SourceName" value="@SelectedMode(route)" @onchange="eventArgs => SelectMode(route.SourceId, eventArgs.Value?.ToString())"><option value="@AssignmentMode.Preconfigured">Preconfigured (highest)</option><option value="@AssignmentMode.Manual">Manual</option></select></div>
-                        <div class="form-group route-apply"><label>Assignment change</label><button class="btn primary" disabled="@(busy || presets.Count == 0 || string.IsNullOrWhiteSpace(SelectedPort(route)))" @onclick="() => ApplyAssignment(route)">Save assignment</button></div>
+                        <div class="form-group route-apply"><label>Assignment change</label><button class="btn primary" disabled="@(IsBusy(route.SourceId) || presets.Count == 0 || string.IsNullOrWhiteSpace(SelectedPort(route)))" @onclick="() => ApplyAssignment(route)">@(IsBusy(route.SourceId) ? "Saving…" : "Save assignment")</button></div>
                     </div>
                     <div class="route-policy-options"><label class="check"><input type="checkbox" checked="@ReserveOffline(route)" @onchange="eventArgs => SetReserveOffline(route.SourceId, eventArgs.Value)" />Reserve output while stream is offline</label><label class="check"><input type="checkbox" checked="@AllowTemporary(route)" @onchange="eventArgs => SetAllowTemporary(route.SourceId, eventArgs.Value)" />Allow automatic streams to use it temporarily</label></div>
                 </Authorized>
@@ -64,15 +64,15 @@
             @if (route.HoldOutputWhilePublisherLive || IsWowzaSource(route))
             {
                 <div class="route-controls">
-                    <button class="btn small @(route.HoldOutputWhilePublisherLive ? "warning" : "")" disabled="@busy"
+                    <button class="btn small @(route.HoldOutputWhilePublisherLive ? "warning" : "")" disabled="@IsBusy(route.SourceId)"
                             aria-pressed="@route.HoldOutputWhilePublisherLive.ToString().ToLowerInvariant()"
                             @onclick='() => Run(route.HoldOutputWhilePublisherLive ? "disable-live-hold" : "enable-live-hold", route.SourceId)'>Hold while Wowza live: @(route.HoldOutputWhilePublisherLive ? "On" : "Off")</button>
                     <span class="secondary-text">Saved immediately per stream. Manual restart and crash recovery remain available.</span>
                 </div>
             }
         </Authorized></AuthorizeView>
-        <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls"><button class="btn small primary" disabled="@busy" @onclick='() => Run("restore", route.SourceId)'>Activate / restore</button><button class="btn small" disabled="@busy" @onclick='() => Run("restart", route.SourceId)'>Restart live output</button>@if(DesiredRoutePolicy.HasSavedAssignment(route)){<button class="btn small danger" disabled="@busy" @onclick='() => Run("remove-assignment", route.SourceId)'>Remove saved assignment</button>}else{<button class="btn small danger" disabled="@busy" @onclick='() => Run("stop", route.SourceId)'>Release automatic route</button>}</footer></Authorized></AuthorizeView>
-        @if (snapshot.SimulationMode) { <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls simulation-controls"><span class="secondary-text">Simulation:</span><button class="btn small" disabled="@busy" @onclick='() => Run("simulate-failure", route.SourceId)'>Crash</button><button class="btn small" disabled="@busy" @onclick='() => Run("simulate-stall", route.SourceId)'>Stall</button><button class="btn small" disabled="@busy" @onclick='() => Run("clear-failure", route.SourceId)'>Recover</button></footer></Authorized></AuthorizeView> }
+        <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls"><button class="btn small primary" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("restore", route.SourceId)'>@(IsBusy(route.SourceId) ? "Working…" : "Activate / restore")</button><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("restart", route.SourceId)'>Restart live output</button><button class="btn small danger" disabled="@(IsBusy(route.SourceId) || !DesiredRoutePolicy.HasSavedAssignment(route))" title="@(DesiredRoutePolicy.HasSavedAssignment(route) ? "Remove the saved assignment" : "This route has no saved assignment")" @onclick='() => Run("remove-assignment", route.SourceId)'>Remove saved assignment</button><button class="btn small danger" disabled="@(IsBusy(route.SourceId) || DesiredRoutePolicy.HasSavedAssignment(route))" title="@(!DesiredRoutePolicy.HasSavedAssignment(route) ? "Release the automatic route" : "Saved assignments must be removed instead")" @onclick='() => Run("stop", route.SourceId)'>Release automatic route</button></footer></Authorized></AuthorizeView>
+        @if (snapshot.SimulationMode) { <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls simulation-controls"><span class="secondary-text">Simulation:</span><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("simulate-failure", route.SourceId)'>Crash</button><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("simulate-stall", route.SourceId)'>Stall</button><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("clear-failure", route.SourceId)'>Recover</button></footer></Authorized></AuthorizeView> }
     </article>
 }
 @if (snapshot.Routes.Count == 0) { <div class="panel"><div class="empty-state">No desired routes are currently configured.</div></div> }
@@ -84,7 +84,7 @@
         <div class="form-group"><label>Output port</label><select aria-label="Manual route output" @bind="selectedPort"><option value="">Select an output…</option>@foreach (var port in OrderedPorts()) { <option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option> }</select></div>
         <div class="form-group"><label>Output preset</label><select aria-label="Manual route preset" @bind="selectedPreset">@foreach (var preset in presets) { <option value="@preset.Id">@preset.Name</option> }</select></div>
         <div class="form-group"><label>Routing priority</label><select aria-label="New route assignment type" @bind="selectedMode"><option value="@AssignmentMode.Preconfigured">Preconfigured (highest)</option><option value="@AssignmentMode.Manual">Manual</option></select></div>
-        <div class="form-group route-apply"><label>Routing entry</label><button class="btn primary" disabled="@(busy || string.IsNullOrWhiteSpace(selectedSource) || string.IsNullOrWhiteSpace(selectedPort) || string.IsNullOrWhiteSpace(selectedPreset))" @onclick="CreateRoute">Save routing entry</button></div>
+        <div class="form-group route-apply"><label>Routing entry</label><button class="btn primary" disabled="@(pageBusy || string.IsNullOrWhiteSpace(selectedSource) || string.IsNullOrWhiteSpace(selectedPort) || string.IsNullOrWhiteSpace(selectedPreset))" @onclick="CreateRoute">@(pageBusy ? "Saving…" : "Save routing entry")</button></div>
     </div></div></div>
 </Authorized></AuthorizeView>
 
@@ -102,7 +102,8 @@
     private AssignmentMode selectedMode = AssignmentMode.Manual;
     private string error = "";
     private string confirmation = "";
-    private bool busy;
+    private bool pageBusy;
+    private readonly HashSet<string> busySourceIds = new(StringComparer.Ordinal);
     private long settingsRevision = -1;
 
     protected override void OnInitialized()
@@ -150,31 +151,33 @@
 
     private async Task Run(string action, string source)
     {
-        if (busy) return;
+        var isPageCommand = string.IsNullOrWhiteSpace(source);
+        if (isPageCommand ? pageBusy : IsBusy(source)) return;
         if (action == "emergency-stop" && !await confirmDialog.ShowAsync("Emergency stop", "Emergency stop will terminate every FFmpeg process owned by BroadcastRouter and release its routes.", "Stop all outputs")) return;
         var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source);
         if (action == "enable-live-hold" && !await confirmDialog.ShowAsync("Disable media recovery", "A frozen picture or muted audio may persist until you manually restart while Wowza last reports live. Publisher-stop and process-exit recovery remain enabled.", "Disable recovery")) return;
         if (action == "remove-assignment" && !await confirmDialog.ShowAsync("Remove saved assignment", "This removes the saved routing entry and releases its output for other streams.", "Remove assignment")) return;
         try
         {
-            busy = true; error = ""; confirmation = "";
+            if (isPageCommand) pageBusy = true; else busySourceIds.Add(source);
+            error = ""; confirmation = "";
             await Commands.ExecuteAsync(action, string.IsNullOrWhiteSpace(source) ? null : source);
             snapshot = Coordinator.Snapshot;
             if (action is "enable-live-hold" or "disable-live-hold")
                 confirmation = $"Recovery setting saved and applied successfully at {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}.";
         }
         catch (Exception ex) { error = OperatorErrors.Describe(ex, "the route command"); }
-        finally { busy = false; }
+        finally { if (isPageCommand) pageBusy = false; else busySourceIds.Remove(source); }
     }
 
     private async Task ApplyAssignment(RuntimeRoute route)
     {
-        if (busy) return;
+        if (IsBusy(route.SourceId)) return;
         var port = SelectedPort(route);
         var preset = SelectedPreset(route);
         try
         {
-            busy = true;
+            busySourceIds.Add(route.SourceId);
             error = "";
             await Commands.ExecuteAsync("save-assignment", route.SourceId, port, preset, SelectedMode(route),
                 ReserveOffline(route), AllowTemporary(route));
@@ -182,20 +185,21 @@
             selectedPresets.Remove(route.SourceId);
         }
         catch (Exception ex) { error = OperatorErrors.Describe(ex, "saving the route assignment"); }
-        finally { busy = false; }
+        finally { busySourceIds.Remove(route.SourceId); }
     }
 
     private async Task CreateRoute()
     {
-        if (busy) return;
-        try { busy = true; error = ""; await Commands.ExecuteAsync("save-assignment", selectedSource, selectedPort, selectedPreset,
+        if (pageBusy) return;
+        try { pageBusy = true; error = ""; await Commands.ExecuteAsync("save-assignment", selectedSource, selectedPort, selectedPreset,
             selectedMode, reserveWhileOffline: true, allowTemporaryUse: false); }
         catch (Exception ex) { error = OperatorErrors.Describe(ex, "creating the route"); }
-        finally { busy = false; }
+        finally { pageBusy = false; }
     }
 
     public void Dispose() => Coordinator.Changed -= Changed;
     private ConfirmDialog confirmDialog = null!;
+    private bool IsBusy(string sourceId) => pageBusy || busySourceIds.Contains(sourceId);
     private bool IsWowzaSource(RuntimeRoute route) => snapshot.Sources.Any(source =>
         source.Identity.Value == route.SourceId && !source.Identity.ServerId.Equals("MANUAL", StringComparison.OrdinalIgnoreCase));
     private string RouteStatus(RuntimeRoute route)

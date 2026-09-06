@@ -4,10 +4,13 @@
 @inject AuthorizedRouterCommands Commands
 @inject DeckLinkAssetCatalog AssetCatalog
 @inject DeckLinkSoftwareInformationProvider SoftwareInformationProvider
+@inject OperatorErrorMessage OperatorErrors
 @implements IDisposable
 
 <PageTitle>DeckLink Outputs · BroadcastRouter</PageTitle>
-<div class="page-head"><div><h1>DeckLink ports</h1><p class="lead">Only connectors explicitly marked as output ports can be routed. Idle output ports show their configured standby screen.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><a class="btn" href="/settings">Configure ports</a><button class="btn" @onclick='() => Commands.ExecuteAsync("rescan")'>Rescan hardware</button></div></Authorized></AuthorizeView></div>
+<div class="page-head"><div><h1>DeckLink ports</h1><p class="lead">Only connectors explicitly marked as output ports can be routed. Idle output ports show their configured standby screen.</p></div><AuthorizeView Roles="Administrator"><Authorized><div class="actions"><a class="btn" href="/settings">Configure ports</a><button class="btn" disabled="@rescanBusy" @onclick="Rescan">@(rescanBusy ? "Rescanning…" : "Rescan hardware")</button></div></Authorized></AuthorizeView></div>
+<NoticeBoard Severity="danger" @bind-Message="error" />
+<NoticeBoard Severity="success" @bind-Message="confirmation" />
 @if (!snapshot.SimulationMode && !snapshot.ToolValidation.CanStartHardwareRoutes) { <div class="notice danger">DeckLink starts are blocked: @snapshot.ToolValidation.Findings.LastOrDefault(x => x.StartsWith("FAIL"))</div> }
 @if (!AssetCatalog.Status.Installed)
 {
@@ -57,6 +60,9 @@ else if (snapshot.Ports.Count > 0)
     private RouterSnapshot snapshot = null!;
     private DeckLinkSoftwareInformation softwareInformation = DeckLinkSoftwareInformation.Unavailable;
     private bool softwareInformationLoading;
+    private bool rescanBusy;
+    private string error = "";
+    private string confirmation = "";
     protected override void OnInitialized()
     {
         snapshot = Coordinator.Snapshot;
@@ -87,6 +93,21 @@ else if (snapshot.Ports.Count > 0)
         }
     }
     private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
+    private async Task Rescan()
+    {
+        if (rescanBusy) return;
+        try
+        {
+            rescanBusy = true;
+            error = "";
+            confirmation = "";
+            await Commands.ExecuteAsync("rescan");
+            snapshot = Coordinator.Snapshot;
+            confirmation = $"Hardware rescan completed. {snapshot.Ports.Count} DeckLink connectors are visible.";
+        }
+        catch (Exception ex) { error = OperatorErrors.Describe(ex, "the DeckLink hardware rescan"); }
+        finally { rescanBusy = false; }
+    }
     private IReadOnlyList<CardView> CardGroups() => snapshot.Ports
         .GroupBy(port => port.DeviceGroupId ?? $"legacy-card-{port.CardIndex}", StringComparer.OrdinalIgnoreCase)
         .Select(group => new CardView(group.Key, group.OrderBy(port => port.SubdeviceIndex).ToArray()))
