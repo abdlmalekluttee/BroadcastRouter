@@ -6,6 +6,7 @@
 @inject DeckLinkAssetCatalog AssetCatalog
 @inject OperatorErrorMessage OperatorErrors
 @inject NavigationManager Navigation
+@inject IJSRuntime JS
 @implements IDisposable
 
 <PageTitle>Routes · BroadcastRouter</PageTitle>
@@ -35,64 +36,36 @@
     </details>
 }
 
-<div class="route-list">
-@foreach (var route in FilteredRoutes)
-{
-    <article class="route-editor" @key="route.SourceId">
-        <header class="route-editor-head">
-            <div class="route-title"><AuthorizeView Roles="Administrator"><Authorized><input type="checkbox" aria-label="Select route @route.SourceName" checked="@selectedRouteIds.Contains(route.SourceId)" @onchange="args => ToggleRoute(route.SourceId, args.Value)" /></Authorized></AuthorizeView><span><strong>@route.SourceName</strong><span class="secondary-text mono">@route.SourceId</span></span></div>
-            <div class="route-state"><BroadcastRouter.Web.Components.Shared.StateBadge Value="RouteStatus(route)" /><span class="badge @AssignmentBadgeClass(route)">@AssignmentStatus(route)</span>@if (route.Locked) { <span class="badge warning">reserved</span> }</div>
-        </header>
-        <div class="route-summary-grid">
-            <div><span class="field-label">Priority</span><strong>@route.Priority</strong></div>
-            <div><span class="field-label">Assignment</span><strong>@route.AssignmentMode</strong></div>
-            <div><span class="field-label">Health</span><strong>@(route.Fps?.ToString("0.00") ?? "—") fps</strong><span class="secondary-text">drop @route.DroppedFrames · dup @route.DuplicatedFrames · retry @route.RestartCount</span></div>
-            <AuthorizeView Roles="Administrator">
-                <Authorized>
-                    <div class="route-assignment-fields">
-                        <div class="form-group"><label>DeckLink output</label><select aria-label="Output for @route.SourceName" disabled="@IsBusy(route.SourceId)" value="@SelectedPort(route)" @onchange="eventArgs => SelectPort(route.SourceId, eventArgs.Value?.ToString())"><option value="">Automatic / unassigned</option>@if(IsUnavailableOutput(SelectedPort(route))){<option value="@SelectedPort(route)">Saved output unavailable or excluded (@DeckLinkDisplayName.ShortIdentity(SelectedPort(route)))</option>}@foreach (var port in OrderedPorts()) { <option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option> }</select></div>
-                        <div class="form-group"><label>Output preset</label><select aria-label="Preset for @route.SourceName" disabled="@IsBusy(route.SourceId)" value="@SelectedPreset(route)" @onchange="eventArgs => SelectPreset(route.SourceId, eventArgs.Value?.ToString())">@foreach (var preset in presets) { <option value="@preset.Id">@preset.Name</option> }</select></div>
-                        <div class="form-group"><label>Saved routing priority</label><select aria-label="Assignment type for @route.SourceName" value="@SelectedMode(route)" @onchange="eventArgs => SelectMode(route.SourceId, eventArgs.Value?.ToString())"><option value="@AssignmentMode.Preconfigured">Preconfigured (highest)</option><option value="@AssignmentMode.Manual">Manual</option></select></div>
-                        <div class="form-group route-apply"><label>Assignment change</label><button class="btn primary" disabled="@(IsBusy(route.SourceId) || presets.Count == 0 || string.IsNullOrWhiteSpace(SelectedPort(route)))" @onclick="() => ApplyAssignment(route)">@(IsBusy(route.SourceId) ? "Saving…" : "Save assignment")</button></div>
-                    </div>
-                    <div class="route-policy-options"><label class="check"><input type="checkbox" checked="@ReserveOffline(route)" @onchange="eventArgs => SetReserveOffline(route.SourceId, eventArgs.Value)" />Reserve output while stream is offline</label><label class="check"><input type="checkbox" checked="@AllowTemporary(route)" @onchange="eventArgs => SetAllowTemporary(route.SourceId, eventArgs.Value)" />Allow automatic streams to use it temporarily</label></div>
-                </Authorized>
-                <NotAuthorized>
-                    <div><span class="field-label">DeckLink output</span><strong>@RoutePortName(route)</strong><span class="secondary-text">Preset @route.PresetId</span></div>
-                </NotAuthorized>
-            </AuthorizeView>
+<div class="routing-workspace @density">
+    <section class="panel matrix-panel">
+        <div class="panel-head"><div><h2>Source × output matrix</h2><span class="secondary-text">Select a cell to inspect it. Assignment starts only after Save assignment in the detail panel.</span></div><button class="btn small" type="button" @onclick="ToggleDensity">Density: @(density == "compact" ? "Compact" : "Comfortable")</button></div>
+        <div class="table-wrap matrix-scroll">
+            <table class="routing-matrix">
+                <thead>
+                    <tr><th class="matrix-source-column" rowspan="2" scope="col">Source</th>@foreach(var card in MatrixCardGroups){<th colspan="@card.Ports.Count" scope="colgroup">@DeckLinkDisplayName.Card(card.Ports[0])</th>}</tr>
+                    <tr>@foreach(var port in MatrixPorts){<th scope="col" class="@(!port.IsAvailable ? "port-unavailable" : "")"><button type="button" class="matrix-header-button" @onclick="() => SelectPortDetail(port)">@DeckLinkDisplayName.Connector(port)<span>SDI @(port.SubdeviceIndex + 1)</span></button></th>}</tr>
+                </thead>
+                <tbody>
+                    @for(var rowIndex = 0; rowIndex < MatrixRows.Count; rowIndex++)
+                    {
+                        var row = MatrixRows[rowIndex];
+                        <tr>
+                            <th scope="row" class="matrix-source-column"><div class="matrix-source"><AuthorizeView Roles="Administrator"><Authorized><input type="checkbox" aria-label="Select route @row.Name" checked="@selectedRouteIds.Contains(row.Id)" disabled="@(row.Route is null)" @onchange="args => ToggleRoute(row.Id, args.Value)" /></Authorized></AuthorizeView><button type="button" @onclick="() => SelectSourceDetail(row)"><strong>@row.Name</strong><span>@row.Id</span></button></div></th>
+                            @for(var columnIndex = 0; columnIndex < MatrixPorts.Count; columnIndex++)
+                            {
+                                var port = MatrixPorts[columnIndex];
+                                var r = rowIndex; var c = columnIndex;
+                                <td class="@(!port.IsAvailable ? "port-unavailable" : "")"><button type="button" draggable="@(ReferencesPort(row.Route, port))" data-matrix-row="@r" data-matrix-column="@c" tabindex="@(matrixRow == r && matrixColumn == c ? 0 : -1)" class="matrix-cell @CellClass(row, port)" disabled="@CellDisabled(row, port)" aria-label="@CellLabel(row, port)" title="@CellLabel(row, port)" @onclick="() => SelectCell(row, port)" @onkeydown="args => MatrixKeyDown(args, r, c)" @ondragstart="() => StartDrag(row)" @ondragover:preventDefault @ondrop="() => DropOn(row, port)"><span class="matrix-cell-mark" aria-hidden="true"></span>@if(ReferencesPort(row.Route, port) && row.Route?.Fps is not null){<span class="matrix-cell-detail">@row.Route.Fps.Value.ToString("0.00") fps</span>}</button></td>
+                            }
+                        </tr>
+                    }
+                    @if(MatrixRows.Count == 0){<tr><td colspan="@(MatrixPorts.Count + 1)"><div class="empty-state">No sources or saved routes match the current filter.</div></td></tr>}
+                </tbody>
+            </table>
         </div>
-        @if (route.HoldOutputWhilePublisherLive)
-        {
-            <div class="notice warning" role="status">Hold while Wowza live is ON. Frozen picture, silence, input errors, and media-mode changes will not trigger a restart while the owned live process is running and Wowza last confirmed live. API outages retain that confirmation. Publisher stop, process exit, and manual commands still take effect.</div>
-        }
-        <AuthorizeView Roles="Administrator"><Authorized>
-            @if (route.HoldOutputWhilePublisherLive || IsWowzaSource(route))
-            {
-                <div class="route-controls">
-                    <button class="btn small @(route.HoldOutputWhilePublisherLive ? "warning" : "")" disabled="@IsBusy(route.SourceId)"
-                            aria-pressed="@route.HoldOutputWhilePublisherLive.ToString().ToLowerInvariant()"
-                            @onclick='() => Run(route.HoldOutputWhilePublisherLive ? "disable-live-hold" : "enable-live-hold", route.SourceId)'>Hold while Wowza live: @(route.HoldOutputWhilePublisherLive ? "On" : "Off")</button>
-                    <span class="secondary-text">Saved immediately per stream. Manual restart and crash recovery remain available.</span>
-                </div>
-            }
-        </Authorized></AuthorizeView>
-        <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls"><button class="btn small primary" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("restore", route.SourceId)'>@(IsBusy(route.SourceId) ? "Working…" : "Activate / restore")</button><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("restart", route.SourceId)'>Restart live output</button><button class="btn small danger" disabled="@(IsBusy(route.SourceId) || !DesiredRoutePolicy.HasSavedAssignment(route))" title="@(DesiredRoutePolicy.HasSavedAssignment(route) ? "Remove the saved assignment" : "This route has no saved assignment")" @onclick='() => Run("remove-assignment", route.SourceId)'>Remove saved assignment</button><button class="btn small danger" disabled="@(IsBusy(route.SourceId) || DesiredRoutePolicy.HasSavedAssignment(route))" title="@(!DesiredRoutePolicy.HasSavedAssignment(route) ? "Release the automatic route" : "Saved assignments must be removed instead")" @onclick='() => Run("stop", route.SourceId)'>Release automatic route</button></footer></Authorized></AuthorizeView>
-        @if (snapshot.SimulationMode) { <AuthorizeView Roles="Administrator"><Authorized><footer class="route-controls simulation-controls"><span class="secondary-text">Simulation:</span><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("simulate-failure", route.SourceId)'>Crash</button><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("simulate-stall", route.SourceId)'>Stall</button><button class="btn small" disabled="@IsBusy(route.SourceId)" @onclick='() => Run("clear-failure", route.SourceId)'>Recover</button></footer></Authorized></AuthorizeView> }
-    </article>
-}
-@if (FilteredRoutes.Count == 0) { <div class="panel"><div class="empty-state">@(snapshot.Routes.Count == 0 ? "No desired routes are currently configured." : "No routes match the current filter.")</div></div> }
+    </section>
+    <RouteDetailPanel Snapshot="@snapshot" Presets="@presets" SelectedSourceId="@detailSourceId" SelectedPortId="@detailPortId" DraggedAssignment="@draggedAssignment" Refreshed="RefreshSnapshot" Closed="CloseDetail" />
 </div>
-
-<AuthorizeView Roles="Administrator"><Authorized>
-    <div class="panel"><div class="panel-head"><div><h2>Prepare a routing entry</h2><span class="secondary-text">Offline streams are accepted. The entry activates automatically as soon as the stream becomes ready.</span></div></div><div class="panel-body"><div class="manual-route-grid">
-        <div class="form-group"><label>Source</label><select aria-label="Manual route source" @bind="selectedSource"><option value="">Select source…</option>@foreach (var source in snapshot.Sources) { <option value="@source.Identity.Value">@source.FriendlyName</option> }</select></div>
-        <div class="form-group"><label>Output port</label><select aria-label="Manual route output" @bind="selectedPort"><option value="">Select an output…</option>@foreach (var port in OrderedPorts()) { <option value="@port.StableId">@DeckLinkDisplayName.Full(port)</option> }</select></div>
-        <div class="form-group"><label>Output preset</label><select aria-label="Manual route preset" @bind="selectedPreset">@foreach (var preset in presets) { <option value="@preset.Id">@preset.Name</option> }</select></div>
-        <div class="form-group"><label>Routing priority</label><select aria-label="New route assignment type" @bind="selectedMode"><option value="@AssignmentMode.Preconfigured">Preconfigured (highest)</option><option value="@AssignmentMode.Manual">Manual</option></select></div>
-        <div class="form-group route-apply"><label>Routing entry</label><button class="btn primary" disabled="@(pageBusy || string.IsNullOrWhiteSpace(selectedSource) || string.IsNullOrWhiteSpace(selectedPort) || string.IsNullOrWhiteSpace(selectedPreset))" @onclick="CreateRoute">@(pageBusy ? "Saving…" : "Save routing entry")</button></div>
-    </div></div></div>
-</Authorized></AuthorizeView>
 
 @code {
     [SupplyParameterFromQuery(Name = "q")] public string? Query { get; set; }
@@ -113,16 +86,44 @@
     private bool pageBusy;
     private readonly HashSet<string> busySourceIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> selectedRouteIds = new(StringComparer.Ordinal);
+    private string? detailSourceId;
+    private string? detailPortId;
+    private string? draggedSourceId;
+    private bool draggedAssignment;
+    private string density = "comfortable";
+    private int matrixRow;
+    private int matrixColumn;
     private long settingsRevision = -1;
     private string StateFilter => string.IsNullOrWhiteSpace(State) ? "all" : State.ToLowerInvariant();
     private static readonly (string Value, string Label)[] RouteFilterOptions = [("all", "All"), ("running", "Running"), ("waiting", "Waiting"), ("failed", "Failed"), ("offline", "Offline"), ("unassigned", "Unassigned")];
     private IReadOnlyList<RuntimeRoute> FilteredRoutes => snapshot.Routes.Where(route => string.IsNullOrWhiteSpace(Query) || route.SourceName.Contains(Query, StringComparison.OrdinalIgnoreCase) || route.SourceId.Contains(Query, StringComparison.OrdinalIgnoreCase)).Where(MatchesState).OrderBy(route => route.SourceName, StringComparer.OrdinalIgnoreCase).ToArray();
+    private IReadOnlyList<DeckLinkPort> MatrixPorts => OrderedPorts().ToArray();
+    private IReadOnlyList<CardView> MatrixCardGroups => MatrixPorts.GroupBy(port => port.DeviceGroupId ?? $"legacy-card-{port.CardIndex}", StringComparer.OrdinalIgnoreCase).Select(group => new CardView(group.Key, group.ToArray())).ToArray();
+    private IReadOnlyList<MatrixRow> MatrixRows
+    {
+        get
+        {
+            var sources = snapshot.Sources.ToDictionary(value => value.Identity.Value, StringComparer.Ordinal);
+            return snapshot.Sources.Select(value => value.Identity.Value).Concat(snapshot.Routes.Select(value => value.SourceId)).Distinct(StringComparer.Ordinal)
+                .Select(id => { sources.TryGetValue(id, out var source); var route = snapshot.Routes.FirstOrDefault(value => value.SourceId == id); return new MatrixRow(id, source?.FriendlyName ?? route?.SourceName ?? id, source, route); })
+                .Where(row => string.IsNullOrWhiteSpace(Query) || row.Name.Contains(Query, StringComparison.OrdinalIgnoreCase) || row.Id.Contains(Query, StringComparison.OrdinalIgnoreCase))
+                .Where(row => row.Route is not null ? MatchesState(row.Route) : StateFilter is "all" or "offline" or "unassigned")
+                .OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+    }
 
     protected override void OnInitialized()
     {
         snapshot = Coordinator.Snapshot;
         RefreshPresets();
         Coordinator.Changed += Changed;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        var saved = await JS.InvokeAsync<string?>("broadcastRouter.getDensity");
+        if (saved is "compact" or "comfortable") { density = saved; StateHasChanged(); }
     }
 
     private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; if (settingsRevision != Coordinator.SettingsRevision) RefreshPresets(); StateHasChanged(); });
@@ -153,8 +154,8 @@
         .OrderBy(DeckLinkDisplayName.Card, StringComparer.OrdinalIgnoreCase)
         .ThenBy(DeckLinkDisplayName.Connector, StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<CardView> OutputCardGroups() => snapshot.Ports
+        .Where(port => port.IsOutputPort)
         .GroupBy(port => port.DeviceGroupId ?? $"legacy-card-{port.CardIndex}", StringComparer.OrdinalIgnoreCase)
-        .Where(group => group.Any(port => port.IsOutputPort))
         .Select(group => new CardView(group.Key, group.OrderBy(port => port.SubdeviceIndex).ToArray()))
         .OrderBy(card => DeckLinkDisplayName.Card(card.Ports[0]), StringComparer.OrdinalIgnoreCase)
         .ToArray();
@@ -174,6 +175,70 @@
         try { pageBusy = true; error = ""; foreach(var id in ids) await Commands.ExecuteAsync(command, id); selectedRouteIds.Clear(); confirmation = $"{ids.Length} routes received the {action} command."; }
         catch(Exception ex) { error = OperatorErrors.Describe(ex, $"the bulk {action} command"); }
         finally { pageBusy = false; }
+    }
+
+    private static bool ReferencesPort(RuntimeRoute? route, DeckLinkPort port) => route is not null
+        && (route.PortId?.Equals(port.StableId, StringComparison.OrdinalIgnoreCase) == true
+            || route.DesiredPortId?.Equals(port.StableId, StringComparison.OrdinalIgnoreCase) == true);
+    private RuntimeRoute? PortOwner(DeckLinkPort port) => snapshot.Routes.FirstOrDefault(route => route.State != RouteState.Released && ReferencesPort(route, port));
+    private bool CellDisabled(MatrixRow row, DeckLinkPort port) => !port.IsAvailable || (PortOwner(port) is { } owner && owner.SourceId != row.Id);
+    private string CellClass(MatrixRow row, DeckLinkPort port)
+    {
+        if (!port.IsAvailable) return "unavailable";
+        var route = row.Route;
+        if (!ReferencesPort(route, port)) return PortOwner(port) is null ? "free" : "occupied-other";
+        if (route!.FailureCategory == "RoutingConflict") return "conflict";
+        if (route.State == RouteState.Reconnecting) return "reconnecting";
+        if (route.State == RouteState.Failed) return "failed";
+        if (route.State == RouteState.WaitingForStream) return "waiting";
+        if (route.State == RouteState.Running && route.PortId?.Equals(port.StableId, StringComparison.OrdinalIgnoreCase) == true) return "running";
+        var sourceOffline = row.Source is null || row.Source.State is SourceState.PublisherDisconnected or SourceState.RtspUnavailable or SourceState.Disabled;
+        if (route.Locked || (route.ReserveWhileOffline && sourceOffline)) return "reserved";
+        return "desired";
+    }
+    private string CellLabel(MatrixRow row, DeckLinkPort port)
+    {
+        var state = CellClass(row, port) switch
+        {
+            "occupied-other" => $"Occupied by {PortOwner(port)?.SourceName}",
+            "free" => "Free; select to prepare assignment",
+            "running" => $"Running, {row.Route?.Fps?.ToString("0.00") ?? "unknown"} fps",
+            "reconnecting" => "Reconnecting",
+            "failed" => $"Failed, {row.Route?.FailureCategory}",
+            "waiting" => "Waiting for stream",
+            "reserved" => "Reserved or locked",
+            "desired" => "Desired but not active",
+            "conflict" => "Routing conflict",
+            _ => "Port unavailable"
+        };
+        return $"{row.Name} to {DeckLinkDisplayName.Full(port)}: {state}";
+    }
+    private void SelectCell(MatrixRow row, DeckLinkPort port) { detailSourceId = row.Id; detailPortId = port.StableId; draggedAssignment = false; }
+    private void SelectSourceDetail(MatrixRow row) { detailSourceId = row.Id; detailPortId = null; draggedAssignment = false; }
+    private void SelectPortDetail(DeckLinkPort port) { detailSourceId = null; detailPortId = port.StableId; draggedAssignment = false; }
+    private void StartDrag(MatrixRow row) => draggedSourceId = row.Route is null ? null : row.Id;
+    private void DropOn(MatrixRow row, DeckLinkPort port) { if(draggedSourceId != row.Id || CellDisabled(row, port)) return; detailSourceId = row.Id; detailPortId = port.StableId; draggedAssignment = !ReferencesPort(row.Route, port); draggedSourceId = null; }
+    private Task RefreshSnapshot() { snapshot = Coordinator.Snapshot; StateHasChanged(); return Task.CompletedTask; }
+    private Task CloseDetail() { detailSourceId = null; detailPortId = null; draggedAssignment = false; return Task.CompletedTask; }
+    private async Task ToggleDensity() { density = density == "compact" ? "comfortable" : "compact"; await JS.InvokeVoidAsync("broadcastRouter.setDensity", density); }
+    private async Task MatrixKeyDown(KeyboardEventArgs args, int row, int column)
+    {
+        var rows = MatrixRows.Count; var columns = MatrixPorts.Count;
+        if (rows == 0 || columns == 0) return;
+        var nextRow = row; var nextColumn = column;
+        switch(args.Key)
+        {
+            case "ArrowLeft": nextColumn = Math.Max(0, column - 1); break;
+            case "ArrowRight": nextColumn = Math.Min(columns - 1, column + 1); break;
+            case "ArrowUp": nextRow = Math.Max(0, row - 1); break;
+            case "ArrowDown": nextRow = Math.Min(rows - 1, row + 1); break;
+            case "Home": nextColumn = 0; break;
+            case "End": nextColumn = columns - 1; break;
+            case "Escape": await CloseDetail(); return;
+            default: return;
+        }
+        matrixRow = nextRow; matrixColumn = nextColumn;
+        await JS.InvokeVoidAsync("broadcastRouter.focusMatrixCell", nextRow, nextColumn);
     }
 
     private async Task Run(string action, string source)
@@ -253,4 +318,5 @@
         _ => "unassigned"
     };
     private sealed record CardView(string Key, IReadOnlyList<DeckLinkPort> Ports);
+    private sealed record MatrixRow(string Id, string Name, DiscoveredSource? Source, RuntimeRoute? Route);
 }

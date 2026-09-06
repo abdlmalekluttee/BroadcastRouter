@@ -6,6 +6,12 @@
     const navigate = path => window.location.assign(path);
     const shortcutSheet = () => document.getElementById('br-shortcuts');
 
+    window.broadcastRouter = {
+        getDensity: () => localStorage.getItem('broadcastRouterDensity'),
+        setDensity: value => localStorage.setItem('broadcastRouterDensity', value),
+        focusMatrixCell: (row, column) => document.querySelector(`[data-matrix-row="${row}"][data-matrix-column="${column}"]`)?.focus()
+    };
+
     document.addEventListener('keydown', event => {
         const dialog = shortcutSheet();
         if (event.key === 'Escape' && dialog && dialog.open) {
