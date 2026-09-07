@@ -91,11 +91,11 @@ internal static class PublisherLiveHoldTests
         lab.Command("enable-live-hold");
         Get<PublisherLiveHoldPolicy>(lab.Coordinator, "_publisherLiveHold").Observe(Source.Value, true);
         Invoke(lab.Coordinator, "MonitorProcessesAsync", CancellationToken.None).GetAwaiter().GetResult();
-        lab.RunFastInput();
+        lab.RunFastInput(() => lab.Store.ReadLogsAsync("RecoveryHold").Result.Count == 1);
         Check(lab.Process.Running && lab.Process.ProcessId == pid);
         Check(lab.Store.ReadLogsAsync("RecoveryHold").Result.Count == 1);
         lab.Command("disable-live-hold");
-        lab.RunFastInput();
+        lab.RunFastInput(() => !lab.Process.Running && lab.Current.State == RouteState.Reconnecting);
         Check(!lab.Process.Running);
         Check(lab.Current.State == RouteState.Reconnecting);
     }
@@ -177,10 +177,16 @@ internal static class PublisherLiveHoldTests
             Check(SpinWait.SpinUntil(() => Process.InputFailure is not null, TimeSpan.FromSeconds(10)));
         }
         public void PollPublisher() => Invoke(Coordinator, "SuperviseWowzaPublisherPresenceAsync", Supervisor, CancellationToken.None).GetAwaiter().GetResult();
-        public void RunFastInput()
+        public void RunFastInput(Func<bool>? completed = null)
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(600));
-            try { Invoke(Coordinator, "RunFastInputSupervisionAsync", timeout.Token).GetAwaiter().GetResult(); }
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var run = Invoke(Coordinator, "RunFastInputSupervisionAsync", timeout.Token);
+            if (completed is null)
+                Thread.Sleep(TimeSpan.FromMilliseconds(600));
+            else
+                Check(SpinWait.SpinUntil(completed, TimeSpan.FromSeconds(3)));
+            timeout.Cancel();
+            try { run.GetAwaiter().GetResult(); }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
         }
         public void Dispose()

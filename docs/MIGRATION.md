@@ -72,3 +72,5 @@ Version 1.5.28 requires no settings or database migration and enables no GPU pro
 
 Example equivalent FFmpeg arguments are generated internally as tokens. The operator never edits a shell command, credentials are not placed in command text, and uncompressed output does not use `-b:v`.
 Version 1.6.1 requires no settings or database migration. It keeps the public login and error pages statically rendered, permits anonymous retrieval of only the immutable Blazor bootstrap script, and leaves application pages, SignalR, previews, diagnostics, and hardware assets under their existing authorization rules. The normal versioned service deployment is sufficient.
+
+Version 1.6.2 requires no settings or database migration. It reduces routing-matrix allocation and lookup work, bounds supervision-loop pacing after overruns, coalesces overlapping Blazor renders, stabilizes CPU sampling, and fixes keyboard/modal behavior without changing route selection, process ownership, output format, persistence, or DeckLink operation. Use the normal versioned service deployment and retain the matching cold database backup for rollback.
