@@ -1,24 +1,31 @@
 (() => {
     let pendingG = false;
     let timer = 0;
+    let navigationRef = null;
 
     const editable = element => element && (element.matches('input, textarea, select') || element.isContentEditable);
-    const navigate = path => window.location.assign(path);
+    const navigate = path => navigationRef
+        ? navigationRef.invokeMethodAsync('NavigateFromShortcut', path)
+        : Promise.resolve(window.location.assign(path));
     const shortcutSheet = () => document.getElementById('br-shortcuts');
 
     window.broadcastRouter = {
         getDensity: () => localStorage.getItem('broadcastRouterDensity'),
         setDensity: value => localStorage.setItem('broadcastRouterDensity', value),
-        focusMatrixCell: (row, column) => document.querySelector(`[data-matrix-row="${row}"][data-matrix-column="${column}"]`)?.focus()
+        focusMatrixCell: (row, column) => document.querySelector(`[data-matrix-row="${row}"][data-matrix-column="${column}"]`)?.focus(),
+        registerNavigation: reference => navigationRef = reference,
+        unregisterNavigation: () => navigationRef = null
     };
 
     document.addEventListener('keydown', event => {
         const dialog = shortcutSheet();
+        const openDialog = document.querySelector('dialog[open]');
         if (event.key === 'Escape' && dialog && dialog.open) {
             dialog.close();
             event.preventDefault();
             return;
         }
+        if (openDialog) return;
         if (editable(document.activeElement)) return;
         if (event.key === '/') {
             const filter = document.querySelector('[data-operator-filter]');

@@ -49,7 +49,7 @@ public sealed class RouterCoordinator(
     private readonly Dictionary<string, DateTimeOffset> _connectedPublisherRecoveryAttemptAt = new(StringComparer.Ordinal);
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private readonly object _livenessGate = new();
-    private readonly object _metricsGate = new();
+    private readonly ProcessCpuSampler _cpuSampler = new(TimeSpan.FromMilliseconds(500));
     private DateTimeOffset _coordinatorProgressAt = DateTimeOffset.UtcNow;
     private DateTimeOffset _fastInputProgressAt = DateTimeOffset.UtcNow;
     private DateTimeOffset _fastPublisherProgressAt = DateTimeOffset.UtcNow;
@@ -72,12 +72,12 @@ public sealed class RouterCoordinator(
     private DateTimeOffset? _lastSuccessfulToolValidationAt;
     private DateTimeOffset _nextDeckLinkReferenceStatusCheck = DateTimeOffset.MinValue;
     private int _deckLinkReferenceFailureCount;
-    private TimeSpan _lastCpu;
-    private DateTimeOffset _lastCpuAt = DateTimeOffset.UtcNow;
     private static readonly TimeSpan ExtendedVideoProbeInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ExtendedVideoProbeDuration = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan ExtendedVideoProbeTimeout = TimeSpan.FromSeconds(16);
     private static readonly TimeSpan AuxiliaryLoopRestartDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan FastInputSupervisionPeriod = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan FastPublisherSupervisionPeriod = TimeSpan.FromMilliseconds(250);
     private const string FastInputLoop = "FastInputSupervision";
     private const string FastPublisherLoop = "FastPublisherSupervision";
 
@@ -439,73 +439,81 @@ public sealed class RouterCoordinator(
 
     private async Task RunFastInputSupervisionAsync(CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
+        using var timer = new PeriodicTimer(FastInputSupervisionPeriod);
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
-            MarkAuxiliaryProgress(FastInputLoop);
-            var supervisor = _supervisor;
-            if (supervisor is null || _settings.SimulationMode) continue;
-            foreach (var observed in supervisor.Snapshot().Where(value =>
-                         value.Purpose == RouteProcessPurpose.Live && value.Running))
+            var iterationStarted = Stopwatch.GetTimestamp();
+            try
             {
-                var routeGate = _routeGates.GetOrAdd(observed.Source.Value, static _ => new SemaphoreSlim(1, 1));
-                if (!await routeGate.WaitAsync(0, cancellationToken)) continue;
-                try
+                MarkAuxiliaryProgress(FastInputLoop);
+                var supervisor = _supervisor;
+                if (supervisor is null || _settings.SimulationMode) continue;
+                foreach (var observed in supervisor.RunningSnapshot().Where(value =>
+                             value.Purpose == RouteProcessPurpose.Live))
                 {
-                    // Re-read both ownership and route state after acquiring the route gate.
-                    // This prevents a stale snapshot from stopping a replacement process.
-                    var current = supervisor.Snapshot().FirstOrDefault(value =>
-                        value.Source == observed.Source && value.ProcessId == observed.ProcessId
-                        && value.Purpose == RouteProcessPurpose.Live && value.Running);
-                    if (current is null) continue;
-                    RuntimeRoute? route;
-                    lock (_gate) _routes.TryGetValue(observed.Source.Value, out route);
-                    if (route is null || route.State is not (RouteState.Starting or RouteState.Running)) continue;
-
-                    var failure = current.InputFailure;
-                    var frozen = failure is null && IsInputFrozen(current, DateTimeOffset.UtcNow);
-                    if (failure is null && !frozen) continue;
-
-                    if (ShouldHoldLiveOutput(route, current))
+                    var routeGate = _routeGates.GetOrAdd(observed.Source.Value, static _ => new SemaphoreSlim(1, 1));
+                    if (!await routeGate.WaitAsync(0, cancellationToken)) continue;
+                    try
                     {
-                        await RecordHeldRecoveryAsync(route, current, cancellationToken);
-                        continue;
-                    }
+                        // Re-read both ownership and route state after acquiring the route gate.
+                        // This prevents a stale snapshot from stopping a replacement process.
+                        if (!supervisor.TryGetRunning(observed.Source, out var current)
+                            || current.ProcessId != observed.ProcessId
+                            || current.Purpose != RouteProcessPurpose.Live) continue;
+                        RuntimeRoute? route;
+                        lock (_gate) _routes.TryGetValue(observed.Source.Value, out route);
+                        if (route is null || route.State is not (RouteState.Starting or RouteState.Running)) continue;
 
-                    await supervisor.StopForOutputHandoffAsync(observed.Source, cancellationToken);
-                    if (failure is not null)
-                    {
-                        await RecordMediaRecoveryAsync(current, route, "fast input supervision", cancellationToken);
+                        var failure = current.InputFailure;
+                        var frozen = failure is null && IsInputFrozen(current, DateTimeOffset.UtcNow);
+                        if (failure is null && !frozen) continue;
+
+                        if (ShouldHoldLiveOutput(route, current))
+                        {
+                            await RecordHeldRecoveryAsync(route, current, cancellationToken);
+                            continue;
+                        }
+
+                        await supervisor.StopForOutputHandoffAsync(observed.Source, cancellationToken);
+                        if (failure is not null)
+                        {
+                            await RecordMediaRecoveryAsync(current, route, "fast input supervision", cancellationToken);
+                        }
+                        else
+                        {
+                            await LogAsync("Warning", "InputLiveness",
+                                $"FFmpeg process {observed.ProcessId} produced a duplicate-dominated burst; the stale decoder was reaped within the fast supervision path.",
+                                route.SourceId, cancellationToken: cancellationToken);
+                            await ScheduleRetryAsync(route, "InputFrozen",
+                                "A rapid duplicate-frame burst indicated a short RTSP interruption; the decoder session was recreated.", cancellationToken);
+                        }
                     }
-                    else
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                    catch (Exception ex)
                     {
-                        await LogAsync("Warning", "InputLiveness",
-                            $"FFmpeg process {observed.ProcessId} produced a duplicate-dominated burst; the stale decoder was reaped within the fast supervision path.",
-                            route.SourceId, cancellationToken: cancellationToken);
-                        await ScheduleRetryAsync(route, "InputFrozen",
-                            "A rapid duplicate-frame burst indicated a short RTSP interruption; the decoder session was recreated.", cancellationToken);
+                        await LogAsync("Error", "FastInputSupervision",
+                            $"Rapid recovery for owned FFmpeg process {observed.ProcessId} failed; the normal reconciler will retry. {LogRedactor.Redact(ex.Message)}",
+                            observed.Source.Value, cancellationToken: cancellationToken);
                     }
+                    finally { routeGate.Release(); }
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception ex)
+
+                foreach (var route in RoutesCopy().Where(value =>
+                             value.State is RouteState.Reconnecting or RouteState.Fallback
+                             && value.RetryAt is not null && value.RetryAt <= DateTimeOffset.UtcNow))
                 {
-                    await LogAsync("Error", "FastInputSupervision",
-                        $"Rapid recovery for owned FFmpeg process {observed.ProcessId} failed; the normal reconciler will retry. {LogRedactor.Redact(ex.Message)}",
-                        observed.Source.Value, cancellationToken: cancellationToken);
+                    DiscoveredSource? source;
+                    lock (_gate) _sources.TryGetValue(route.SourceId, out source);
+                    if (!RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(route, source)) continue;
+                    await RestartReservedRouteAsync(route, cancellationToken);
                 }
-                finally { routeGate.Release(); }
             }
-
-            foreach (var route in RoutesCopy().Where(value =>
-                         value.State is RouteState.Reconnecting or RouteState.Fallback
-                         && value.RetryAt is not null && value.RetryAt <= DateTimeOffset.UtcNow))
+            finally
             {
-                DiscoveredSource? source;
-                lock (_gate) _sources.TryGetValue(route.SourceId, out source);
-                if (!RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(route, source)) continue;
-                await RestartReservedRouteAsync(route, cancellationToken);
+                var delay = SupervisionLoopPacing.DelayAfterOverrun(
+                    FastInputSupervisionPeriod, Stopwatch.GetElapsedTime(iterationStarted));
+                if (delay > TimeSpan.Zero) await Task.Delay(delay, cancellationToken);
             }
-
         }
     }
 
@@ -514,22 +522,32 @@ public sealed class RouterCoordinator(
         // Keep management-plane I/O independent from the 100 ms local FFmpeg watchdog.
         // Two authoritative observations at 250 ms still detect a brief publisher loss
         // within the required sub-second window without delaying local starvation recovery.
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        using var timer = new PeriodicTimer(FastPublisherSupervisionPeriod);
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
-            MarkAuxiliaryProgress(FastPublisherLoop);
-            var supervisor = _supervisor;
-            if (supervisor is null || _settings.SimulationMode) continue;
+            var iterationStarted = Stopwatch.GetTimestamp();
             try
             {
-                await SuperviseWowzaPublisherPresenceAsync(supervisor, cancellationToken);
+                MarkAuxiliaryProgress(FastPublisherLoop);
+                var supervisor = _supervisor;
+                if (supervisor is null || _settings.SimulationMode) continue;
+                try
+                {
+                    await SuperviseWowzaPublisherPresenceAsync(supervisor, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    await LogAsync("Warning", "PublisherSupervision",
+                        $"Fast Wowza publisher supervision failed; local FFmpeg supervision remains active. {LogRedactor.Redact(ex.Message)}",
+                        cancellationToken: cancellationToken);
+                }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception ex)
+            finally
             {
-                await LogAsync("Warning", "PublisherSupervision",
-                    $"Fast Wowza publisher supervision failed; local FFmpeg supervision remains active. {LogRedactor.Redact(ex.Message)}",
-                    cancellationToken: cancellationToken);
+                var delay = SupervisionLoopPacing.DelayAfterOverrun(
+                    FastPublisherSupervisionPeriod, Stopwatch.GetElapsedTime(iterationStarted));
+                if (delay > TimeSpan.Zero) await Task.Delay(delay, cancellationToken);
             }
         }
     }
@@ -577,14 +595,12 @@ public sealed class RouterCoordinator(
                             _routes.TryGetValue(candidate.SourceId, out recoveryRoute);
                             _sources.TryGetValue(candidate.SourceId, out recoverySource);
                         }
-                        var ownsLiveProcess = supervisor.Snapshot().Any(value =>
-                            value.Source.Value == candidate.SourceId
-                            && value.Purpose == RouteProcessPurpose.Live
-                            && value.Running);
+                        if (recoveryRoute is null || recoverySource is null) continue;
+                        var ownsLiveProcess = supervisor.IsRunning(
+                            recoverySource.Identity, RouteProcessPurpose.Live);
                         var missingExpectedLiveOwner = !ownsLiveProcess
-                            && recoveryRoute?.State is RouteState.Starting or RouteState.Running;
-                        if (recoveryRoute is null || recoverySource is null
-                            || !RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
+                            && recoveryRoute.State is RouteState.Starting or RouteState.Running;
+                        if (!RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
                                 recoveryRoute, ownsLiveProcess)) continue;
 
                         var now = DateTimeOffset.UtcNow;
@@ -637,9 +653,8 @@ public sealed class RouterCoordinator(
                     if (route is null || source is null
                         || route.State is not (RouteState.Starting or RouteState.Running)) continue;
 
-                    var current = supervisor.Snapshot().FirstOrDefault(value =>
-                        value.Source == source.Identity && value.Purpose == RouteProcessPurpose.Live && value.Running);
-                    if (current is null) continue;
+                    if (!supervisor.TryGetRunning(source.Identity, out var current)
+                        || current.Purpose != RouteProcessPurpose.Live) continue;
 
                     await supervisor.StopForOutputHandoffAsync(source.Identity, cancellationToken);
                     lock (_gate)
@@ -2540,14 +2555,7 @@ public sealed class RouterCoordinator(
             cpuTime = process.TotalProcessorTime;
             workingSet = process.WorkingSet64;
         }
-        double cpu;
-        lock (_metricsGate)
-        {
-            var interval = Math.Max(.001, (now - _lastCpuAt).TotalSeconds);
-            cpu = Math.Clamp((cpuTime - _lastCpu).TotalSeconds / (interval * Environment.ProcessorCount) * 100, 0, 100);
-            _lastCpu = cpuTime;
-            _lastCpuAt = now;
-        }
+        var cpu = _cpuSampler.Sample(cpuTime, now, Environment.ProcessorCount);
 
         RouterSnapshot snapshot;
         lock (_gate)

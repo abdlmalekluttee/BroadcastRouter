@@ -1,5 +1,11 @@
 # BroadcastRouter production-safety review
 
+## Focused GUI-performance and runtime-reliability follow-up — 2026-09-08
+
+The supplied review findings GP-001 through GP-007 were reproduced against the v1.6.1 source and corrected on branch `codex/gui-performance-runtime-fixes`. The routing matrix now derives its filtered rows, port/card collections, and port-owner index once per snapshot/filter change. Fast supervision uses running-owner-only snapshots and exact O(1) lookups instead of rebuilding diagnostic history, and yields after an overrunning tick. Blazor circuits coalesce overlapping state notifications, CPU telemetry holds its last value across sub-500 ms samples, keyboard navigation stays inside the circuit, and open dialogs suppress global shortcuts. The Wowza editor now states that its polling interval governs discovery only.
+
+Five deterministic regressions cover matrix-owner equivalence, running-process lookup equivalence, overrun pacing, notification coalescing including the in-render race, and CPU sampling. An isolated local simulation exposed and then verified a static-prerender cleanup correction; all eight operator pages render without unhandled markup or browser warnings/errors, the 5-row × 4-output matrix retains the expected four running and sixteen occupied cells, filters re-derive state, and shortcut/dialog behavior is correct. Release build is warning-free and 136/136 regressions pass. No production host, real Wowza endpoint, or DeckLink hardware was contacted; physical SDI and production soak remain separate acceptance work.
+
 ## Focused 1.5.29 publisher-live hold review — 2026-09-06
 
 Scope: opt-in per-stream automatic recovery override, not a claim that all historical decoder issues are resolved. The application separates discovery/probing, durable route intent, exclusive port leases, and owned FFmpeg supervision. Multiple independent media recovery paths could recycle a live publisher; the new operator option must cover all of them without disabling process-exit or authoritative offline handling.

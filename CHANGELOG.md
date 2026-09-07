@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Cache routing-matrix ports, card groups, filtered rows, and port ownership once per snapshot/filter change instead of rebuilding collections and scanning every route repeatedly for every rendered cell.
+- Give the fast FFmpeg and Wowza watchdogs running-owner-only snapshots and constant-time exact-owner lookups; retain the full sorted/error-history snapshot for diagnostics, and add a bounded quarter-period yield after an overrunning supervision tick.
+- Coalesce overlapping coordinator notifications per Blazor circuit while preserving a follow-up render when state changes during an in-flight render.
+- Sample host CPU only across a meaningful 500 ms window so command-triggered publications do not create false top-bar spikes or consume the next valid sample.
+- Route keyboard shortcuts through Blazor `NavigationManager`, suppress global shortcuts while any application dialog is open, and make interactive JavaScript cleanup safe during static prerender disposal.
+- Clarify that the operator-configured Wowza interval controls inventory discovery only; saved-route publisher and local FFmpeg supervision remain independent and sub-second.
+- Add differential ownership, exact-process lookup, loop-pacing, render-coalescing, and CPU-sampling regressions; verify all operator pages and keyboard/dialog behavior in an isolated simulation.
+
 ## 1.6.1 — 2026-09-07
 
 - Permit anonymous retrieval of only the immutable Blazor bootstrap script, and render public login/error routes without starting an unauthorized server circuit, preventing authentication redirects from returning HTML to JavaScript loaders.

@@ -60,6 +60,7 @@ else if (snapshot.Ports.Count > 0)
     private DeckLinkSoftwareInformation softwareInformation = DeckLinkSoftwareInformation.Unavailable;
     private bool softwareInformationLoading;
     private bool rescanBusy;
+    private readonly SnapshotRenderCoalescer renderCoalescer = new();
     private string error = "";
     private string confirmation = "";
     protected override void OnInitialized()
@@ -91,7 +92,7 @@ else if (snapshot.Ports.Count > 0)
             StateHasChanged();
         }
     }
-    private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
+    private void Changed() => _ = renderCoalescer.DispatchAsync(action => InvokeAsync(action), () => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
     private async Task Rescan()
     {
         if (rescanBusy) return;

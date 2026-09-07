@@ -42,3 +42,9 @@ The routing domain, application policies, FFmpeg/FFprobe supervision, DeckLink o
 ## Environment limits
 
 The GUI work was deliberately verified in isolated simulation instances. No production routing process or physical DeckLink output was exercised by this presentation-layer remediation. Physical SDI picture/audio validation remains a separate hardware acceptance activity.
+
+## 2026-09-08 performance and shortcut correction
+
+The earlier keyboard figures demonstrate focus reachability and visible focus styling; they did not prove global accelerator behavior while a modal dialog was open. A focused follow-up found and corrected two accelerator issues: keyboard navigation now stays inside the active Blazor circuit, and every open application dialog suppresses global navigation shortcuts. Static-prerender disposal is explicitly guarded so a non-interactive layout never attempts JavaScript cleanup.
+
+The same follow-up caches routing-matrix derived collections and port ownership per snapshot/filter change, and coalesces overlapping backend notifications in the layout and active pages. Differential tests preserve the previous first-owner behavior, while isolated browser checks confirm the 5-row/4-output simulation matrix, text/state re-derivation, circuit navigation, modal suppression, shortcut help, Escape handling, filter focus, and clean rendering of all eight operator pages. Production DeckLink and physical SDI behavior were not exercised by this local pass.
