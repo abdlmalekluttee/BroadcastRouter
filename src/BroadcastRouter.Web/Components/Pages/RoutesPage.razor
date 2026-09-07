@@ -23,12 +23,12 @@
     <AuthorizeView Roles="Administrator"><Authorized><div class="bulk-actions" aria-label="Selected route actions"><span>@selectedRouteIds.Count selected</span><button class="btn small" disabled="@(selectedRouteIds.Count == 0 || pageBusy)" @onclick='() => BulkAction("restart")'>Restart</button><button class="btn small" disabled="@(selectedRouteIds.Count == 0 || pageBusy)" @onclick='() => BulkAction("stop")'>Stop</button><button class="btn small danger" disabled="@(selectedRouteIds.Count == 0 || pageBusy)" @onclick='() => BulkAction("release")'>Release</button></div></Authorized></AuthorizeView>
 </div>
 
-@if (OutputCardGroups().Count > 0)
+@if (outputCardGroups.Count > 0)
 {
     <details class="panel route-hardware-guide">
         <summary><span><strong>Physical output guide</strong><small>Match software outputs to the installed card and connector before changing a route.</small></span><span class="badge @(AssetCatalog.Status.Installed ? "success" : "neutral")">@(AssetCatalog.Status.Installed ? "Visual pack loaded" : "Technical view")</span></summary>
         <div class="panel-body route-hardware-grid">
-        @foreach (var card in OutputCardGroups())
+        @foreach (var card in outputCardGroups)
         {
             <div class="route-hardware-card" @key="card.Key"><h3>@DeckLinkDisplayName.Card(card.Ports[0])</h3><BroadcastRouter.Web.Components.Shared.DeckLinkCardVisual CardKey="@card.Key" Ports="@card.Ports" Routes="@snapshot.Routes" Compact="true" ShowTechnicalImages="false" /></div>
         }
@@ -42,24 +42,26 @@
         <div class="table-wrap matrix-scroll">
             <table class="routing-matrix">
                 <thead>
-                    <tr><th class="matrix-source-column" rowspan="2" scope="col">Source</th>@foreach(var card in MatrixCardGroups){<th colspan="@card.Ports.Count" scope="colgroup">@DeckLinkDisplayName.Card(card.Ports[0])</th>}</tr>
-                    <tr>@foreach(var port in MatrixPorts){<th scope="col" class="@(!port.IsAvailable ? "port-unavailable" : "")"><button type="button" class="matrix-header-button" @onclick="() => SelectPortDetail(port)">@DeckLinkDisplayName.Connector(port)<span>SDI @(port.SubdeviceIndex + 1)</span></button></th>}</tr>
+                    <tr><th class="matrix-source-column" rowspan="2" scope="col">Source</th>@foreach(var card in matrixCardGroups){<th colspan="@card.Ports.Count" scope="colgroup">@DeckLinkDisplayName.Card(card.Ports[0])</th>}</tr>
+                    <tr>@foreach(var port in matrixPorts){<th scope="col" class="@(!port.IsAvailable ? "port-unavailable" : "")"><button type="button" class="matrix-header-button" @onclick="() => SelectPortDetail(port)">@DeckLinkDisplayName.Connector(port)<span>SDI @(port.SubdeviceIndex + 1)</span></button></th>}</tr>
                 </thead>
                 <tbody>
-                    @for(var rowIndex = 0; rowIndex < MatrixRows.Count; rowIndex++)
+                    @for(var rowIndex = 0; rowIndex < matrixRows.Count; rowIndex++)
                     {
-                        var row = MatrixRows[rowIndex];
+                        var row = matrixRows[rowIndex];
                         <tr>
                             <th scope="row" class="matrix-source-column"><div class="matrix-source"><AuthorizeView Roles="Administrator"><Authorized><input type="checkbox" aria-label="Select route @row.Name" checked="@selectedRouteIds.Contains(row.Id)" disabled="@(row.Route is null)" @onchange="args => ToggleRoute(row.Id, args.Value)" /></Authorized></AuthorizeView><button type="button" @onclick="() => SelectSourceDetail(row)"><strong>@row.Name</strong><span>@row.Id</span></button></div></th>
-                            @for(var columnIndex = 0; columnIndex < MatrixPorts.Count; columnIndex++)
+                            @for(var columnIndex = 0; columnIndex < matrixPorts.Count; columnIndex++)
                             {
-                                var port = MatrixPorts[columnIndex];
+                                var port = matrixPorts[columnIndex];
                                 var r = rowIndex; var c = columnIndex;
-                                <td class="@(!port.IsAvailable ? "port-unavailable" : "")"><button type="button" draggable="@(ReferencesPort(row.Route, port))" data-matrix-row="@r" data-matrix-column="@c" tabindex="@(matrixRow == r && matrixColumn == c ? 0 : -1)" class="matrix-cell @CellClass(row, port)" disabled="@CellDisabled(row, port)" aria-label="@CellLabel(row, port)" title="@CellLabel(row, port)" @onclick="() => SelectCell(row, port)" @onkeydown="args => MatrixKeyDown(args, r, c)" @ondragstart="() => StartDrag(row)" @ondragover:preventDefault @ondrop="() => DropOn(row, port)"><span class="matrix-cell-mark" aria-hidden="true"></span>@if(ReferencesPort(row.Route, port) && row.Route?.Fps is not null){<span class="matrix-cell-detail">@row.Route.Fps.Value.ToString("0.00") fps</span>}</button></td>
+                                var cellClass = CellClass(row, port);
+                                var cellLabel = CellLabel(row, port, cellClass);
+                                <td class="@(!port.IsAvailable ? "port-unavailable" : "")"><button type="button" draggable="@(ReferencesPort(row.Route, port))" data-matrix-row="@r" data-matrix-column="@c" tabindex="@(matrixRow == r && matrixColumn == c ? 0 : -1)" class="matrix-cell @cellClass" disabled="@CellDisabled(row, port)" aria-label="@cellLabel" title="@cellLabel" @onclick="() => SelectCell(row, port)" @onkeydown="args => MatrixKeyDown(args, r, c)" @ondragstart="() => StartDrag(row)" @ondragover:preventDefault @ondrop="() => DropOn(row, port)"><span class="matrix-cell-mark" aria-hidden="true"></span>@if(ReferencesPort(row.Route, port) && row.Route?.Fps is not null){<span class="matrix-cell-detail">@row.Route.Fps.Value.ToString("0.00") fps</span>}</button></td>
                             }
                         </tr>
                     }
-                    @if(MatrixRows.Count == 0){<tr><td colspan="@(MatrixPorts.Count + 1)"><div class="empty-state">No sources or saved routes match the current filter.</div></td></tr>}
+                    @if(matrixRows.Count == 0){<tr><td colspan="@(matrixPorts.Count + 1)"><div class="empty-state">No sources or saved routes match the current filter.</div></td></tr>}
                 </tbody>
             </table>
         </div>
@@ -85,29 +87,23 @@
     private int matrixRow;
     private int matrixColumn;
     private long settingsRevision = -1;
+    private readonly SnapshotRenderCoalescer renderCoalescer = new();
+    private IReadOnlyList<DeckLinkPort> matrixPorts = [];
+    private IReadOnlyList<CardView> matrixCardGroups = [];
+    private IReadOnlyList<CardView> outputCardGroups = [];
+    private IReadOnlyList<MatrixRow> matrixRows = [];
+    private IReadOnlyDictionary<string, RuntimeRoute> portOwners = new Dictionary<string, RuntimeRoute>(StringComparer.OrdinalIgnoreCase);
     private string StateFilter => string.IsNullOrWhiteSpace(State) ? "all" : State.ToLowerInvariant();
     private static readonly (string Value, string Label)[] RouteFilterOptions = [("all", "All"), ("running", "Running"), ("waiting", "Waiting"), ("failed", "Failed"), ("offline", "Offline"), ("unassigned", "Unassigned")];
-    private IReadOnlyList<DeckLinkPort> MatrixPorts => OrderedPorts().ToArray();
-    private IReadOnlyList<CardView> MatrixCardGroups => MatrixPorts.GroupBy(port => port.DeviceGroupId ?? $"legacy-card-{port.CardIndex}", StringComparer.OrdinalIgnoreCase).Select(group => new CardView(group.Key, group.ToArray())).ToArray();
-    private IReadOnlyList<MatrixRow> MatrixRows
-    {
-        get
-        {
-            var sources = snapshot.Sources.ToDictionary(value => value.Identity.Value, StringComparer.Ordinal);
-            return snapshot.Sources.Select(value => value.Identity.Value).Concat(snapshot.Routes.Select(value => value.SourceId)).Distinct(StringComparer.Ordinal)
-                .Select(id => { sources.TryGetValue(id, out var source); var route = snapshot.Routes.FirstOrDefault(value => value.SourceId == id); return new MatrixRow(id, source?.FriendlyName ?? route?.SourceName ?? id, source, route); })
-                .Where(row => string.IsNullOrWhiteSpace(Query) || row.Name.Contains(Query, StringComparison.OrdinalIgnoreCase) || row.Id.Contains(Query, StringComparison.OrdinalIgnoreCase))
-                .Where(row => row.Route is not null ? MatchesState(row.Route) : StateFilter is "all" or "offline" or "unassigned")
-                .OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase).ToArray();
-        }
-    }
 
     protected override void OnInitialized()
     {
-        snapshot = Coordinator.Snapshot;
+        SetSnapshot(Coordinator.Snapshot);
         RefreshPresets();
         Coordinator.Changed += Changed;
     }
+
+    protected override void OnParametersSet() => RebuildDerivedState();
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -116,7 +112,12 @@
         if (saved is "compact" or "comfortable") { density = saved; StateHasChanged(); }
     }
 
-    private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; if (settingsRevision != Coordinator.SettingsRevision) RefreshPresets(); StateHasChanged(); });
+    private void Changed() => _ = renderCoalescer.DispatchAsync(action => InvokeAsync(action), () =>
+    {
+        SetSnapshot(Coordinator.Snapshot);
+        if (settingsRevision != Coordinator.SettingsRevision) RefreshPresets();
+        StateHasChanged();
+    });
 
     private void RefreshPresets()
     {
@@ -129,15 +130,55 @@
         .Where(port => port.IsOutputPort)
         .OrderBy(DeckLinkDisplayName.Card, StringComparer.OrdinalIgnoreCase)
         .ThenBy(DeckLinkDisplayName.Connector, StringComparer.OrdinalIgnoreCase);
-    private IReadOnlyList<CardView> OutputCardGroups() => snapshot.Ports
-        .Where(port => port.IsOutputPort)
-        .GroupBy(port => port.DeviceGroupId ?? $"legacy-card-{port.CardIndex}", StringComparer.OrdinalIgnoreCase)
-        .Select(group => new CardView(group.Key, group.OrderBy(port => port.SubdeviceIndex).ToArray()))
-        .OrderBy(card => DeckLinkDisplayName.Card(card.Ports[0]), StringComparer.OrdinalIgnoreCase)
-        .ToArray();
+    private void SetSnapshot(RouterSnapshot value)
+    {
+        snapshot = value;
+        RebuildDerivedState();
+    }
+
+    private void RebuildDerivedState()
+    {
+        if (snapshot is null) return;
+
+        matrixPorts = OrderedPorts().ToArray();
+        matrixCardGroups = matrixPorts
+            .GroupBy(port => port.DeviceGroupId ?? $"legacy-card-{port.CardIndex}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => new CardView(group.Key, group.ToArray()))
+            .ToArray();
+        outputCardGroups = snapshot.Ports
+            .Where(port => port.IsOutputPort)
+            .GroupBy(port => port.DeviceGroupId ?? $"legacy-card-{port.CardIndex}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => new CardView(group.Key, group.OrderBy(port => port.SubdeviceIndex).ToArray()))
+            .OrderBy(card => DeckLinkDisplayName.Card(card.Ports[0]), StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var sources = new Dictionary<string, DiscoveredSource>(StringComparer.Ordinal);
+        foreach (var source in snapshot.Sources) sources.TryAdd(source.Identity.Value, source);
+        var routes = new Dictionary<string, RuntimeRoute>(StringComparer.Ordinal);
+        foreach (var route in snapshot.Routes) routes.TryAdd(route.SourceId, route);
+
+        matrixRows = snapshot.Sources.Select(value => value.Identity.Value)
+            .Concat(snapshot.Routes.Select(value => value.SourceId))
+            .Distinct(StringComparer.Ordinal)
+            .Select(id =>
+            {
+                sources.TryGetValue(id, out var source);
+                routes.TryGetValue(id, out var route);
+                return new MatrixRow(id, source?.FriendlyName ?? route?.SourceName ?? id, source, route);
+            })
+            .Where(row => string.IsNullOrWhiteSpace(Query)
+                || row.Name.Contains(Query, StringComparison.OrdinalIgnoreCase)
+                || row.Id.Contains(Query, StringComparison.OrdinalIgnoreCase))
+            .Where(row => row.Route is not null
+                ? MatchesState(row.Route)
+                : StateFilter is "all" or "offline" or "unassigned")
+            .OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        portOwners = RoutePortOwnership.Map(matrixPorts, snapshot.Routes);
+    }
     private bool MatchesState(RuntimeRoute route) => StateFilter switch { "running" => route.State == RouteState.Running, "waiting" => route.State == RouteState.WaitingForStream, "failed" => route.State == RouteState.Failed, "offline" => RouteStatus(route) == "Offline", "unassigned" => string.IsNullOrWhiteSpace(route.DesiredPortId ?? route.PortId), _ => true };
-    private void UpdateQuery(ChangeEventArgs args) { Query = args.Value?.ToString(); UpdateFilterAddress(); }
-    private void SetStateFilter(string value) { State = value == "all" ? null : value; UpdateFilterAddress(); }
+    private void UpdateQuery(ChangeEventArgs args) { Query = args.Value?.ToString(); RebuildDerivedState(); UpdateFilterAddress(); }
+    private void SetStateFilter(string value) { State = value == "all" ? null : value; RebuildDerivedState(); UpdateFilterAddress(); }
     private void UpdateFilterAddress() => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["q"] = string.IsNullOrWhiteSpace(Query) ? null : Query, ["state"] = State }), replace: true);
     private void ToggleRoute(string sourceId, object? value) { if(value is bool selected && selected) selectedRouteIds.Add(sourceId); else selectedRouteIds.Remove(sourceId); }
     private async Task BulkAction(string action)
@@ -154,7 +195,7 @@
     private static bool ReferencesPort(RuntimeRoute? route, DeckLinkPort port) => route is not null
         && (route.PortId?.Equals(port.StableId, StringComparison.OrdinalIgnoreCase) == true
             || route.DesiredPortId?.Equals(port.StableId, StringComparison.OrdinalIgnoreCase) == true);
-    private RuntimeRoute? PortOwner(DeckLinkPort port) => snapshot.Routes.FirstOrDefault(route => route.State != RouteState.Released && ReferencesPort(route, port));
+    private RuntimeRoute? PortOwner(DeckLinkPort port) => portOwners.GetValueOrDefault(port.StableId);
     private bool CellDisabled(MatrixRow row, DeckLinkPort port) => !port.IsAvailable || (PortOwner(port) is { } owner && owner.SourceId != row.Id);
     private string CellClass(MatrixRow row, DeckLinkPort port)
     {
@@ -170,9 +211,9 @@
         if (route.Locked || (route.ReserveWhileOffline && sourceOffline)) return "reserved";
         return "desired";
     }
-    private string CellLabel(MatrixRow row, DeckLinkPort port)
+    private string CellLabel(MatrixRow row, DeckLinkPort port, string cellClass)
     {
-        var state = CellClass(row, port) switch
+        var state = cellClass switch
         {
             "occupied-other" => $"Occupied by {PortOwner(port)?.SourceName}",
             "free" => "Free; select to prepare assignment",
@@ -192,12 +233,12 @@
     private void SelectPortDetail(DeckLinkPort port) { detailSourceId = null; detailPortId = port.StableId; draggedAssignment = false; }
     private void StartDrag(MatrixRow row) => draggedSourceId = row.Route is null ? null : row.Id;
     private void DropOn(MatrixRow row, DeckLinkPort port) { if(draggedSourceId != row.Id || CellDisabled(row, port)) return; detailSourceId = row.Id; detailPortId = port.StableId; draggedAssignment = !ReferencesPort(row.Route, port); draggedSourceId = null; }
-    private Task RefreshSnapshot() { snapshot = Coordinator.Snapshot; StateHasChanged(); return Task.CompletedTask; }
+    private Task RefreshSnapshot() { SetSnapshot(Coordinator.Snapshot); StateHasChanged(); return Task.CompletedTask; }
     private Task CloseDetail() { detailSourceId = null; detailPortId = null; draggedAssignment = false; return Task.CompletedTask; }
     private async Task ToggleDensity() { density = density == "compact" ? "comfortable" : "compact"; await JS.InvokeVoidAsync("broadcastRouter.setDensity", density); }
     private async Task MatrixKeyDown(KeyboardEventArgs args, int row, int column)
     {
-        var rows = MatrixRows.Count; var columns = MatrixPorts.Count;
+        var rows = matrixRows.Count; var columns = matrixPorts.Count;
         if (rows == 0 || columns == 0) return;
         var nextRow = row; var nextColumn = column;
         switch(args.Key)
@@ -224,7 +265,7 @@
             pageBusy = true;
             error = ""; confirmation = "";
             await Commands.ExecuteAsync(action);
-            snapshot = Coordinator.Snapshot;
+            SetSnapshot(Coordinator.Snapshot);
             if (action == "emergency-stop") emergencyUndoExpiresAt = DateTimeOffset.UtcNow.AddSeconds(30);
             if (action == "clear-emergency") emergencyUndoExpiresAt = null;
             if (action == "rescan") confirmation = "Reconciliation complete.";

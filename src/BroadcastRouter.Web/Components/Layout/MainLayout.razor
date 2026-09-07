@@ -1,6 +1,8 @@
 @inherits LayoutComponentBase
 @inject RouterCoordinator Coordinator
-@implements IDisposable
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <div class="shell br-shell page">
     <dialog id="br-shortcuts" class="shortcut-sheet">
@@ -51,9 +53,31 @@
 
 @code {
     private RouterSnapshot snapshot = null!;
+    private readonly SnapshotRenderCoalescer renderCoalescer = new();
+    private DotNetObjectReference<MainLayout>? shortcutNavigation;
     protected override void OnInitialized() { snapshot = Coordinator.Snapshot; Coordinator.Changed += OnChanged; }
-    private void OnChanged() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
-    public void Dispose() => Coordinator.Changed -= OnChanged;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        shortcutNavigation = DotNetObjectReference.Create(this);
+        await JS.InvokeVoidAsync("broadcastRouter.registerNavigation", shortcutNavigation);
+    }
+    private void OnChanged() => _ = renderCoalescer.DispatchAsync(action => InvokeAsync(action), () => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
+    [JSInvokable]
+    public void NavigateFromShortcut(string path)
+    {
+        if (path is "/" or "/routes" or "/sources" or "/outputs" or "/logs") Navigation.NavigateTo(path);
+    }
+    public async ValueTask DisposeAsync()
+    {
+        Coordinator.Changed -= OnChanged;
+        if (shortcutNavigation is not null)
+        {
+            try { await JS.InvokeVoidAsync("broadcastRouter.unregisterNavigation"); }
+            catch (JSDisconnectedException) { }
+            shortcutNavigation.Dispose();
+        }
+    }
     private static string FormatBytes(long value) => $"{value / 1024d / 1024d:0} MB";
     private string EnvironmentLabel => snapshot.EmergencyStopped ? "Emergency stop" : snapshot.SimulationMode ? "Simulation" : "Production";
     private string EnvironmentClass => snapshot.EmergencyStopped ? "danger" : snapshot.SimulationMode ? "warning" : "production";

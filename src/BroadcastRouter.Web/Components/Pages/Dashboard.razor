@@ -75,6 +75,7 @@
     private HashSet<string> occupiedPorts = new(StringComparer.OrdinalIgnoreCase);
     private string error = "";
     private bool busy;
+    private readonly SnapshotRenderCoalescer renderCoalescer = new();
     private DateTimeOffset? emergencyUndoExpiresAt;
     private int FreePorts => snapshot.Ports.Count(port => !occupiedPorts.Contains(port.StableId));
     private string RoutePortName(RuntimeRoute route) => route.PortId is { Length: > 0 } portId
@@ -82,7 +83,7 @@
         ? DeckLinkDisplayName.Full(port) : route.PortName ?? "—";
     private string FormatUptime => FormatDuration(DateTimeOffset.UtcNow - snapshot.StartedAt);
     protected override void OnInitialized() { SetSnapshot(Coordinator.Snapshot); Coordinator.Changed += OnChanged; }
-    private void OnChanged() => _ = InvokeAsync(() => { SetSnapshot(Coordinator.Snapshot); StateHasChanged(); });
+    private void OnChanged() => _ = renderCoalescer.DispatchAsync(action => InvokeAsync(action), () => { SetSnapshot(Coordinator.Snapshot); StateHasChanged(); });
     private void SetSnapshot(RouterSnapshot value)
     {
         snapshot = value;

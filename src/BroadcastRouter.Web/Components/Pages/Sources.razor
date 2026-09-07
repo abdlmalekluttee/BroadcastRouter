@@ -87,6 +87,8 @@
     private string commandMessage = "";
     private bool previewBusy;
     private bool discoveryBusy;
+    private readonly SnapshotRenderCoalescer renderCoalescer = new();
+    private readonly SnapshotRenderCoalescer previewRenderCoalescer = new();
     private string? routeBusySource;
     private string StateFilter => string.IsNullOrWhiteSpace(State) ? "all" : State.ToLowerInvariant();
     private static readonly (string Value, string Label)[] SourceFilterOptions = [("all", "All"), ("active", "Active"), ("offline", "Offline"), ("waiting", "Waiting"), ("failed", "Failed"), ("unassigned", "Unassigned")];
@@ -96,8 +98,8 @@
         .OrderBy(source => source.FriendlyName, StringComparer.OrdinalIgnoreCase)
         .ToArray();
     protected override void OnInitialized() { snapshot = Coordinator.Snapshot; preview = PreviewSupervisor.Snapshot; Coordinator.Changed += Changed; PreviewSupervisor.Changed += PreviewChanged; }
-    private void Changed() => _ = InvokeAsync(() => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
-    private void PreviewChanged() => _ = InvokeAsync(() => { preview = PreviewSupervisor.Snapshot; StateHasChanged(); });
+    private void Changed() => _ = renderCoalescer.DispatchAsync(action => InvokeAsync(action), () => { snapshot = Coordinator.Snapshot; StateHasChanged(); });
+    private void PreviewChanged() => _ = previewRenderCoalescer.DispatchAsync(action => InvokeAsync(action), () => { preview = PreviewSupervisor.Snapshot; StateHasChanged(); });
     private bool MatchesState(DiscoveredSource source)
     {
         var route = snapshot.Routes.FirstOrDefault(value => value.SourceId == source.Identity.Value);

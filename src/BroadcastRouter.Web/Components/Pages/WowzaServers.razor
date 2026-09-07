@@ -29,7 +29,7 @@
             <div class="form-group"><label>Priority</label><InputNumber aria-label="Priority" @bind-Value="server.Priority" /></div>
             <div class="form-group"><label>Applications (comma separated)</label><InputText aria-label="Applications" @bind-Value="server.Applications" /></div>
             <div class="form-group"><label>Instances (comma separated)</label><InputText aria-label="Application instances" @bind-Value="server.ApplicationInstances" /></div>
-            <div class="form-group"><label>Polling interval (seconds)</label><InputNumber aria-label="Polling interval seconds" @bind-Value="server.PollingIntervalSeconds" /></div>
+            <div class="form-group"><label>Discovery polling interval (seconds)</label><InputNumber aria-label="Discovery polling interval seconds" @bind-Value="server.PollingIntervalSeconds" /><span class="secondary-text">Controls scheduled Wowza inventory refresh only. Saved-route publisher supervision and local FFmpeg health checks run independently at sub-second intervals.</span></div>
             <div class="form-group"><label>Connection timeout (seconds)</label><InputNumber aria-label="Connection timeout seconds" @bind-Value="server.ConnectionTimeoutSeconds" /></div>
             <div class="form-group wide"><label>RTSP URL template</label><InputText aria-label="RTSP URL template" @bind-Value="server.RtspUrlTemplate" /><span class="secondary-text">Tokens: {wowza-host}, {rtsp-port}, {application}, {application-instance}, {stream-name}, {server-id}</span></div>
         </div>

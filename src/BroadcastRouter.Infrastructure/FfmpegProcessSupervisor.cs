@@ -119,6 +119,30 @@ public sealed class FfmpegProcessSupervisor(
             .ToArray();
     }
 
+    public IReadOnlyList<RouteProcessSnapshot> RunningSnapshot() => _running.Values
+        .Select(CreateRunningSnapshot)
+        .Where(snapshot => snapshot.Running)
+        .ToArray();
+
+    public bool TryGetRunning(SourceIdentity source, out RouteProcessSnapshot snapshot)
+    {
+        if (_running.TryGetValue(source.Value, out var managed))
+        {
+            var current = CreateRunningSnapshot(managed);
+            if (current.Running)
+            {
+                snapshot = current;
+                return true;
+            }
+        }
+
+        snapshot = null!;
+        return false;
+    }
+
+    public bool IsRunning(SourceIdentity source, RouteProcessPurpose purpose) =>
+        TryGetRunning(source, out var snapshot) && snapshot.Purpose == purpose;
+
     public async ValueTask DisposeAsync()
     {
         var processes = _running.Values.ToArray();
@@ -376,6 +400,15 @@ public sealed class FfmpegProcessSupervisor(
         catch (InvalidOperationException) { running = false; }
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
             managed.Errors.ToArray(), exitCode, managed.InputFailure, managed.MediaHealth.Snapshot());
+    }
+
+    private static RouteProcessSnapshot CreateRunningSnapshot(ManagedProcess managed)
+    {
+        bool running;
+        try { running = !managed.Process.HasExited; }
+        catch (InvalidOperationException) { running = false; }
+        return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
+            Array.Empty<string>(), null, managed.InputFailure, managed.MediaHealth.Snapshot());
     }
 
     private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, Process process,

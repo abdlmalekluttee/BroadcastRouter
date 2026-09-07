@@ -69,6 +69,11 @@ var tests = new (string Name, Action Body)[]
     ("Retry attempt cap is opt-in", RetryAttemptCapIsOptIn),
     ("Repeated coordinator failures are log-throttled", RepeatedFailuresAreLogThrottled),
     ("Faulted snapshot subscriber does not block others", FaultedSnapshotSubscriberDoesNotBlockOthers),
+    ("Matrix port ownership matches per-cell route scans", MatrixPortOwnershipMatchesPerCellScans),
+    ("Owned process lookups agree with the full supervisor snapshot", OwnedProcessLookupsAgreeWithFullSnapshot),
+    ("Supervision loops pace overruns without delaying healthy ticks", SupervisionLoopsPaceOverruns),
+    ("Snapshot renders coalesce without losing a follow-up update", SnapshotRendersCoalesceWithoutLosingFollowUp),
+    ("CPU percent ignores sampling windows too short to measure", CpuPercentIgnoresShortSamplingWindows),
     ("Route telemetry updates skip persistence", RouteTelemetryUpdatesSkipPersistence),
     ("Durable route changes require persistence", DurableRouteChangesRequirePersistence),
     ("Coordinator liveness detects a blocked cycle", CoordinatorLivenessDetectsBlockedCycle),
@@ -173,6 +178,139 @@ foreach (var test in tests)
 
 Console.WriteLine($"{tests.Length - failures.Count}/{tests.Length} tests passed.");
 return failures.Count == 0 ? 0 : 1;
+
+static void MatrixPortOwnershipMatchesPerCellScans()
+{
+    var ports = new[]
+    {
+        new DeckLinkPort("PORT-A", "Output (1)", "Test card", 0, 0, null, [], IsOutputPort: true),
+        new DeckLinkPort("PORT-B", "Output (2)", "Test card", 0, 1, null, [], IsOutputPort: true),
+        new DeckLinkPort("PORT-C", "Output (3)", "Test card", 0, 2, null, [], IsOutputPort: true)
+    };
+    var now = DateTimeOffset.UtcNow;
+    var routes = new[]
+    {
+        Route("source-1", "port-a", "PORT-B", RouteState.Running),
+        Route("source-2", "PORT-B", null, RouteState.WaitingForStream),
+        Route("released", "PORT-C", null, RouteState.Released),
+        Route("source-3", null, "port-c", RouteState.Reserved),
+        Route("unknown", "PORT-X", null, RouteState.Running)
+    };
+
+    var owners = RoutePortOwnership.Map(ports, routes);
+    foreach (var port in ports)
+    {
+        var scanned = routes.FirstOrDefault(route => route.State != RouteState.Released
+            && (route.PortId?.Equals(port.StableId, StringComparison.OrdinalIgnoreCase) == true
+                || route.DesiredPortId?.Equals(port.StableId, StringComparison.OrdinalIgnoreCase) == true));
+        var indexed = owners.GetValueOrDefault(port.StableId);
+        Equal(scanned?.SourceId, indexed?.SourceId);
+    }
+    Equal(3, owners.Count);
+
+    RuntimeRoute Route(string source, string? port, string? desired, RouteState state) => new(
+        source, source, port, port, "HD25", state, AssignmentMode.Manual, false, 0, 0,
+        null, null, null, 0, 0, null, now, null, null, DesiredPortId: desired, DesiredPortName: desired);
+}
+
+static void OwnedProcessLookupsAgreeWithFullSnapshot()
+{
+    if (!OperatingSystem.IsWindows()) return;
+
+    var owner = new SourceIdentity("SYSTEM", "test", "_definst_", $"lookup-{Guid.NewGuid():N}");
+    var supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions("unused.exe"), TimeSpan.FromMilliseconds(250));
+    try
+    {
+        var start = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-Command");
+        start.ArgumentList.Add("[Console]::Out.WriteLine('frame=1'); [Console]::In.ReadLine() | Out-Null");
+        supervisor.StartOwnedProcessForTestingAsync(owner, start).GetAwaiter().GetResult();
+
+        var full = supervisor.Snapshot().Single(value => value.Source == owner && value.Running);
+        var running = supervisor.RunningSnapshot().Single(value => value.Source == owner);
+        True(supervisor.TryGetRunning(owner, out var direct));
+        Equal(full.ProcessId, running.ProcessId);
+        Equal(full.ProcessId, direct.ProcessId);
+        Equal(full.Purpose, direct.Purpose);
+        True(supervisor.IsRunning(owner, RouteProcessPurpose.Live));
+        True(!supervisor.IsRunning(owner, RouteProcessPurpose.Fallback));
+
+        supervisor.StopAsync(owner, CancellationToken.None).GetAwaiter().GetResult();
+        True(!supervisor.TryGetRunning(owner, out _));
+        True(!supervisor.RunningSnapshot().Any(value => value.Source == owner));
+        True(supervisor.Snapshot().Any(value => value.Source == owner && !value.Running));
+    }
+    finally { supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+}
+
+static void SupervisionLoopsPaceOverruns()
+{
+    var period = TimeSpan.FromMilliseconds(100);
+    Equal(TimeSpan.Zero, SupervisionLoopPacing.DelayAfterOverrun(period, TimeSpan.FromMilliseconds(99)));
+    Equal(TimeSpan.FromMilliseconds(25), SupervisionLoopPacing.DelayAfterOverrun(period, period));
+    Equal(TimeSpan.FromMilliseconds(25), SupervisionLoopPacing.DelayAfterOverrun(period, TimeSpan.FromSeconds(2)));
+    try
+    {
+        _ = SupervisionLoopPacing.DelayAfterOverrun(TimeSpan.Zero, TimeSpan.Zero);
+        throw new Exception("Expected an invalid period to be rejected.");
+    }
+    catch (ArgumentOutOfRangeException) { }
+}
+
+static void SnapshotRendersCoalesceWithoutLosingFollowUp()
+{
+    var coalescer = new BroadcastRouter.Web.Services.SnapshotRenderCoalescer();
+    var queue = new List<(Action Callback, TaskCompletionSource Completion)>();
+    var renders = 0;
+    Task? followUp = null;
+
+    Task Dispatch(Action callback)
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        queue.Add((callback, completion));
+        return completion.Task;
+    }
+
+    var first = coalescer.DispatchAsync(Dispatch, () =>
+    {
+        renders++;
+        followUp = coalescer.DispatchAsync(Dispatch, () => renders++);
+    });
+    var duplicate = coalescer.DispatchAsync(Dispatch, () => renders += 100);
+    Equal(1, queue.Count);
+    True(duplicate.IsCompletedSuccessfully);
+
+    queue[0].Callback();
+    queue[0].Completion.SetResult();
+    first.GetAwaiter().GetResult();
+    Equal(1, renders);
+    Equal(2, queue.Count);
+
+    queue[1].Callback();
+    queue[1].Completion.SetResult();
+    followUp!.GetAwaiter().GetResult();
+    Equal(2, renders);
+}
+
+static void CpuPercentIgnoresShortSamplingWindows()
+{
+    var sampler = new ProcessCpuSampler(TimeSpan.FromMilliseconds(500));
+    var started = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+    Equal(0d, sampler.Sample(TimeSpan.Zero, started, 2));
+    Equal(0d, sampler.Sample(TimeSpan.FromMilliseconds(100), started.AddMilliseconds(100), 2));
+    Equal(50d, sampler.Sample(TimeSpan.FromMilliseconds(600), started.AddMilliseconds(600), 2));
+    Equal(50d, sampler.Sample(TimeSpan.FromMilliseconds(900), started.AddMilliseconds(700), 2));
+    Equal(50d, sampler.Sample(TimeSpan.FromMilliseconds(1200), started.AddMilliseconds(1200), 2));
+}
 
 static void SavedRoutesRetryWithoutDiscovery()
 {
@@ -1012,8 +1150,10 @@ static void LocalFfmpegSupervisionPrecedesWowzaPolling()
     var methodEnd = coordinator.IndexOf("private async Task RunFastPublisherSupervisionAsync", methodStart, StringComparison.Ordinal);
     True(methodStart >= 0 && methodEnd > methodStart);
     var method = coordinator[methodStart..methodEnd];
-    var localSnapshot = method.IndexOf("supervisor.Snapshot().Where", StringComparison.Ordinal);
+    var localSnapshot = method.IndexOf("supervisor.RunningSnapshot().Where", StringComparison.Ordinal);
     True(localSnapshot >= 0);
+    True(method.Contains("supervisor.TryGetRunning", StringComparison.Ordinal));
+    True(!method.Contains("supervisor.Snapshot()", StringComparison.Ordinal));
     True(!method.Contains("await SuperviseWowzaPublisherPresenceAsync", StringComparison.Ordinal));
     True(coordinator.Contains("RunFastPublisherSupervisionAsync", StringComparison.Ordinal));
     True(coordinator.Contains("ResilientBackgroundLoop.RunAsync", StringComparison.Ordinal));
