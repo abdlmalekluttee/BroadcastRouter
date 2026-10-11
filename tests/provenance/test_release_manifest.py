@@ -73,6 +73,39 @@ class ReleaseManifestTests(unittest.TestCase):
         self.assertNotEqual(self.run_manifest().returncode, 0)
         self.assertFalse((self.package / "release-manifest.json").exists())
 
+    def make_junction(self, link, target):
+        result = subprocess.run([
+            shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-Command",
+            "New-Item -ItemType Junction -Path $args[0] -Target $args[1] | Out-Null",
+            str(link), str(target)
+        ], capture_output=True, text=True)
+        # cmdlets after -Command do not bind positional script arguments on all hosts.
+        if result.returncode:
+            result = subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_nested_junction_is_rejected_without_touching_target(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        sentinel = outside / "sentinel.txt"
+        sentinel.write_text("untouched")
+        self.make_junction(self.package / "link", outside)
+        result = self.run_manifest()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.package / "release-manifest.json").exists())
+        self.assertEqual([p.name for p in outside.iterdir()], ["sentinel.txt"])
+        self.assertEqual(sentinel.read_text(), "untouched")
+
+    def test_root_junction_is_rejected_without_touching_target(self):
+        actual = self.package
+        self.package = self.root / "linked-package"
+        self.make_junction(self.package, actual)
+        result = self.run_manifest()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((actual / "release-manifest.json").exists())
+        self.assertEqual((actual / "app.dll").read_bytes(), b"synthetic assembly fixture")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
