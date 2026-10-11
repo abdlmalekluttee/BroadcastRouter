@@ -76,14 +76,12 @@ class ReleaseManifestTests(unittest.TestCase):
     def make_junction(self, link, target):
         result = subprocess.run([
             shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-Command",
-            "New-Item -ItemType Junction -Path $args[0] -Target $args[1] | Out-Null",
-            str(link), str(target)
+            "New-Item -ItemType Junction -Path '" + str(link).replace("'", "''")
+            + "' -Target '" + str(target).replace("'", "''") + "' | Out-Null"
         ], capture_output=True, text=True)
-        # cmdlets after -Command do not bind positional script arguments on all hosts.
-        if result.returncode:
-            result = subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
-                                    capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+        # Unlink only the fixture junction before TemporaryDirectory removes its target.
+        self.addCleanup(link.rmdir)
 
     def test_nested_junction_is_rejected_without_touching_target(self):
         outside = self.root / "outside"
