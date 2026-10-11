@@ -8,7 +8,7 @@ Deployment requires separate explicit approval and a maintenance window.
 |---|---|---|---|---|---|
 | P2-01 | R16, R23 | fix/P2-01-repo-provenance | [#63](https://github.com/abdlmalekluttee/BroadcastRouter/pull/63) | Awaiting owner; partial acceptance | [P2-01 evidence](phase2/P2-01.md) |
 | P2-02 | R04, R05, R06, R07, R18; harness | fix/P2-02-test-harness | [#64](https://github.com/abdlmalekluttee/BroadcastRouter/pull/64) | Draft; CI green; full matrix gap open | [P2-02 evidence](phase2/P2-02.md) |
-| P2-03 | R10, R11 | fix/P2-03-session-telemetry | Pending | Draft review approved; retention/full-transcript gaps open | [P2-03 evidence](phase2/P2-03.md) |
+| P2-03 | R10, R11 | fix/P2-03-session-telemetry | [#65](https://github.com/abdlmalekluttee/BroadcastRouter/pull/65) | Draft review approved; retention/full-transcript gaps open | [P2-03 evidence](phase2/P2-03.md) |
 
 ## Open KnownDefect register
 
