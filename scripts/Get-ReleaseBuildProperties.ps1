@@ -4,6 +4,10 @@ param([Parameter(Mandatory = $true)][string] $SourceRoot)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Get-Item -LiteralPath $SourceRoot).FullName
+# Release packages already omit PDBs. Do not generate path-dependent embedded
+# Razor debug sources whose checksums otherwise alter the shipped assembly ID.
+'-property:DebugType=none'
+'-property:DebugSymbols=false'
 foreach ($entry in @(
     @('Directory.Build.props', 'DirectoryBuildPropsPath', 'ImportDirectoryBuildProps'),
     @('Directory.Build.targets', 'DirectoryBuildTargetsPath', 'ImportDirectoryBuildTargets'),
