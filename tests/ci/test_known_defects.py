@@ -61,6 +61,13 @@ class KnownDefectValidatorTests(unittest.TestCase):
         results.append(ET.fromstring(ET.tostring(results[0])))
         with self.assertRaises(ValueError): self.check()
 
+    def test_pinned_xunit_assertion_echo_is_accepted(self):
+        namespace = "{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}"
+        infos = ET.SubElement(self.node("t:ResultSummary"), namespace + "RunInfos")
+        info = ET.SubElement(infos, namespace + "RunInfo", outcome="Error")
+        ET.SubElement(info, namespace + "Text").text = "[xUnit.net 00:00:00.13]     BroadcastRouter.Tests.KnownDefectTests.CorrectBehavior [FAIL]"
+        self.check()
+
     def test_runner_level_error_is_rejected(self):
         namespace = "{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}"
         infos = ET.SubElement(self.node("t:ResultSummary"), namespace + "RunInfos")
