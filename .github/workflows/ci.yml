@@ -9,16 +9,59 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    runs-on: windows-latest
+  build:
+    name: Build
+    runs-on: windows-2022
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
-          dotnet-version: 8.0.x
+          global-json-file: global.json
       - run: dotnet restore .\BroadcastRouter.sln
       - run: dotnet build .\BroadcastRouter.sln --configuration Release --no-restore
-      - run: dotnet run --project .\tests\BroadcastRouter.Tests\BroadcastRouter.Tests.csproj --configuration Release --no-build
+      - run: python -m unittest discover -s tests/provenance -v
       - name: Build and privacy-check release package
         shell: pwsh
-        run: .\scripts\Publish-Release.ps1 -Version 0.0.0-ci -OutputRoot .\artifacts-ci
+        run: |
+          Write-Host "Runner image $env:ImageOS / $env:ImageVersion"
+          .\scripts\Publish-Release.ps1 -Version 0.0.0-ci -OutputRoot "$env:RUNNER_TEMP\build-one"
+          dotnet clean .\BroadcastRouter.sln --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Clean failed.' }
+          .\scripts\Publish-Release.ps1 -Version 0.0.0-ci -OutputRoot "$env:RUNNER_TEMP\build-two"
+          $one = Get-Content "$env:RUNNER_TEMP\build-one\*.release-manifest.json" -Raw
+          $two = Get-Content "$env:RUNNER_TEMP\build-two\*.release-manifest.json" -Raw
+          if ($one -cne $two) { throw 'Repeated clean build manifests differ.' }
+          Write-Host 'Two clean publishes: all payload hashes and manifest bytes identical.'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: provenance-${{ github.run_id }}
+          path: ${{ runner.temp }}/build-one/*.release-manifest.json
+          if-no-files-found: error
+  main-suite:
+    name: Main suite
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - run: dotnet run --project .\tests\BroadcastRouter.Tests\BroadcastRouter.Tests.csproj --configuration Release
+  known-defect:
+    name: KnownDefect
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      # Fail closed until P2-02 supplies the strict seven-defect harness.
+      - name: Verify exact known-defect assertion failures
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath scripts/Test-KnownDefects.ps1)) {
+            throw 'P2-02 strict KnownDefect harness is not yet present. This is not a passing gate.'
+          }
+          ./scripts/Test-KnownDefects.ps1
