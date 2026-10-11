@@ -61,6 +61,18 @@ class KnownDefectValidatorTests(unittest.TestCase):
         results.append(ET.fromstring(ET.tostring(results[0])))
         with self.assertRaises(ValueError): self.check()
 
+    def test_runner_level_error_is_rejected(self):
+        namespace = "{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}"
+        infos = ET.SubElement(self.node("t:ResultSummary"), namespace + "RunInfos")
+        ET.SubElement(infos, namespace + "RunInfo", outcome="Error")
+        with self.assertRaises(ValueError): self.check()
+
+    def test_runner_level_warning_is_rejected(self):
+        namespace = "{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}"
+        infos = ET.SubElement(self.node("t:ResultSummary"), namespace + "RunInfos")
+        ET.SubElement(infos, namespace + "RunInfo", outcome="Warning")
+        with self.assertRaises(ValueError): self.check()
+
     def test_counter_mismatch_is_rejected(self):
         self.node("t:ResultSummary/t:Counters").set("error", "1")
         with self.assertRaises(ValueError): self.check()
