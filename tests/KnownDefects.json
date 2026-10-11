@@ -1,0 +1,9 @@
+[
+  {"test":"BroadcastRouter.Tests.KnownDefectTests.SamePacketAudioBurstDoesNotAuthorizeRecovery","finding":"R04","message":"R04: two diagnostics from one packet must not authorize recovery"},
+  {"test":"BroadcastRouter.Tests.KnownDefectTests.MillisecondQueueWarningsDoNotAuthorizeRecovery","finding":"R04","message":"R04: millisecond queue warnings alone must not authorize recovery"},
+  {"test":"BroadcastRouter.Tests.KnownDefectTests.DuplicateBurstRespectsConfirmationWindow","finding":"R05","message":"R05: a 500ms duplicate burst must not bypass the confirmation window"},
+  {"test":"BroadcastRouter.Tests.KnownDefectTests.FreshProgressDoesNotConcealStalledMedia","finding":"R06","message":"R06: fresh progress with unchanged media counters for one hour must be stalled"},
+  {"test":"BroadcastRouter.Tests.KnownDefectTests.MissingIncomingStreamsIsUnknown","finding":"R07","message":"R07: missing incomingStreams must reject unknown schema, not return an empty success"},
+  {"test":"BroadcastRouter.Tests.KnownDefectTests.DiagnosticActorIsRedacted","finding":"R18","message":"R18: exported audit must not retain the raw actor"},
+  {"test":"BroadcastRouter.Tests.KnownDefectTests.DiagnosticReasonIsRedacted","finding":"R18","message":"R18: exported audit must not retain the raw reason secret"}
+]

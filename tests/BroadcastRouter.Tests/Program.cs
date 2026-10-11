@@ -1,35 +1,13 @@
 using BroadcastRouter.Application;
 using BroadcastRouter.Domain;
 using BroadcastRouter.Infrastructure;
+using Xunit;
 
-if (args is ["--write-hold-simulation", var holdDatabase])
+[assembly: CollectionBehavior(DisableTestParallelization = true)]
+
+public sealed class LegacyRegressionTests
 {
-    var fixtureStore = new SqliteDataStore(holdDatabase);
-    await fixtureStore.InitializeAsync();
-    var fixtureSettings = new OperatorSettings { SimulationMode = true };
-    fixtureSettings.Security.Port = 5280;
-    fixtureSettings.Security.RequireAuthentication = false;
-    fixtureSettings.WowzaServers.Add(new() { ServerId = "SIM-WOWZA" });
-    await fixtureStore.SaveSettingsAsync(fixtureSettings);
-    return 0;
-}
-
-if (args is ["--write-simulation-settings", var databasePath, var portText, var authenticationText]
-    && int.TryParse(portText, out var runtimePort) && bool.TryParse(authenticationText, out var runtimeAuthentication))
-{
-    var runtimeStore = new SqliteDataStore(databasePath);
-    await runtimeStore.InitializeAsync();
-    var runtimeSettings = await runtimeStore.LoadSettingsAsync();
-    runtimeSettings.SimulationMode = true;
-    runtimeSettings.Security.BindAddress = "127.0.0.1";
-    runtimeSettings.Security.Port = runtimePort;
-    runtimeSettings.Security.RequireAuthentication = runtimeAuthentication;
-    runtimeSettings.Security.AllowedNetworks = "127.0.0.1/32;::1/128";
-    await runtimeStore.SaveSettingsAsync(runtimeSettings);
-    return 0;
-}
-
-var tests = new (string Name, Action Body)[]
+private static readonly (string Name, Action Body)[] Tests =
 {
     ("Publisher-live hold is opt-in, scoped, and preserves outage continuity", PublisherLiveHoldTests.Policy),
     ("Recovery hold is durable, audited atomically, and backward compatible", PublisherLiveHoldTests.Persistence),
@@ -169,15 +147,16 @@ var tests = new (string Name, Action Body)[]
     ("Default configuration is production safe", DefaultConfigurationIsProductionSafe)
 };
 
-var failures = new List<string>();
-foreach (var test in tests)
-{
-    try { test.Body(); Console.WriteLine($"PASS  {test.Name}"); }
-    catch (Exception ex) { failures.Add($"{test.Name}: {ex.Message}"); Console.WriteLine($"FAIL  {test.Name}: {ex}"); }
-}
+public static IEnumerable<object[]> Cases => Tests.Select((test, index) => new object[] { index, test.Name });
 
-Console.WriteLine($"{tests.Length - failures.Count}/{tests.Length} tests passed.");
-return failures.Count == 0 ? 0 : 1;
+[Theory]
+[MemberData(nameof(Cases))]
+[Trait("Suite", "Baseline136")]
+public void Baseline(int index, string name)
+{
+    Assert.Equal(Tests[index].Name, name);
+    Tests[index].Body();
+}
 
 static void MatrixPortOwnershipMatchesPerCellScans()
 {
@@ -2537,6 +2516,7 @@ static WowzaServerConfiguration Server(string template) => new("Main", "MAIN", n
 static void True(bool value) { if (!value) throw new Exception("Expected true."); }
 static void Equal<T>(T expected, T actual) { if (!EqualityComparer<T>.Default.Equals(expected, actual)) throw new Exception($"Expected '{expected}', got '{actual}'."); }
 static void Throws<T>(Action action) where T : Exception { try { action(); } catch (T) { return; } throw new Exception($"Expected {typeof(T).Name}."); }
+}
 
 sealed class StaticJsonHandler(string json) : HttpMessageHandler
 {
