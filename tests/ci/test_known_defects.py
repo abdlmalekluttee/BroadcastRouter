@@ -15,7 +15,7 @@ class KnownDefectValidatorTests(unittest.TestCase):
         spec.loader.exec_module(self.validator)
         self.registry = [{"test": "BroadcastRouter.Tests.KnownDefectTests.CorrectBehavior",
                           "finding": "R99", "message": "R99: specific assertion"}]
-        self.root = ET.fromstring('''<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+        self.root = ET.fromstring(r'''<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
           <Results><UnitTestResult testName="BroadcastRouter.Tests.KnownDefectTests.CorrectBehavior"
              outcome="Failed" testId="id1"><Output><ErrorInfo><Message>R99: specific assertion</Message>
              <StackTrace>   at BroadcastRouter.Tests.KnownDefectTests.CorrectBehavior() in C:\fixture\KnownDefectTests.cs:line 10</StackTrace>

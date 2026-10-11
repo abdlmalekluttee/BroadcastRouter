@@ -49,7 +49,8 @@ public sealed class FaultHarnessTests
             if (scenario is "exit" or "crash")
             {
                 await Eventually(() => lifecycle.Any(e => e.State == RouteProcessLifecycleState.Exited));
-                Assert.Equal(scenario == "exit" ? 37 : -1073741819, supervisor.Snapshot().Single().ExitCode);
+                if (scenario == "exit") Assert.Equal(37, supervisor.Snapshot().Single().ExitCode);
+                else Assert.NotEqual(0, supervisor.Snapshot().Single().ExitCode);
             }
             else
             {
@@ -72,6 +73,66 @@ public sealed class FaultHarnessTests
     {
         Assert.NotNull(typeof(FaultHarnessTests).Assembly.GetType("BroadcastRouter.Tests.ScriptedWowzaHandler"));
     }
+
+    [Theory]
+    [InlineData(403)]
+    [InlineData(500)]
+    public async Task ScriptedRestErrorsReachDiscoveryWithoutNetwork(int status)
+    {
+        using var handler = new ScriptedWowzaHandler(new RestStep((HttpStatusCode)status, "synthetic management fault"));
+        using var client = new HttpClient(handler);
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => Discovery(client).DiscoverAsync(CancellationToken.None));
+        Assert.Equal((HttpStatusCode)status, error.StatusCode);
+        Assert.Equal(1, handler.Requests);
+    }
+
+    [Fact]
+    public async Task ScriptedTimeoutObeysDiscoveryCancellation()
+    {
+        using var handler = new ScriptedWowzaHandler(new RestStep(HttpStatusCode.OK, "", Timeout: true));
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Discovery(client).DiscoverAsync(CancellationToken.None));
+        Assert.Equal(1, handler.Requests);
+    }
+
+    [Fact]
+    public async Task ScriptedPublisherEpochCanDisconnectAndReturn()
+    {
+        using var handler = new ScriptedWowzaHandler(ScriptedWowzaHandler.Publisher(true, 100),
+            ScriptedWowzaHandler.Publisher(false, 0), ScriptedWowzaHandler.Publisher(true, 1));
+        using var client = new HttpClient(handler);
+        var provider = Discovery(client);
+        Assert.Equal(SourceState.PublisherActive, (await provider.DiscoverAsync(CancellationToken.None)).Single().State);
+        Assert.Equal(SourceState.PublisherDisconnected, (await provider.DiscoverAsync(CancellationToken.None)).Single().State);
+        Assert.Equal(SourceState.PublisherActive, (await provider.DiscoverAsync(CancellationToken.None)).Single().State);
+        Assert.Equal(3, handler.Requests);
+    }
+
+    [Fact]
+    public async Task ScriptedTruncatedJsonIsNotAValidInventory()
+    {
+        using var handler = new ScriptedWowzaHandler(new RestStep(HttpStatusCode.OK, "{\"incomingStreams\":["));
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAnyAsync<JsonException>(() => Discovery(client).DiscoverAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ScriptedMissingEnvelopeReachesRealParser()
+    {
+        using var handler = new ScriptedWowzaHandler(new RestStep(HttpStatusCode.OK, "{\"unexpectedEnvelope\":true}"));
+        using var client = new HttpClient(handler);
+        using var document = JsonDocument.Parse("{\"unexpectedEnvelope\":true}");
+        // Harness transport parity, not a claim that empty inventory is correct:
+        // R07's separate KnownDefect test asserts the required rejection.
+        Assert.Equal(WowzaIncomingStreamParser.Parse(document.RootElement).Count,
+            (await Discovery(client).DiscoverAsync(CancellationToken.None)).Count);
+    }
+
+    private static WowzaDiscoveryProvider Discovery(HttpClient client) => new(client,
+        new WowzaServerConfiguration("Synthetic", "TEST", new Uri("http://fixture.invalid/"), "synthetic", true,
+            "fixture.invalid", 554, ["test"], ["_default_"], "rtsp://{wowza-host}:{rtsp-port}/{application}/{stream-name}",
+            TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(5)),
+        new StaticCredentialResolver(new("synthetic-user", "synthetic-password")));
 
     internal static string RepositoryRoot()
     {

@@ -21,6 +21,7 @@ jobs:
       - run: dotnet restore .\BroadcastRouter.sln
       - run: dotnet build .\BroadcastRouter.sln --configuration Release --no-restore
       - run: python -m unittest discover -s tests/provenance -v
+      - run: python -m unittest discover -s tests/ci -v
       - name: Build and privacy-check release package
         shell: pwsh
         run: |
@@ -47,7 +48,7 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
-      - run: dotnet run --project .\tests\BroadcastRouter.Tests\BroadcastRouter.Tests.csproj --configuration Release
+      - run: dotnet test .\tests\BroadcastRouter.Tests\BroadcastRouter.Tests.csproj --configuration Release --filter 'Category!=KnownDefect' --logger 'trx;LogFileName=main.trx'
   known-defect:
     name: KnownDefect
     runs-on: windows-2022
