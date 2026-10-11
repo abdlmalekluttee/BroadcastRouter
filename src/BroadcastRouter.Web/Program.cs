@@ -75,6 +75,7 @@ if (requireAuthentication && string.IsNullOrWhiteSpace(Environment.GetEnvironmen
     throw new InvalidOperationException("Authentication is enabled, but BROADCASTROUTER_ADMIN_PASSWORD is not configured. Startup is refused.");
 
 builder.Services.AddSingleton(bootstrapStore);
+builder.Services.AddSingleton(SupervisionClock.System);
 builder.Services.AddSingleton(new DeckLinkAssetCatalog(deckLinkAssetDirectory));
 builder.Services.AddHttpClient<DeckLinkSoftwareInformationProvider>(client =>
 {
@@ -231,10 +232,10 @@ var deckLinkAssetEndpoint = app.MapGet("/hardware-assets/decklink/{slug}/{kind}"
 });
 deckLinkAssetEndpoint.RequireAuthorization();
 
-app.MapGet("/health", (DatabaseIntegrityMonitor databaseIntegrity, RouterCoordinator coordinator) =>
+app.MapGet("/health", (DatabaseIntegrityMonitor databaseIntegrity, RouterCoordinator coordinator, SupervisionClock clock) =>
 {
     var integrity = databaseIntegrity.Snapshot;
-    var now = DateTimeOffset.UtcNow;
+    var now = clock.Now;
     var coordinatorResponsive = CoordinatorLivenessPolicy.IsResponsive(
         coordinator.GetLiveness(), now, RouterCoordinatorWatchdog.MaximumSilence);
     var auxiliaryResponsive = coordinator.GetAuxiliaryLiveness().All(snapshot =>

@@ -1,4 +1,5 @@
 using BroadcastRouter.Infrastructure;
+using BroadcastRouter.Application;
 
 namespace BroadcastRouter.Web.Services;
 
@@ -14,10 +15,12 @@ public sealed record DatabaseIntegritySnapshot(string Result, DateTimeOffset Che
 /// </summary>
 public sealed class DatabaseIntegrityMonitor(
     SqliteDataStore store,
-    ILogger<DatabaseIntegrityMonitor> logger) : BackgroundService
+    ILogger<DatabaseIntegrityMonitor> logger, SupervisionClock? clock = null) : BackgroundService
 {
+    private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
     internal static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(1);
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private DateTimeOffset _lastChecked = DateTimeOffset.MinValue;
     private DatabaseIntegritySnapshot _snapshot = new("unknown", DateTimeOffset.MinValue);
 
     public DatabaseIntegritySnapshot Snapshot => Volatile.Read(ref _snapshot);
@@ -28,7 +31,8 @@ public sealed class DatabaseIntegrityMonitor(
         try
         {
             var result = await store.IntegrityCheckAsync(cancellationToken).ConfigureAwait(false);
-            Volatile.Write(ref _snapshot, new(result, DateTimeOffset.UtcNow));
+            Volatile.Write(ref _snapshot, new(result, _clock.UtcNow));
+            _lastChecked = _clock.Now;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -36,7 +40,8 @@ public sealed class DatabaseIntegrityMonitor(
         }
         catch (Exception exception)
         {
-            Volatile.Write(ref _snapshot, new("error", DateTimeOffset.UtcNow));
+            Volatile.Write(ref _snapshot, new("error", _clock.UtcNow));
+            _lastChecked = _clock.Now;
             logger.LogWarning(exception, "The background database integrity check failed.");
         }
         finally
@@ -49,11 +54,11 @@ public sealed class DatabaseIntegrityMonitor(
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            var age = DateTimeOffset.UtcNow - Snapshot.CheckedAt;
+            var age = _clock.Now - _lastChecked;
             if (age >= RefreshInterval)
                 await RefreshAsync(stoppingToken).ConfigureAwait(false);
 
-            await Task.Delay(RefreshInterval, stoppingToken).ConfigureAwait(false);
+            await _clock.DelayAsync(RefreshInterval, stoppingToken).ConfigureAwait(false);
         }
     }
 }

@@ -73,6 +73,22 @@ public sealed class SupervisionClockTests
         Assert.Equal(before.AddHours(1), clock.UtcNow);
     }
 
+    [Fact]
+    public async Task SupervisionDelayAndPeriodicTimerCanBeFastForwarded()
+    {
+        var provider = new ManualTimeProvider();
+        var clock = new BroadcastRouter.Application.SupervisionClock(provider);
+        using var timer = clock.CreatePeriodicTimer(TimeSpan.FromSeconds(10));
+        var tick = timer.WaitForNextTickAsync().AsTask();
+        var delay = clock.DelayAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+        provider.StepUtc(TimeSpan.FromHours(1));
+        Assert.False(tick.IsCompleted);
+        Assert.False(delay.IsCompleted);
+        provider.Advance(TimeSpan.FromSeconds(10));
+        Assert.True(await tick.WaitAsync(TimeSpan.FromSeconds(1)));
+        await delay.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
     private static dynamic NewClock(TimeProvider provider)
     {
         var type = typeof(BroadcastRouter.Application.AutomaticAssignmentEngine).Assembly.GetType("BroadcastRouter.Application.SupervisionClock");
@@ -89,8 +105,7 @@ public sealed class SupervisionClockTests
             ["SupervisionClock.cs"] = (1, "Sole ambient TimeProvider factory at service-run boundary"),
             ["OperatorTime.cs"] = (1, "UI-only relative timestamp formatting; no supervision action"),
             ["SqliteDataStore.cs"] = (4, "Durable UTC database audit timestamps; no recovery decision"),
-            ["DeckLinkSoftwareInformationProvider.cs"] = (1, "External driver update cache; not routing/recovery"),
-            ["DeckLinkIdentityMigration.cs"] = (1, "Durable migration audit timestamp; not a deadline")
+            ["DeckLinkSoftwareInformationProvider.cs"] = (1, "External driver update cache; not routing/recovery")
         };
         var expression = new System.Text.RegularExpressions.Regex(
             @"\b(?:DateTime(?:Offset)?\s*\.\s*(?:Now|UtcNow)|Environment\s*\.\s*TickCount(?:64)?|Stopwatch\s*\.|TimeProvider\s*\.\s*System)");
@@ -107,11 +122,13 @@ public sealed class SupervisionClockTests
 
 public sealed class ManualTimeProvider : TimeProvider
 {
-    private DateTimeOffset _utc = DateTimeOffset.Parse("2025-01-01T00:00:00Z");
-    private long _ticks;
-    public override DateTimeOffset GetUtcNow() => _utc;
-    public override long GetTimestamp() => _ticks;
-    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-    public void Advance(TimeSpan duration) { _utc += duration; _ticks += duration.Ticks; }
-    public void StepUtc(TimeSpan duration) => _utc += duration;
+    private readonly Microsoft.Extensions.Time.Testing.FakeTimeProvider _inner = new(DateTimeOffset.Parse("2025-01-01T00:00:00Z"));
+    private TimeSpan _utcOffset;
+    public override DateTimeOffset GetUtcNow() => _inner.GetUtcNow() + _utcOffset;
+    public override long GetTimestamp() => _inner.GetTimestamp();
+    public override long TimestampFrequency => _inner.TimestampFrequency;
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
+        _inner.CreateTimer(callback, state, dueTime, period);
+    public void Advance(TimeSpan duration) => _inner.Advance(duration);
+    public void StepUtc(TimeSpan duration) => _utcOffset += duration;
 }

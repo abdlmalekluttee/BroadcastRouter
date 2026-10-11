@@ -1,4 +1,5 @@
 using BroadcastRouter.Domain;
+using BroadcastRouter.Application;
 
 namespace BroadcastRouter.Infrastructure;
 
@@ -8,18 +9,18 @@ public sealed record MediaToolValidationResult(
 
 public static class MediaToolValidator
 {
-    public static async Task<MediaToolValidation> ValidateAsync(MediaToolPaths paths, CancellationToken cancellationToken) =>
-        (await ValidateDetailedAsync(paths, cancellationToken).ConfigureAwait(false)).Validation;
+    public static async Task<MediaToolValidation> ValidateAsync(MediaToolPaths paths, CancellationToken cancellationToken, SupervisionClock? clock = null) =>
+        (await ValidateDetailedAsync(paths, cancellationToken, clock: clock).ConfigureAwait(false)).Validation;
 
     public static async Task<MediaToolValidationResult> ValidateDetailedAsync(
         MediaToolPaths paths,
         CancellationToken cancellationToken,
-        Action<string>? reportProgress = null)
+        Action<string>? reportProgress = null, SupervisionClock? clock = null)
     {
         var findings = new List<string>();
         if (!File.Exists(paths.FfmpegPath) || !File.Exists(paths.FfprobePath))
             return new(new(ToolValidationState.Invalid, null, null, false, false, 0,
-                ["FFmpeg and FFprobe must both point to existing executable files."], DateTimeOffset.UtcNow), []);
+                ["FFmpeg and FFprobe must both point to existing executable files."], (clock ?? SupervisionClock.System).UtcNow), []);
 
         reportProgress?.Invoke("FFmpeg and DeckLink capability inspection");
         var ffmpeg = await FfmpegDiagnostics.InspectAsync(paths.FfmpegPath, cancellationToken).ConfigureAwait(false);
@@ -84,7 +85,7 @@ public static class MediaToolValidator
         var valid = ffmpeg.ExecutableFound && ffprobe.Started && ffprobe.ExitCode == 0 && ffmpeg.HasDeckLinkOutput
             && ffmpeg.OutputDevices.Count > 0 && missingFilters.Length == 0 && hasPixelFormat && hasRawVideo && hasRtspTimeout && driver;
         return new(new(valid ? ToolValidationState.Valid : ToolValidationState.Invalid, ffmpeg.VersionLine, ffprobeVersion,
-                ffmpeg.HasDeckLinkOutput, driver, ffmpeg.OutputDevices.Count, findings, DateTimeOffset.UtcNow,
+                ffmpeg.HasDeckLinkOutput, driver, ffmpeg.OutputDevices.Count, findings, (clock ?? SupervisionClock.System).UtcNow,
                 hasWindowsDeckLinkSafeTerminate, missingStandbyFilters.Length == 0),
             ffmpeg.OutputDevices);
     }

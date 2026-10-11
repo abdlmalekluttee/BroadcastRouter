@@ -9,7 +9,7 @@ namespace BroadcastRouter.Infrastructure;
 public sealed class WowzaDiscoveryProvider(
     HttpClient httpClient,
     WowzaServerConfiguration server,
-    ICredentialResolver credentialResolver) : IStreamDiscoveryProvider
+    ICredentialResolver credentialResolver, SupervisionClock? clock = null) : IStreamDiscoveryProvider
 {
     public async Task<IReadOnlyList<DiscoveredSource>> DiscoverAsync(CancellationToken cancellationToken)
     {
@@ -29,7 +29,7 @@ public sealed class WowzaDiscoveryProvider(
                     RtspUrlGenerator.Generate(server, identity),
                     observation.PublisherConnected ? SourceState.PublisherActive : SourceState.PublisherDisconnected,
                     server.Priority,
-                    LastObservedAt: DateTimeOffset.UtcNow));
+                    LastObservedAt: (clock ?? SupervisionClock.System).Now));
             }
         }
         return sources;

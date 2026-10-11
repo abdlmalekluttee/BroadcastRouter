@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using BroadcastRouter.Domain;
+using BroadcastRouter.Application;
 
 namespace BroadcastRouter.Infrastructure;
 
@@ -91,7 +92,7 @@ public static class BrowserPreviewCommandBuilder
     }
 }
 
-public sealed class BrowserPreviewSupervisor : IAsyncDisposable
+public sealed class BrowserPreviewSupervisor(SupervisionClock? clock = null) : IAsyncDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _snapshotLock = new();
@@ -116,7 +117,7 @@ public sealed class BrowserPreviewSupervisor : IAsyncDisposable
                 throw new FileNotFoundException("Configured FFmpeg executable was not found.");
 
             var plan = BrowserPreviewCommandBuilder.Build(tools, source);
-            candidate = new PreviewSession(source, new Process { StartInfo = plan.Producer });
+            candidate = new PreviewSession(source, new Process { StartInfo = plan.Producer }, (clock ?? SupervisionClock.System).UtcNow);
             SetSnapshot(CreateSnapshot(candidate, PreviewState.Starting, "Preparing the embedded browser stream...", null));
 
             if (!candidate.Producer.Start())
@@ -362,13 +363,13 @@ public sealed class BrowserPreviewSupervisor : IAsyncDisposable
         "out_time", "dup_frames", "drop_frames", "speed", "progress"
     };
 
-    private sealed class PreviewSession(DiscoveredSource source, Process producer)
+    private sealed class PreviewSession(DiscoveredSource source, Process producer, DateTimeOffset startedAt)
     {
         private readonly ConcurrentQueue<string> _errors = new();
         public DiscoveredSource Source { get; } = source;
         public Process Producer { get; } = producer;
         public string StreamToken { get; } = Guid.NewGuid().ToString("N");
-        public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
+        public DateTimeOffset StartedAt { get; } = startedAt;
         public CancellationTokenSource Cancellation { get; } = new();
         public ConcurrentDictionary<string, string> Progress { get; } = new(StringComparer.Ordinal);
         public Task? ProducerErrors { get; set; }

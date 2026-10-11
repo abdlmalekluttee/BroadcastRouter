@@ -2,7 +2,7 @@ using BroadcastRouter.Domain;
 
 namespace BroadcastRouter.Application;
 
-public sealed class AutomaticAssignmentEngine(PortReservationManager reservations, PriorityWaitingQueue waitingQueue)
+public sealed class AutomaticAssignmentEngine(PortReservationManager reservations, PriorityWaitingQueue waitingQueue, SupervisionClock? clock = null)
 {
     public AssignmentDecision Assign(DiscoveredSource source, IReadOnlyList<DeckLinkPort> ports, Func<DeckLinkPort, bool>? compatible = null)
     {
@@ -13,7 +13,7 @@ public sealed class AutomaticAssignmentEngine(PortReservationManager reservation
         if (source.FixedPortId is not null)
         {
             var fixedPort = candidates.FirstOrDefault(p => string.Equals(p.StableId, source.FixedPortId, StringComparison.OrdinalIgnoreCase));
-            if (fixedPort is not null && reservations.TryReserve(fixedPort.StableId, source.Identity, source.AssignmentLocked, DateTimeOffset.UtcNow, out _))
+            if (fixedPort is not null && reservations.TryReserve(fixedPort.StableId, source.Identity, source.AssignmentLocked, (clock ?? SupervisionClock.System).Now, out _))
                 return new AssignmentDecision(true, fixedPort, AssignmentMode.Fixed, null);
             waitingQueue.Enqueue(source.Identity, source.Priority, "Fixed output is unavailable or incompatible.");
             return new AssignmentDecision(false, null, AssignmentMode.Fixed, "Fixed output is unavailable or incompatible.");
@@ -23,7 +23,7 @@ public sealed class AutomaticAssignmentEngine(PortReservationManager reservation
             return new AssignmentDecision(false, null, AssignmentMode.None, "Automatic routing is disabled.");
 
         foreach (var port in candidates.OrderBy(p => p.CardIndex).ThenBy(p => p.SubdeviceIndex))
-            if (reservations.TryReserve(port.StableId, source.Identity, false, DateTimeOffset.UtcNow, out _))
+            if (reservations.TryReserve(port.StableId, source.Identity, false, (clock ?? SupervisionClock.System).Now, out _))
                 return new AssignmentDecision(true, port, AssignmentMode.Automatic, null);
 
         waitingQueue.Enqueue(source.Identity, source.Priority, "No compatible DeckLink output is available.");

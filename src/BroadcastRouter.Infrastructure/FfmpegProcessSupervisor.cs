@@ -30,8 +30,10 @@ public sealed record RouteProcessLifecycleEvent(
 
 public sealed class FfmpegProcessSupervisor(
     FfmpegRouteOptions options,
-    TimeSpan gracefulStopTimeout) : IRouteProcessSupervisor, IAsyncDisposable
+    TimeSpan gracefulStopTimeout,
+    SupervisionClock? clock = null) : IRouteProcessSupervisor, IAsyncDisposable
 {
+    private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
     private static readonly TimeSpan OutputHandoffStopTimeout = TimeSpan.FromMilliseconds(750);
     private static readonly TimeSpan ProcessReapTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan StreamDrainTimeout = TimeSpan.FromSeconds(5);
@@ -177,7 +179,7 @@ public sealed class FfmpegProcessSupervisor(
             }
 
             var process = new Process { StartInfo = start, EnableRaisingEvents = true };
-            var managed = new ManagedProcess(source, purpose, process, DateTimeOffset.UtcNow);
+            var managed = new ManagedProcess(source, purpose, process, _clock.Now);
             try
             {
                 if (!process.Start()) throw new InvalidOperationException("FFmpeg did not start.");
@@ -255,26 +257,26 @@ public sealed class FfmpegProcessSupervisor(
         }
     }
 
-    private static async Task PumpProgressAsync(ManagedProcess managed)
+    private async Task PumpProgressAsync(ManagedProcess managed)
     {
         try
         {
             while (await managed.Process.StandardOutput.ReadLineAsync(managed.PumpCancellation.Token).ConfigureAwait(false) is { } line)
             {
-                var snapshot = managed.Parser.Accept(line, DateTimeOffset.UtcNow);
+                var snapshot = managed.Parser.Accept(line, _clock.Now);
                 if (snapshot is not null) managed.Progress = snapshot;
             }
         }
         catch (OperationCanceledException) when (managed.PumpCancellation.IsCancellationRequested) { }
     }
 
-    private static async Task PumpErrorsAsync(ManagedProcess managed)
+    private async Task PumpErrorsAsync(ManagedProcess managed)
     {
         try
         {
             while (await managed.Process.StandardError.ReadLineAsync(managed.PumpCancellation.Token).ConfigureAwait(false) is { } line)
             {
-                var observedAt = DateTimeOffset.UtcNow;
+                var observedAt = _clock.Now;
                 var safe = LogRedactor.Redact(line);
                 managed.AddError(safe);
                 managed.MediaHealth.Observe(safe, observedAt);
@@ -372,7 +374,7 @@ public sealed class FfmpegProcessSupervisor(
     {
         if (state == RouteProcessLifecycleState.Exited
             && Interlocked.Exchange(ref managed.ExitReported, 1) != 0) return;
-        try { LifecycleChanged?.Invoke(new(managed.Source, managed.ProcessId, state, DateTimeOffset.UtcNow, exitCode)); }
+        try { LifecycleChanged?.Invoke(new(managed.Source, managed.ProcessId, state, _clock.UtcNow, exitCode)); }
         catch { }
     }
 

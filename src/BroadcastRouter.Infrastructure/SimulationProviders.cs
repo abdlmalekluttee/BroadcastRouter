@@ -3,7 +3,7 @@ using BroadcastRouter.Domain;
 
 namespace BroadcastRouter.Infrastructure;
 
-public sealed class SimulationDiscoveryProvider : IStreamDiscoveryProvider
+public sealed class SimulationDiscoveryProvider(SupervisionClock? clock = null) : IStreamDiscoveryProvider
 {
     public Task<IReadOnlyList<DiscoveredSource>> DiscoverAsync(CancellationToken cancellationToken)
     {
@@ -15,7 +15,7 @@ public sealed class SimulationDiscoveryProvider : IStreamDiscoveryProvider
             100,
             new MediaProperties("h264", "aac", 1920, 1080, 25, 3_000_000, 48_000, 2, true),
             new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "simulation" },
-            LastObservedAt: DateTimeOffset.UtcNow);
+            LastObservedAt: (clock ?? SupervisionClock.System).Now);
         return Task.FromResult<IReadOnlyList<DiscoveredSource>>([source]);
     }
 }

@@ -12,8 +12,10 @@ namespace BroadcastRouter.Web.Services;
 public sealed class RouterCoordinatorWatchdog(
     RouterCoordinator coordinator,
     SqliteDataStore store,
-    ILogger<RouterCoordinatorWatchdog> logger) : BackgroundService
+    ILogger<RouterCoordinatorWatchdog> logger,
+    SupervisionClock? clock = null) : BackgroundService
 {
+    private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
     internal static readonly TimeSpan MaximumSilence = TimeSpan.FromMinutes(2);
     internal static readonly TimeSpan MaximumFastInputSilence = TimeSpan.FromSeconds(30);
     internal static readonly TimeSpan MaximumFastPublisherSilence = TimeSpan.FromMinutes(2);
@@ -24,8 +26,8 @@ public sealed class RouterCoordinatorWatchdog(
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            await Task.Delay(CheckInterval, stoppingToken).ConfigureAwait(false);
-            var now = DateTimeOffset.UtcNow;
+            await _clock.DelayAsync(CheckInterval, stoppingToken).ConfigureAwait(false);
+            var now = _clock.Now;
             var liveness = coordinator.GetLiveness();
             var coordinatorResponsive = CoordinatorLivenessPolicy.IsResponsive(liveness, now, MaximumSilence);
             var stalledAuxiliary = coordinator.GetAuxiliaryLiveness().FirstOrDefault(snapshot =>
