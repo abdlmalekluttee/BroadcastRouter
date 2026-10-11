@@ -35,13 +35,14 @@ if (Test-Path -LiteralPath $manifestPath) { throw 'Release manifest asset alread
 $sourceDirectory = Join-Path $resolvedOutput "$packageName-source"
 $repositoryRoot = & (Join-Path $PSScriptRoot 'New-ReleaseSource.ps1') `
     -Repository $repositoryRoot -Commit $commit -Destination $sourceDirectory
+$buildProperties = @(& (Join-Path $PSScriptRoot 'Get-ReleaseBuildProperties.ps1') -SourceRoot $repositoryRoot)
 
 Push-Location -LiteralPath $repositoryRoot
 try {
 dotnet publish (Join-Path $repositoryRoot 'src\BroadcastRouter.Web\BroadcastRouter.Web.csproj') `
     --configuration Release --runtime $Runtime --self-contained true `
     --property:Version=$Version --property:ContinuousIntegrationBuild=true `
-    "--property:PathMap=$repositoryRoot=/_/" --output $packageDirectory --nologo
+    "--property:PathMap=$repositoryRoot=/_/" @buildProperties --output $packageDirectory --nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
 }
 finally { Pop-Location }
