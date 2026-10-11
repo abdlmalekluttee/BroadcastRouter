@@ -22,7 +22,8 @@ jobs:
           if ($qualification.status -ne 'qualified') { throw 'Media runtime has not passed the release qualification gate.' }
       - run: dotnet restore .\BroadcastRouter.sln
       - run: dotnet build .\BroadcastRouter.sln --configuration Release --no-restore
-      - run: dotnet run --project .\tests\BroadcastRouter.Tests\BroadcastRouter.Tests.csproj --configuration Release --no-build
+      - run: dotnet test .\tests\BroadcastRouter.Tests\BroadcastRouter.Tests.csproj --configuration Release --no-build --filter 'Category!=KnownDefect'
+      - run: .\scripts\Test-KnownDefects.ps1
       - name: Build self-contained release
         shell: pwsh
         run: |
