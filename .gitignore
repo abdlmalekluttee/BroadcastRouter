@@ -16,4 +16,6 @@ data/
 *.suo
 TestResults/
 coverage/
+__pycache__/
+*.pyc
 src/BroadcastRouter.Desktop/
