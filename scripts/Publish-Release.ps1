@@ -32,11 +32,19 @@ if (Test-Path -LiteralPath $zipPath) { throw "Release archive already exists: $z
 if (Test-Path -LiteralPath $hashPath) { throw 'Release digest already exists.' }
 if (Test-Path -LiteralPath $manifestPath) { throw 'Release manifest asset already exists.' }
 
+$sourceDirectory = Join-Path $resolvedOutput "$packageName-source"
+$repositoryRoot = & (Join-Path $PSScriptRoot 'New-ReleaseSource.ps1') `
+    -Repository $repositoryRoot -Commit $commit -Destination $sourceDirectory
+
+Push-Location -LiteralPath $repositoryRoot
+try {
 dotnet publish (Join-Path $repositoryRoot 'src\BroadcastRouter.Web\BroadcastRouter.Web.csproj') `
     --configuration Release --runtime $Runtime --self-contained true `
     --property:Version=$Version --property:ContinuousIntegrationBuild=true `
     "--property:PathMap=$repositoryRoot=/_/" --output $packageDirectory --nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
+}
+finally { Pop-Location }
 
 # Portable PDBs can disclose local build paths and are not required at runtime.
 Get-ChildItem -LiteralPath $packageDirectory -Filter '*.pdb' -File |
@@ -49,10 +57,10 @@ Copy-Item -LiteralPath (Join-Path $repositoryRoot 'FFMPEG-SETUP.txt') -Destinati
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs') -Destination $packageDirectory -Recurse
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'scripts') -Destination $packageDirectory -Recurse
 
-& (Join-Path $PSScriptRoot 'Write-ReleaseManifest.ps1') -PackageDirectory $packageDirectory `
+& (Join-Path $repositoryRoot 'scripts\Write-ReleaseManifest.ps1') -PackageDirectory $packageDirectory `
     -Commit $commit -SdkVersion $sdk `
     -FFmpegQualificationFile (Join-Path $repositoryRoot 'build\ffmpeg-qualification.json')
-& (Join-Path $PSScriptRoot 'Test-ReleasePrivacy.ps1') -PackageDirectory $packageDirectory
+& (Join-Path $repositoryRoot 'scripts\Test-ReleasePrivacy.ps1') -PackageDirectory $packageDirectory
 
 Copy-Item -LiteralPath (Join-Path $packageDirectory 'release-manifest.json') -Destination $manifestPath
 
