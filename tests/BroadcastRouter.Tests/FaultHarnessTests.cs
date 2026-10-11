@@ -131,7 +131,7 @@ public sealed class FaultHarnessTests
     private static WowzaDiscoveryProvider Discovery(HttpClient client) => new(client,
         new WowzaServerConfiguration("Synthetic", "TEST", new Uri("http://fixture.invalid/"), "synthetic", true,
             "fixture.invalid", 554, ["test"], ["_default_"], "rtsp://{wowza-host}:{rtsp-port}/{application}/{stream-name}",
-            TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(5)),
+            TimeSpan.FromSeconds(5), TimeSpan.FromMilliseconds(100)),
         new StaticCredentialResolver(new("synthetic-user", "synthetic-password")));
 
     internal static string RepositoryRoot()

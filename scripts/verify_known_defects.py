@@ -18,6 +18,18 @@ def validate(root, registry, exit_code):
     summary = root.find("t:ResultSummary", NS)
     if summary is None or summary.get("outcome") != "Failed":
         raise ValueError("Run did not complete with assertion failures")
+    # The pinned xUnit adapter also emits each assertion's display line as a
+    # RunInfo Error. Accept ONLY that exact echo for a registered test, once.
+    # An adapter crash/diagnostic, extra suffix or unknown test still fails CI.
+    echoes = set()
+    for info in summary.findall(".//t:RunInfo", NS):
+        line = info.findtext("t:Text", default="", namespaces=NS).strip()
+        match = re.fullmatch(r"\[xUnit\.net \d{2}:\d{2}:\d{2}\.\d{2}\]\s+(.+) \[FAIL\]", line)
+        if info.get("outcome") != "Error" or match is None or match[1] not in expected or match[1] in echoes:
+            raise ValueError("Runner-level diagnostic is not an expected assertion echo")
+        echoes.add(match[1])
+    if summary.find(".//t:ErrorInfo", NS) is not None:
+        raise ValueError("Runner-level error metadata is present")
     counters = summary.find("t:Counters", NS)
     if counters is None:
         raise ValueError("Missing test counters")

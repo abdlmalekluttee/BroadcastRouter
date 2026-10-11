@@ -12,7 +12,7 @@ public static class ResilientBackgroundLoop
         Func<CancellationToken, Task> loop,
         Func<Exception, CancellationToken, Task> reportFailure,
         TimeSpan retryDelay,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, SupervisionClock? clock = null)
     {
         ArgumentNullException.ThrowIfNull(loop);
         ArgumentNullException.ThrowIfNull(reportFailure);
@@ -48,7 +48,7 @@ public static class ResilientBackgroundLoop
 
                 if (retryDelay > TimeSpan.Zero)
                 {
-                    try { await Task.Delay(retryDelay, cancellationToken).ConfigureAwait(false); }
+                    try { await (clock ?? SupervisionClock.System).DelayAsync(retryDelay, cancellationToken).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
                 }
             }

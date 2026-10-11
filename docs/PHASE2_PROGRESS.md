@@ -6,8 +6,8 @@ Deployment requires separate explicit approval and a maintenance window.
 
 | Task | Findings | Branch | PR | Status | Evidence link |
 |---|---|---|---|---|---|
-| P2-01 | R16, R23 | fix/P2-01-repo-provenance | Pending | In progress | Tests and provenance evidence to follow |
-| P2-02 | R04, R05, R06, R07, R18; harness | fix/P2-02-test-harness | Pending | Not started | Baseline: 136/136 tests |
+| P2-01 | R16, R23 | fix/P2-01-repo-provenance | [#63](https://github.com/abdlmalekluttee/BroadcastRouter/pull/63) | Awaiting owner; partial acceptance | [P2-01 evidence](phase2/P2-01.md) |
+| P2-02 | R04, R05, R06, R07, R18; harness | fix/P2-02-test-harness | Pending | Implementation/review; matrix gaps open | [P2-02 evidence](phase2/P2-02.md) |
 | P2-03 | R10, R11 | fix/P2-03-session-telemetry | Pending | Not started | Pending |
 
 ## Open KnownDefect register
@@ -20,13 +20,13 @@ to the normal suite in the same PR.
 
 | Planned test | Finding | Status |
 |---|---|---|
-| SamePacketAudioBurstDoesNotAuthorizeRecovery | R04 | Open; test migration pending |
-| MillisecondQueueWarningsDoNotAuthorizeRecovery | R04 | Open; test migration pending |
-| DuplicateBurstRespectsConfirmationWindow | R05 | Open; test migration pending |
-| FreshProgressDoesNotConcealStalledMedia | R06 | Open; test migration pending |
-| MissingIncomingStreamsIsUnknown | R07 | Open; test migration pending |
-| DiagnosticActorIsRedacted | R18 | Open; test migration pending |
-| DiagnosticReasonIsRedacted | R18 | Open; test migration pending |
+| SamePacketAudioBurstDoesNotAuthorizeRecovery | R04 | Open; exact assertion failure required by CI |
+| MillisecondQueueWarningsDoNotAuthorizeRecovery | R04 | Open; exact assertion failure required by CI |
+| DuplicateBurstRespectsConfirmationWindow | R05 | Open; exact assertion failure required by CI |
+| FreshProgressDoesNotConcealStalledMedia | R06 | Open; exact assertion failure required by CI |
+| MissingIncomingStreamsIsUnknown | R07 | Open; exact assertion failure required by CI |
+| DiagnosticActorIsRedacted | R18 | Open; exact assertion failure required by CI |
+| DiagnosticReasonIsRedacted | R18 | Open; exact assertion failure required by CI |
 
 ## Approved execution constraints
 

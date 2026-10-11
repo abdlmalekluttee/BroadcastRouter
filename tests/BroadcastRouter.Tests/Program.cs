@@ -1155,7 +1155,7 @@ static void DeckLinkIdentityFailureKeepsNormalCadence()
     var blockEnd = coordinator.IndexOf("return;", failureStart, StringComparison.Ordinal);
     True(blockStart >= 0 && blockEnd > failureStart);
     var failureBlock = coordinator[blockStart..blockEnd];
-    True(failureBlock.Contains("_lastToolValidation = DateTimeOffset.UtcNow", StringComparison.Ordinal));
+    True(failureBlock.Contains("_lastToolValidation = _clock.Now", StringComparison.Ordinal));
     True(failureBlock.Contains("SuccessRetry.TotalMinutes", StringComparison.Ordinal));
     True(!failureBlock.Contains("FailureRetry", StringComparison.Ordinal));
 }

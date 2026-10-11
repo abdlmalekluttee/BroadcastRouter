@@ -76,7 +76,7 @@ public static class DeckLinkIdentityMigration
     }
 
     public static RuntimeRoute MigrateRoute(RuntimeRoute route, IReadOnlyDictionary<string, string> aliases,
-        IReadOnlyDictionary<string, DeckLinkPort> ports)
+        IReadOnlyDictionary<string, DeckLinkPort> ports, SupervisionClock? clock = null)
     {
         var portId = route.PortId is not null && aliases.TryGetValue(route.PortId, out var migratedPortId)
             ? migratedPortId : route.PortId;
@@ -91,7 +91,7 @@ public static class DeckLinkIdentityMigration
             PortName = port is null ? route.PortName : DeckLinkDisplayName.Full(port),
             DesiredPortId = desiredPortId,
             DesiredPortName = port is null ? route.DesiredPortName : DeckLinkDisplayName.Full(port),
-            UpdatedAt = DateTimeOffset.UtcNow
+            UpdatedAt = (clock ?? SupervisionClock.System).Now
         };
     }
 
