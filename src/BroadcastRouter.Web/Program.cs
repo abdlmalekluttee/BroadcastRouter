@@ -52,12 +52,17 @@ if (args is ["--repair-standard-output-preset", var databaseArgument, var preset
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseWindowsService(options => options.ServiceName = "BroadcastRouter");
-if (OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService())
-    ConfigureWindowsEventLog(builder);
+// UseWindowsService may add this provider implicitly. Disable it explicitly so
+// router warnings cannot flood the shared Windows Application log.
+if (OperatingSystem.IsWindows())
+    builder.Logging.AddFilter<Microsoft.Extensions.Logging.EventLog.EventLogLoggerProvider>((_, _) => false);
 
 var dataSetting = builder.Configuration["DataDirectory"] ?? "data";
 var dataDirectory = Path.IsPathRooted(dataSetting) ? dataSetting : Path.Combine(AppContext.BaseDirectory, dataSetting);
 Directory.CreateDirectory(dataDirectory);
+await using var supervisionTelemetry = new SupervisionTelemetry(Path.Combine(dataDirectory, "telemetry"), SupervisionClock.System);
+builder.Services.AddSingleton(supervisionTelemetry);
+builder.Logging.AddProvider(new RouterFileLoggerProvider(supervisionTelemetry));
 var databasePath = Path.Combine(dataDirectory, "broadcast-router.db");
 var deckLinkAssetDirectory = Path.Combine(dataDirectory, "decklink-assets");
 var bootstrapStore = new SqliteDataStore(databasePath);
@@ -232,7 +237,7 @@ var deckLinkAssetEndpoint = app.MapGet("/hardware-assets/decklink/{slug}/{kind}"
 });
 deckLinkAssetEndpoint.RequireAuthorization();
 
-app.MapGet("/health", (DatabaseIntegrityMonitor databaseIntegrity, RouterCoordinator coordinator, SupervisionClock clock) =>
+app.MapGet("/health", (DatabaseIntegrityMonitor databaseIntegrity, RouterCoordinator coordinator, SupervisionClock clock, SupervisionTelemetry telemetry) =>
 {
     var integrity = databaseIntegrity.Snapshot;
     var now = clock.Now;
@@ -241,7 +246,7 @@ app.MapGet("/health", (DatabaseIntegrityMonitor databaseIntegrity, RouterCoordin
     var auxiliaryResponsive = coordinator.GetAuxiliaryLiveness().All(snapshot =>
         AuxiliaryLoopLivenessPolicy.IsResponsive(snapshot, now,
             RouterCoordinatorWatchdog.MaximumSilenceFor(snapshot.Name)));
-    return Results.Ok(new { status = integrity.IsHealthy && coordinatorResponsive && auxiliaryResponsive ? "healthy" : "degraded" });
+    return Results.Ok(new { status = integrity.IsHealthy && coordinatorResponsive && auxiliaryResponsive && telemetry.Status.IsHealthy ? "healthy" : "degraded" });
 }).AllowAnonymous();
 
 app.MapPost("/auth/login", async (HttpContext context, IAntiforgery antiforgery) =>
@@ -307,21 +312,6 @@ static bool FixedEquals(string supplied, string? configured)
     var left = SHA256.HashData(Encoding.UTF8.GetBytes(supplied));
     var right = SHA256.HashData(Encoding.UTF8.GetBytes(configured));
     return CryptographicOperations.FixedTimeEquals(left, right);
-}
-
-[SupportedOSPlatform("windows")]
-static void ConfigureWindowsEventLog(WebApplicationBuilder builder)
-{
-#pragma warning disable CA1416 // Guarded by OperatingSystem.IsWindows and service-mode detection at the only call site.
-    builder.Logging.AddEventLog(settings =>
-    {
-        settings.LogName = "Application";
-        settings.SourceName = "BroadcastRouter";
-        settings.Filter = (category, level) =>
-            category.StartsWith("BroadcastRouter", StringComparison.Ordinal)
-            && level >= LogLevel.Information;
-    });
-#pragma warning restore CA1416
 }
 
 static void WriteJson<T>(ZipArchive archive, string name, T value) =>

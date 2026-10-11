@@ -13,7 +13,8 @@ public sealed class RouterCoordinatorWatchdog(
     RouterCoordinator coordinator,
     SqliteDataStore store,
     ILogger<RouterCoordinatorWatchdog> logger,
-    SupervisionClock? clock = null) : BackgroundService
+    SupervisionClock? clock = null,
+    SupervisionTelemetry? telemetry = null) : BackgroundService
 {
     private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
     internal static readonly TimeSpan MaximumSilence = TimeSpan.FromMinutes(2);
@@ -21,6 +22,9 @@ public sealed class RouterCoordinatorWatchdog(
     internal static readonly TimeSpan MaximumFastPublisherSilence = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan CheckInterval = TimeSpan.FromSeconds(5);
     private int _recoveryStarted;
+    internal Action<string> TerminateProcess { get; init; } = Environment.FailFast;
+    internal TimeSpan LogBudget { get; init; } = TimeSpan.FromSeconds(5);
+    internal Func<CancellationToken, Task>? PersistRecoveryRecordForTesting { get; init; }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -49,21 +53,48 @@ public sealed class RouterCoordinatorWatchdog(
                     + $"{silence.TotalSeconds:F0} seconds after {stalledAuxiliary.RestartCount} restart attempt(s). "
                     + "The host will terminate so Windows Service recovery can restore routing.";
             }
-            logger.LogCritical("{Category}: {Message}", "CoordinatorWatchdog", message);
-
-            using var logDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try
-            {
-                await store.WriteLogAsync("Critical", "CoordinatorWatchdog", message,
-                    cancellationToken: logDeadline.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
-            {
-                logger.LogError(ex, "Coordinator watchdog could not persist its recovery record.");
-            }
-
-            Environment.FailFast(message);
+            await TerminateForStallAsync(message, coordinatorResponsive ? "AuxiliaryLoopStall" : "CoordinatorStall",
+                new(ProgressAgeMilliseconds: (now - (coordinatorResponsive ? stalledAuxiliary!.LastProgressAt : liveness.LastProgressAt)).TotalMilliseconds),
+                coordinatorResponsive ? MaximumSilenceFor(stalledAuxiliary!.Name) : MaximumSilence, stoppingToken);
+            return;
         }
+    }
+
+    internal async Task TerminateForStallAsync(string message, string trigger, SupervisionEvidence evidence,
+        TimeSpan window, CancellationToken stoppingToken)
+    {
+        logger.LogCritical("{Category}: {Message}", "CoordinatorWatchdog", message);
+        telemetry?.Record("HOST", null, null, trigger, evidence, null,
+            "Existing sustained coordinator/auxiliary silence policy", window.TotalMilliseconds,
+            ["Wait", "Route-only recovery (not implemented until P2-30)"], "HostFailFast", "TerminationRequestedNotConfirmed");
+        foreach (var process in coordinator.OwnedProcessesForDiagnostics())
+            telemetry?.Record(process.Source.Value, null, process, trigger,
+                SupervisionTelemetry.Evidence(process, _clock), null, "Host termination affects all exact owned sessions",
+                window.TotalMilliseconds, ["Leave child running"], "HostFailFastChildImpact", "TerminationRequestedNotConfirmed");
+
+        using var logDeadline = new CancellationTokenSource(LogBudget);
+        if (telemetry is not null)
+        {
+            try { await telemetry.FlushAsync(logDeadline.Token).ConfigureAwait(false); }
+            catch (Exception ex) { logger.LogError(ex, "Watchdog telemetry drain failed; termination evidence may be incomplete."); }
+        }
+        try
+        {
+            // SQLite's async API may block before returning its Task. Isolate the
+            // best-effort invocation itself, not only the wait on its returned Task.
+            var logCancellation = logDeadline.Token;
+            var write = Task.Run(() => PersistRecoveryRecordForTesting is { } persist ? persist(logCancellation)
+                : store.WriteLogAsync("Critical", "CoordinatorWatchdog", message, cancellationToken: logCancellation), logCancellation);
+            _ = write.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            await write.WaitAsync(logDeadline.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
+        { logger.LogError(ex, "Coordinator watchdog could not persist its recovery record."); }
+
+        // Keep the existing destructive policy unchanged in Phase A. No claim that it is safe:
+        // P2-30 replaces whole-host recovery. The seam prevents tests from terminating a host.
+        TerminateProcess(message);
     }
 
     internal static TimeSpan MaximumSilenceFor(string loopName) =>

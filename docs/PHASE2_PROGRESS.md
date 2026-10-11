@@ -7,8 +7,8 @@ Deployment requires separate explicit approval and a maintenance window.
 | Task | Findings | Branch | PR | Status | Evidence link |
 |---|---|---|---|---|---|
 | P2-01 | R16, R23 | fix/P2-01-repo-provenance | [#63](https://github.com/abdlmalekluttee/BroadcastRouter/pull/63) | Awaiting owner; partial acceptance | [P2-01 evidence](phase2/P2-01.md) |
-| P2-02 | R04, R05, R06, R07, R18; harness | fix/P2-02-test-harness | Pending | Implementation/review; matrix gaps open | [P2-02 evidence](phase2/P2-02.md) |
-| P2-03 | R10, R11 | fix/P2-03-session-telemetry | Pending | Not started | Pending |
+| P2-02 | R04, R05, R06, R07, R18; harness | fix/P2-02-test-harness | [#64](https://github.com/abdlmalekluttee/BroadcastRouter/pull/64) | Draft; CI green; full matrix gap open | [P2-02 evidence](phase2/P2-02.md) |
+| P2-03 | R10, R11 | fix/P2-03-session-telemetry | Pending | Draft review approved; retention/full-transcript gaps open | [P2-03 evidence](phase2/P2-03.md) |
 
 ## Open KnownDefect register
 
@@ -39,3 +39,15 @@ to the normal suite in the same PR.
   no force-push or deletion. Human-only merging is a procedural restriction.
 - Evidence bundles stay internal; public tests use synthetic data only.
 - Gate A is NOT passed. No physical stability or media qualification is claimed.
+
+## Gate A acceptance gaps
+
+- P2-01 pins the hosted runner OS family, not an immutable VM image. Direct-push
+  rejection was not tested by sending a real main update: doing so risks violating
+  the no-direct-push rule if protection is wrong. Protection was read back instead.
+- P2-01's required KnownDefect check fails closed until P2-02 supplies the harness.
+  The owner must decide the stacked-PR bootstrap order; do not waive protection.
+- P2-02's full end-to-end acceptance matrix is not implemented; see its coverage table.
+- P2-03 demonstrates specific injected-fault transcripts, not every policy path;
+  bounded file retention can evict evidence before 30 days. No retention soak is claimed.
+- These are draft task PRs, not merge/release readiness. Production stays unchanged.

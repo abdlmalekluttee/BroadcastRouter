@@ -4,13 +4,18 @@ public enum FfmpegFailureCategory
 {
     None, Authentication, Network, RtspNotFound, Codec, UnsupportedMedia,
     DeckLinkUnavailable, DeckLinkBusy, DeckLinkFormat, DeckLinkInitialization,
-    DeckLinkReference, Configuration, ProcessCrash, Unknown
+    DeckLinkReference, Configuration, ProcessCrash, Unknown, DeckLinkRuntimeUnderrun
 }
 
 public static class FfmpegErrorClassifier
 {
-    public static FfmpegFailureCategory Classify(int? exitCode, string standardError)
+    // FFERRTAG(0xF8,'4','0','4'), not a Windows/.NET termination code.
+    public const int AvErrorHttpNotFound = -875574520;
+    public const int DotNetForcedTerminationExitCode = -1;
+
+    public static FfmpegFailureCategory Classify(int? exitCode, string standardError, bool outputHasStarted = false)
     {
+        if (exitCode == AvErrorHttpNotFound) return FfmpegFailureCategory.RtspNotFound;
         var text = standardError.ToLowerInvariant();
         if (ContainsAny(text, "401 unauthorized", "403 forbidden", "authentication failed")) return FfmpegFailureCategory.Authentication;
         if (ContainsAny(text, "404 not found", "server returned 404")) return FfmpegFailureCategory.RtspNotFound;
@@ -19,8 +24,10 @@ public static class FfmpegErrorClassifier
         if (text.Contains("decklink") && ContainsAny(text, "not found", "no such device", "unavailable")) return FfmpegFailureCategory.DeckLinkUnavailable;
         if (ContainsAny(text, "unsupported video mode", "display mode not supported", "pixel format is not supported")) return FfmpegFailureCategory.DeckLinkFormat;
         if (text.Contains("decklink") && ContainsAny(text, "genlock", "reference signal", "reference lost", "not locked")) return FfmpegFailureCategory.DeckLinkReference;
+        if (text.Contains("decklink") && text.Contains("no buffered audio"))
+            return outputHasStarted ? FfmpegFailureCategory.DeckLinkRuntimeUnderrun : FfmpegFailureCategory.DeckLinkInitialization;
         if (text.Contains("decklink") && ContainsAny(text, "could not write header", "failed to start scheduled playback",
-                "error sending frames", "not enough buffered video frames", "no buffered audio", "i/o error"))
+                "error sending frames", "not enough buffered video frames", "i/o error"))
             return FfmpegFailureCategory.DeckLinkInitialization;
         if (ContainsAny(text, "connection refused", "connection timed out", "network is unreachable", "no route to host", "i/o error")) return FfmpegFailureCategory.Network;
         if (ContainsAny(text, "decoder not found", "unknown decoder", "could not find codec parameters")) return FfmpegFailureCategory.Codec;

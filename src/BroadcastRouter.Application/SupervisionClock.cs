@@ -18,6 +18,7 @@ public sealed class SupervisionClock(TimeProvider provider)
     public DateTimeOffset UtcNow => provider.GetUtcNow();
     public TimeBoundary CaptureBoundary() => new(Now, UtcNow);
     public PeriodicTimer CreatePeriodicTimer(TimeSpan interval) => new(interval, provider);
+    public long TimestampFrequency => provider.TimestampFrequency;
     public long GetTimestamp() => provider.GetTimestamp();
     public TimeSpan GetElapsedTime(long start) => provider.GetElapsedTime(start);
     public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken) => Task.Delay(delay, provider, cancellationToken);

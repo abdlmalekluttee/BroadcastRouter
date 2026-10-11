@@ -30,7 +30,7 @@ public sealed class SupervisionClockTests
         var clock = NewClock(provider);
         using var coordinator = (BroadcastRouter.Web.Services.RouterCoordinator)Activator.CreateInstance(
             typeof(BroadcastRouter.Web.Services.RouterCoordinator), null, null, null,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<BroadcastRouter.Web.Services.RouterCoordinator>.Instance, (object)clock)!;
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<BroadcastRouter.Web.Services.RouterCoordinator>.Instance, (object)clock, null)!;
         provider.Advance(TimeSpan.FromSeconds(2));
         provider.StepUtc(TimeSpan.FromSeconds(seconds));
         typeof(BroadcastRouter.Web.Services.RouterCoordinator).GetMethod("Publish", BindingFlags.Instance | BindingFlags.NonPublic)!

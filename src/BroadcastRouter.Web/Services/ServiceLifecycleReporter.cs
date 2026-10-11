@@ -12,9 +12,9 @@ namespace BroadcastRouter.Web.Services;
 /// </summary>
 public sealed class ServiceLifecycleReporter(
     SqliteDataStore store,
-    ILogger<ServiceLifecycleReporter> logger) : IHostedService
+    ILogger<ServiceLifecycleReporter> logger, SupervisionTelemetry? telemetry = null) : IHostedService
 {
-    private readonly string _runId = Guid.NewGuid().ToString("N")[..12];
+    private readonly string _runId = (telemetry?.ServiceRunId ?? Guid.NewGuid()).ToString("N");
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {

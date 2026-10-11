@@ -15,7 +15,8 @@ public sealed record RouteProcessSnapshot(
     IReadOnlyList<string> RecentErrors,
     int? ExitCode,
     FfmpegInputFailure? InputFailure,
-    FfmpegMediaHealthSnapshot MediaHealth);
+    FfmpegMediaHealthSnapshot MediaHealth,
+    Guid SessionId = default, DateTimeOffset? ProcessStartUtc = null, string? StderrLog = null);
 
 public enum RouteProcessPurpose { Live, Fallback, PortStandby }
 
@@ -31,7 +32,7 @@ public sealed record RouteProcessLifecycleEvent(
 public sealed class FfmpegProcessSupervisor(
     FfmpegRouteOptions options,
     TimeSpan gracefulStopTimeout,
-    SupervisionClock? clock = null) : IRouteProcessSupervisor, IAsyncDisposable
+    SupervisionClock? clock = null, SupervisionTelemetry? telemetry = null) : IRouteProcessSupervisor, IAsyncDisposable
 {
     private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
     private static readonly TimeSpan OutputHandoffStopTimeout = TimeSpan.FromMilliseconds(750);
@@ -51,14 +52,14 @@ public sealed class FfmpegProcessSupervisor(
     {
         cancellationToken.ThrowIfCancellationRequested();
         var start = FfmpegCommandBuilder.Build(options, source, port, preset);
-        return StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken);
+        return StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken, port.StableId);
     }
 
     public Task StartFallbackAsync(SourceIdentity source, DeckLinkPort port, OutputPreset preset, FallbackMode mode, string? value, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         return StartProcessAsync(source, RouteProcessPurpose.Fallback,
-            FfmpegCommandBuilder.BuildFallback(options, port, preset, mode, value), cancellationToken);
+            FfmpegCommandBuilder.BuildFallback(options, port, preset, mode, value), cancellationToken, port.StableId);
     }
 
     public Task StartPortStandbyAsync(SourceIdentity owner, DeckLinkPort port, OutputPreset preset,
@@ -66,7 +67,7 @@ public sealed class FfmpegProcessSupervisor(
     {
         cancellationToken.ThrowIfCancellationRequested();
         return StartProcessAsync(owner, RouteProcessPurpose.PortStandby,
-            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken);
+            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken, port.StableId);
     }
 
     public Task StartRecoveryStandbyAsync(SourceIdentity source, DeckLinkPort port, OutputPreset preset,
@@ -74,7 +75,7 @@ public sealed class FfmpegProcessSupervisor(
     {
         cancellationToken.ThrowIfCancellationRequested();
         return StartProcessAsync(source, RouteProcessPurpose.Fallback,
-            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken);
+            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken, port.StableId);
     }
 
     public Task StopAsync(SourceIdentity source, CancellationToken cancellationToken) =>
@@ -160,7 +161,7 @@ public sealed class FfmpegProcessSupervisor(
         StartProcessAsync(source, purpose, start, cancellationToken);
 
     private async Task StartProcessAsync(SourceIdentity source, RouteProcessPurpose purpose, ProcessStartInfo start,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string? outputId = null)
     {
         var ownerGate = OwnerGate(source.Value);
         await ownerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -180,10 +181,15 @@ public sealed class FfmpegProcessSupervisor(
 
             var process = new Process { StartInfo = start, EnableRaisingEvents = true };
             var managed = new ManagedProcess(source, purpose, process, _clock.Now);
+            managed.OutputId = outputId;
+            managed.StderrLog = telemetry?.StderrReference(managed.SessionId);
             try
             {
                 if (!process.Start()) throw new InvalidOperationException("FFmpeg did not start.");
                 managed.ProcessId = process.Id;
+                try { managed.ProcessStartUtc = new DateTimeOffset(process.StartTime.ToUniversalTime()); }
+                catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+                { } // Exact time unknown, never substitute an invented value or change launch policy for diagnostics.
                 ContainOrTerminate(process);
                 // Publish only a fully associated Process. Snapshot readers do
                 // not take the owner gate and must never observe the interval
@@ -277,6 +283,7 @@ public sealed class FfmpegProcessSupervisor(
             while (await managed.Process.StandardError.ReadLineAsync(managed.PumpCancellation.Token).ConfigureAwait(false) is { } line)
             {
                 var observedAt = _clock.Now;
+                telemetry?.Stderr(managed.SessionId, line);
                 var safe = LogRedactor.Redact(line);
                 managed.AddError(safe);
                 managed.MediaHealth.Observe(safe, observedAt);
@@ -298,6 +305,7 @@ public sealed class FfmpegProcessSupervisor(
         var cancellationRequested = false;
         if (!HasExited(managed.Process))
         {
+            managed.StopBudgetMilliseconds = stopTimeout.TotalMilliseconds;
             ReportLifecycle(managed, RouteProcessLifecycleState.StopRequested);
             var signal = SignalQuitAsync(managed.Process);
             try
@@ -374,6 +382,15 @@ public sealed class FfmpegProcessSupervisor(
     {
         if (state == RouteProcessLifecycleState.Exited
             && Interlocked.Exchange(ref managed.ExitReported, 1) != 0) return;
+        var snapshot = CreateSnapshot(managed);
+        telemetry?.Record(managed.Source.Value, managed.OutputId, snapshot, "OwnedProcessLifecycle",
+            SupervisionTelemetry.Evidence(snapshot, _clock), SupervisionTelemetry.Evidence(snapshot, _clock),
+            state is RouteProcessLifecycleState.StopRequested or RouteProcessLifecycleState.ForcedTermination
+                ? "Configured stop budget; owned process only" : "OS process lifecycle",
+            managed.StopBudgetMilliseconds, [], state.ToString(),
+            state == RouteProcessLifecycleState.ForcedTermination ? "Owned Process.Kill requested (.NET exit normally -1)"
+                : exitCode == FfmpegErrorClassifier.AvErrorHttpNotFound ? "Exited: AVERROR_HTTP_NOT_FOUND"
+                : exitCode is null ? "Observed" : $"Exit code {exitCode}");
         try { LifecycleChanged?.Invoke(new(managed.Source, managed.ProcessId, state, _clock.UtcNow, exitCode)); }
         catch { }
     }
@@ -401,7 +418,7 @@ public sealed class FfmpegProcessSupervisor(
         }
         catch (InvalidOperationException) { running = false; }
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
-            managed.Errors.ToArray(), exitCode, managed.InputFailure, managed.MediaHealth.Snapshot());
+            managed.Errors.ToArray(), exitCode, managed.InputFailure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog);
     }
 
     private static RouteProcessSnapshot CreateRunningSnapshot(ManagedProcess managed)
@@ -410,13 +427,18 @@ public sealed class FfmpegProcessSupervisor(
         try { running = !managed.Process.HasExited; }
         catch (InvalidOperationException) { running = false; }
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
-            Array.Empty<string>(), null, managed.InputFailure, managed.MediaHealth.Snapshot());
+            Array.Empty<string>(), null, managed.InputFailure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog);
     }
 
     private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, Process process,
         DateTimeOffset startedAt)
     {
         private const int ErrorLimit = 100;
+        public Guid SessionId { get; } = Guid.NewGuid();
+        public DateTimeOffset? ProcessStartUtc { get; set; }
+        public string? StderrLog { get; set; }
+        public string? OutputId { get; set; }
+        public double? StopBudgetMilliseconds { get; set; }
         public SourceIdentity Source { get; } = source;
         public RouteProcessPurpose Purpose { get; } = purpose;
         public Process Process { get; } = process;
