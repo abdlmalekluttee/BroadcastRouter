@@ -77,6 +77,25 @@ public sealed class OfflineFallbackTests
     }
 
     [Fact]
+    public async Task AutomaticRouteDiscoveryStillProbesAndCanRecover()
+    {
+        await using var lab = await RecoveryLab.Create();
+        await lab.InstallFakeMediaTools();
+        lab.Routes[lab.Source.Value] = lab.Route with { AssignmentMode = AssignmentMode.Automatic, DesiredPortId = null };
+        var observation = lab.Sources[lab.Source.Value] with { State = SourceState.PublisherActive };
+        var task = lab.Invoke("ProbeObservationAsync", observation, lab.Settings, CancellationToken.None);
+        await task;
+        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+        var source = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
+        Assert.Equal(SourceState.Ready, source.State);
+        lab.Sources[lab.Source.Value] = source;
+        Assert.True(RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(lab.Route, source));
+        for (var i = 0; i < 100 && !lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live); i++)
+        { await lab.RestartDue(); await Task.Delay(20); }
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live));
+    }
+
+    [Fact]
     public async Task DiscoveryDoesNotBypassRecoveryProbeBackoff()
     {
         await using var lab = await RecoveryLab.Create();
