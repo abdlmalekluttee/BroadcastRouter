@@ -1758,6 +1758,7 @@ public sealed class RouterCoordinator(
                     eligible = !_emergencyStopped
                         && (_settings.SimulationMode || _validation.CanStartHardwareRoutes)
                         && currentPort is { IsOutputPort: true } && currentPreset is not null
+                        && currentPort.FfmpegName == port.FfmpegName && currentPort.DeviceHandle == port.DeviceHandle
                         && Compatible(currentPort, currentPreset, null)
                         && currentSource is not null && currentSource.State != SourceState.Disabled
                         && currentRoute?.PortId == port.StableId
@@ -2387,7 +2388,7 @@ public sealed class RouterCoordinator(
 
     // Private in-memory equality token only; never log or persist URI/credentials.
     private string RecoveryConfigurationSignature(DiscoveredSource source, OutputPresetProfile preset) =>
-        $"{source.RtspUri.AbsoluteUri}|{_settings.MediaTools.FfprobePath}|{_settings.MediaTools.FfmpegPath}|{JsonSerializer.Serialize(preset)}";
+        $"{_settings.ConfigurationRevision}|{_settings.SimulationMode}|{source.RtspUri.AbsoluteUri}|{_settings.MediaTools.FfprobePath}|{_settings.MediaTools.FfmpegPath}|{JsonSerializer.Serialize(preset)}";
 
     private sealed record RecoveryQualification(DiscoveredSource Source, RecoveryReadinessGate Gate,
         StreamProbeResult Proof, string ConfigurationSignature);
