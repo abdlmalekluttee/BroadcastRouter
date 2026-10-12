@@ -6,6 +6,21 @@ namespace BroadcastRouter.Tests;
 public sealed class StandbyRetryBudgetTests
 {
     [Fact]
+    public void LaunchExceptionsDoNotEvictRetainedExitedSessionIdentities()
+    {
+        var policy = new StandbyRetryBudget();
+        var now = DateTimeOffset.Parse("2025-01-01T00:00:00Z");
+        var first = Guid.NewGuid();
+        policy.RecordFailure(first, now, "first child", 0);
+        for (var i = 0; i < 1000; i++) policy.RecordFailure(null, now.AddSeconds(i), "launch failure", 0);
+        Assert.False(policy.RecordFailure(first, now.AddHours(1), "retained child", 0));
+        Assert.True(StandbyRetryBudget.RetainedFailedSessions >= BroadcastRouter.Infrastructure.FfmpegProcessSupervisor.RetainedExitedOwners);
+        for (var i = 0; i < 1000; i++) policy.RecordFailure(Guid.NewGuid(), now.AddHours(2), "new child", 0);
+        var charged = (HashSet<Guid>)typeof(StandbyRetryBudget).GetField("_chargedSessions", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(policy)!;
+        Assert.Equal(StandbyRetryBudget.RetainedFailedSessions, charged.Count);
+    }
+
+    [Fact]
     public void InterleavedRetainedExitedSessionsAreChargedOnlyOnce()
     {
         var policy = new StandbyRetryBudget();

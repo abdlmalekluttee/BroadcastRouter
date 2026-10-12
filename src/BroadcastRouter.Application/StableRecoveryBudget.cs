@@ -14,12 +14,20 @@ public sealed class StableRecoveryBudget
     private TimeSpan _mediaTime;
     private DateTimeOffset? _since;
     private DateTimeOffset _lastObserved;
+    private DateTimeOffset _lastProgressAt;
 
     public bool Observe(Guid session, long uniqueFrames, TimeSpan mediaTime,
         DateTimeOffset progressAt, DateTimeOffset now, bool healthy)
     {
         var valid = healthy && uniqueFrames > 0 && mediaTime > TimeSpan.Zero
             && now >= progressAt && now - progressAt <= MaximumObservationGap;
+        // Multiple supervisors may consume the same immutable sample. It is not
+        // a new no-advance observation, and must neither advance nor erase proof.
+        // Stale samples and newly reported non-advancing samples still fail closed.
+        if (valid && session == _session && progressAt == _lastProgressAt
+            && uniqueFrames == _frames && mediaTime == _mediaTime
+            && now >= _lastObserved && now - _lastObserved <= MaximumObservationGap)
+            return false;
         var continuous = valid && session == _session && uniqueFrames > _frames && mediaTime > _mediaTime
             && now >= _lastObserved && now - _lastObserved <= MaximumObservationGap;
         if (!continuous) _since = valid ? now : null;
@@ -28,6 +36,7 @@ public sealed class StableRecoveryBudget
         _frames = uniqueFrames;
         _mediaTime = mediaTime;
         _lastObserved = now;
+        _lastProgressAt = progressAt;
         return continuous && _since is not null && now - _since.Value >= StableWindow;
     }
 }
