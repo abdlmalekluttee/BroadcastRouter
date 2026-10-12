@@ -58,6 +58,60 @@ public sealed class GracefulStopTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task FailedReaderIsRecordedWithoutAbandoningExitedOwnerCleanup()
+    {
+        var managedType = typeof(FfmpegProcessSupervisor).GetNestedType("ManagedProcess", BindingFlags.NonPublic)!;
+        using var process = new Process();
+        var managed = Activator.CreateInstance(managedType, new SourceIdentity("TEST", "fixture", "_default_", "drain"),
+            RouteProcessPurpose.Live, process, DateTimeOffset.UnixEpoch)!;
+        var cancellation = (CancellationTokenSource)managedType.GetProperty("PumpCancellation")!.GetValue(managed)!;
+        try
+        {
+            managedType.GetProperty("ErrorTask")!.SetValue(managed,
+                Task.FromException(new IOException("synthetic pipe failure rtsp://FAKE_USER:FAKE_PASSWORD@192.0.2.6/private")));
+            var method = typeof(FfmpegProcessSupervisor).GetMethod("DrainPumpsAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var drain = (Task<bool>)method.Invoke(null, [managed])!;
+            Assert.False(await drain);
+            var errors = (ConcurrentQueue<string>)managedType.GetProperty("Errors")!.GetValue(managed)!;
+            Assert.Contains(errors, text => text.Contains("stream reader failed"));
+            Assert.DoesNotContain(errors, text => text.Contains("FAKE_PASSWORD") || text.Contains("192.0.2.6"));
+        }
+        finally { cancellation.Dispose(); }
+    }
+
+    [Fact]
+    public async Task RepeatedCooperativeHandoffsLeaveNoOwnedChildAndDoNotKillAnUnrelatedChild()
+    {
+        await using var fixture = new ChildFixture(new
+        {
+            events = new[] { new { atMilliseconds = 0, channel = "stderr", text = "ready" } },
+            quitDelayMilliseconds = 25
+        });
+        await using var unrelated = new FfmpegProcessSupervisor(new("unused"), TimeSpan.FromSeconds(3));
+        await fixture.Start(unrelated);
+        await using var supervisor = new FfmpegProcessSupervisor(new("unused"), TimeSpan.FromSeconds(3));
+        var events = new ConcurrentQueue<RouteProcessLifecycleEvent>();
+        supervisor.LifecycleChanged += events.Enqueue;
+        var durations = new List<double>();
+        for (var cycle = 0; cycle < 100; cycle++)
+        {
+            await fixture.Start(supervisor);
+            var owned = supervisor.Snapshot().Single();
+            using var handle = Process.GetProcessById(owned.ProcessId);
+            var timer = Stopwatch.StartNew();
+            await supervisor.StopForOutputHandoffAsync(fixture.Source, CancellationToken.None);
+            durations.Add(timer.Elapsed.TotalMilliseconds);
+            Assert.True(handle.HasExited);
+            Assert.Empty(supervisor.RunningSnapshot());
+            Assert.True(unrelated.Snapshot().Single().Running);
+        }
+        durations.Sort();
+        output.WriteLine($"Synthetic 100-cycle stop: p50={durations[49]:F1}ms p99={durations[98]:F1}ms max={durations[99]:F1}ms");
+        Assert.Equal(100, events.Count(item => item.State == RouteProcessLifecycleState.Exited));
+        Assert.DoesNotContain(events, item => item.State == RouteProcessLifecycleState.ForcedTermination);
+    }
+
+    [Fact]
     public async Task QuitTailIsRetainedInSessionTranscript()
     {
         var lines = Enumerable.Range(0, 2000).Select(index => $"quit-evidence-{index:D4}").ToArray();
