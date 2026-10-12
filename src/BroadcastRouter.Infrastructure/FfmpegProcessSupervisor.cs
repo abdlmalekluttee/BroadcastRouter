@@ -16,7 +16,8 @@ public sealed record RouteProcessSnapshot(
     int? ExitCode,
     FfmpegInputFailure? InputFailure,
     FfmpegMediaHealthSnapshot MediaHealth,
-    Guid SessionId = default, DateTimeOffset? ProcessStartUtc = null, string? StderrLog = null);
+    Guid SessionId = default, DateTimeOffset? ProcessStartUtc = null, string? StderrLog = null,
+    bool StopRequested = false);
 
 public enum RouteProcessPurpose { Live, Fallback, PortStandby }
 
@@ -418,7 +419,8 @@ public sealed class FfmpegProcessSupervisor(
         }
         catch (InvalidOperationException) { running = false; }
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
-            managed.Errors.ToArray(), exitCode, managed.InputFailure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog);
+            managed.Errors.ToArray(), exitCode, managed.InputFailure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
+            Volatile.Read(ref managed.StopRequested) != 0);
     }
 
     private static RouteProcessSnapshot CreateRunningSnapshot(ManagedProcess managed)
@@ -427,7 +429,8 @@ public sealed class FfmpegProcessSupervisor(
         try { running = !managed.Process.HasExited; }
         catch (InvalidOperationException) { running = false; }
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
-            Array.Empty<string>(), null, managed.InputFailure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog);
+            Array.Empty<string>(), null, managed.InputFailure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
+            Volatile.Read(ref managed.StopRequested) != 0);
     }
 
     private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, Process process,
