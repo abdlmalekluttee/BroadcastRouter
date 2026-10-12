@@ -1950,7 +1950,7 @@ public sealed class RouterCoordinator(
             {
                 budget.ObserveProgress(process.SessionId, process.Progress.Frame, process.Progress.OutputTime,
                     process.Progress.LastProgressAt, _clock.Now);
-                SetStandbyStatus(portId, PortStandbyState.Running, process.ProcessId,
+                SetStandbyStatus(portId, budget.CircuitOpen ? PortStandbyState.Failed : PortStandbyState.Running, process.ProcessId,
                     budget.CircuitOpen ? "Standby generating; circuit recovery qualifying" : "Standby generating frames",
                     budget.LastError);
                 return true;
