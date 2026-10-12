@@ -53,6 +53,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     private long _pendingRecords, _abandoned, _capacityEvictions, _expiredFiles, _oldestRetainedTicks;
     private long _sequence;
     private long _lastPrune;
+    private bool _retentionStateLoaded;
     private bool _disposed;
     public Guid ServiceRunId { get; } = Guid.NewGuid();
     public TelemetryStatus Status => new(Interlocked.Read(ref _accepted), Interlocked.Read(ref _written),
@@ -78,7 +79,9 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     }
 
     public string OpaqueId(string raw) => Convert.ToHexString(HMACSHA256.HashData(_identityKey, Encoding.UTF8.GetBytes(raw)))[..24];
-    public string StderrReference(Guid session) => $"session-{ServiceRunId:N}-{session:N}.stderr.*.jsonl";
+    // This identifies shared segments, not an unfiltered session transcript.
+    // Reconstruct by ServiceRunId + SessionId and order by envelope Sequence.
+    public string StderrReference(Guid session) => $"run-{ServiceRunId:N}.stderr.*.jsonl";
     public long SourceEpoch(string source) => _epochs.TryGetValue(source, out var value) ? value.Epoch : 0;
 
     public void ObservePublisher(string source, bool connected)
@@ -143,7 +146,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
         }
     }
 
-    public void Stderr(Guid session, string line) => Enqueue($"session-{ServiceRunId:N}-{session:N}.stderr",
+    public void Stderr(Guid session, string line) => Enqueue($"run-{ServiceRunId:N}.stderr",
         new { Utc = _clock.UtcNow, MonotonicTicks = _clock.GetTimestamp(), ServiceRunId, SessionId = session,
             Text = Safe(line) });
 
@@ -247,6 +250,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     private void Prune(bool reserveFile = false)
     {
         RejectReparsePath(_root);
+        LoadRetentionState();
         var files = Directory.EnumerateFiles(_root, "*.jsonl", SearchOption.TopDirectoryOnly)
             .Where(path => IsOwnedName(Path.GetFileName(path))).Select(path => new FileInfo(path))
             .OrderByDescending(file => file.LastWriteTimeUtc).ToArray();
@@ -258,6 +262,9 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
             if (file.index < keep && !expired)
             { oldest = file.value.LastWriteTimeUtc.Ticks; continue; }
             RejectReparsePath(file.value.FullName);
+            // Persist the alarm before deleting evidence, so a crash/restart
+            // cannot make an incomplete history look complete again.
+            if (!expired) SaveRetentionLoss(checked(Interlocked.Read(ref _capacityEvictions) + 1));
             File.Delete(file.value.FullName); // Only validated telemetry names within this dedicated directory.
             if (expired) Interlocked.Increment(ref _expiredFiles);
             else Interlocked.Increment(ref _capacityEvictions);
@@ -269,8 +276,39 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     }
 
     private static bool IsOwnedName(string name) => System.Text.RegularExpressions.Regex.IsMatch(name,
-        @"^(?:run-[a-f0-9]{32}\.(?:decisions|router)|session-[a-f0-9]{32}-[a-f0-9]{32}\.stderr)\.[a-f0-9]{32}\.jsonl$",
+        @"^(?:run-[a-f0-9]{32}\.(?:decisions|router|stderr)|session-[a-f0-9]{32}-[a-f0-9]{32}\.stderr)\.[a-f0-9]{32}\.jsonl$",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+
+    private void LoadRetentionState()
+    {
+        if (_retentionStateLoaded) return;
+        var path = Path.Combine(_root, "retention-loss.json");
+        RejectReparsePath(path);
+        if (File.Exists(path))
+        {
+            if (new FileInfo(path).Length > 4096) throw new IOException("Invalid retention state.");
+            var state = JsonSerializer.Deserialize<RetentionLoss>(File.ReadAllText(path));
+            if (state is null || state.CapacityEvictions < 1) throw new IOException("Invalid retention state.");
+            Interlocked.Exchange(ref _capacityEvictions, state.CapacityEvictions);
+        }
+        _retentionStateLoaded = true;
+    }
+
+    private void SaveRetentionLoss(long count)
+    {
+        var path = Path.Combine(_root, "retention-loss.json");
+        var temporary = Path.Combine(_root, "retention-loss.tmp");
+        RejectReparsePath(path);
+        RejectReparsePath(temporary);
+        using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            JsonSerializer.Serialize(stream, new RetentionLoss(count, _clock.UtcNow));
+            stream.Flush(flushToDisk: true);
+        }
+        File.Move(temporary, path, overwrite: true);
+    }
+
+    private sealed record RetentionLoss(long CapacityEvictions, DateTimeOffset LastLossUtc);
 
     private static void RejectReparsePath(string path)
     {

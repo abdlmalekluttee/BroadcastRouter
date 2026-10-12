@@ -184,7 +184,7 @@ public sealed class TelemetryStorageTests
             var session = Guid.NewGuid();
             for (var index = 0; index < 100; index++) telemetry.Stderr(session, new string('x', 2000));
             await telemetry.FlushAsync().WaitAsync(TimeSpan.FromSeconds(5));
-            var owned = Directory.GetFiles(directory, "session-*.jsonl");
+            var owned = Directory.GetFiles(directory, "*.stderr.*.jsonl");
             Assert.InRange(owned.Length, 1, 3);
             Assert.All(owned, file => Assert.InRange(new FileInfo(file).Length, 1, 16384));
             Assert.True(telemetry.Status.CapacityEvictions > 0);
@@ -192,7 +192,7 @@ public sealed class TelemetryStorageTests
             Assert.NotNull(telemetry.Status.OldestRetainedSegmentWriteUtc);
             provider.Advance(TimeSpan.FromDays(31));
             await telemetry.FlushAsync().WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.Empty(Directory.GetFiles(directory, "session-*.jsonl"));
+            Assert.Empty(Directory.GetFiles(directory, "*.stderr.*.jsonl"));
             Assert.Equal("must survive", await File.ReadAllTextAsync(foreign));
             Assert.True(telemetry.Status.IsHealthy);
         }

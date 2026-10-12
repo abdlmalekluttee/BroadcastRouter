@@ -152,7 +152,8 @@ public sealed class GracefulStopTests(ITestOutputHelper output)
             .Select(line => JsonDocument.Parse(line)).ToArray();
         try
         {
-            var retained = transcript.Select(document => document.RootElement.GetProperty("Event").GetProperty("Text").GetString())
+            var retained = transcript.Where(document => document.RootElement.GetProperty("Event").GetProperty("SessionId").GetGuid() == session.SessionId)
+                .Select(document => document.RootElement.GetProperty("Event").GetProperty("Text").GetString())
                 .ToHashSet(StringComparer.Ordinal);
             foreach (var line in lines) Assert.Contains(line, retained);
         }
