@@ -1121,6 +1121,7 @@ public sealed class RouterCoordinator(
         lock (_gate)
         {
             if (_routes.TryGetValue(source.Identity.Value, out var recovering)
+                && DesiredRoutePolicy.HasSavedAssignment(recovering)
                 && recovering.PortId is not null
                 && recovering.State is RouteState.Fallback or RouteState.Reconnecting)
             {
