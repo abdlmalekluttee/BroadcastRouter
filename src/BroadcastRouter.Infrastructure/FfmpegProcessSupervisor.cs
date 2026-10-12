@@ -385,7 +385,14 @@ public sealed class FfmpegProcessSupervisor(
     private static async Task<bool> DrainPumpsAsync(ManagedProcess managed)
     {
         var pumps = Task.WhenAll(managed.ProgressTask ?? Task.CompletedTask, managed.ErrorTask ?? Task.CompletedTask);
-        try { await pumps.WaitAsync(StreamDrainTimeout).ConfigureAwait(false); return true; }
+        try
+        {
+            await pumps.WaitAsync(StreamDrainTimeout).ConfigureAwait(false);
+            // The exit observer may already have cancelled these same readers.
+            // Pumps swallow expected cancellation; completed Tasks alone do not
+            // prove EOF. Incompleteness remains sticky for the owned session.
+            return !managed.PumpCancellation.IsCancellationRequested;
+        }
         catch (TimeoutException)
         {
             // After OS exit, readers normally finish at EOF, including buffered
