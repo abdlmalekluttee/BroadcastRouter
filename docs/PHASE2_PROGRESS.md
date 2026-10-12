@@ -16,7 +16,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-13 | ForcedTermination | fix/P2-13-graceful-stop | [#71](https://github.com/abdlmalekluttee/BroadcastRouter/pull/71) | Review finding fixed test-first; normal suite 255/255; strict seven OPEN; physical 500-cycle acceptance OPEN | [Stop evidence](phase2/P2-13.md) |
 | P2-03 retention follow-up | R10, R11; Gate A capacity gap | fix/P2-03-shared-retention | [#72](https://github.com/abdlmalekluttee/BroadcastRouter/pull/72) | Fresh review startup finding fixed test-first; normal262/262, strict seven OPEN; measured capacity and visible alarm; hosted checks pending | [Retention evidence](phase2/P2-03-retention.md) |
 | P2-03 disk budget | R10,R11; owner Gate B ruling | fix/P2-03-disk-budget | [#73](https://github.com/abdlmalekluttee/BroadcastRouter/pull/73) | Review findings fixed test-first; normal273/273, strict seven OPEN, build and all hosted checks green; awaiting owner | [Disk budget](phase2/P2-03-disk-budget.md) |
-| P2-23 | R07 | fix/P2-23-strict-wowza | Pending | Review findings fixed test-first; final normal311/311, strict six OPEN; hosted checks pending | [Strict inventory](phase2/P2-23.md) |
+| P2-23 | R07 | fix/P2-23-strict-wowza | [#74](https://github.com/abdlmalekluttee/BroadcastRouter/pull/74) | Review findings fixed test-first; hosted310/311 cleanup failure followed by harness correction; local313/313, strict six OPEN; hosted rerun pending | [Strict inventory](phase2/P2-23.md) |
 
 ## Open KnownDefect register
 

@@ -271,7 +271,7 @@ public sealed class OfflineFallbackTests
             _loggerFactory?.Dispose();
             if (Telemetry is not null) await Telemetry.DisposeAsync();
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            Directory.Delete(Root, true);
+            await FixtureDirectory.DeleteAsync(Root);
         }
     }
 }

@@ -125,7 +125,9 @@ public sealed class TelemetryDiskBudgetTests
         for (var i = 0; i < 250; i++) sink.Stderr(Guid.Empty, new string('x', 2000));
         // A flush inventory would mask the undercount. Observe the actual files
         // after every accepted write has reported its failure, before flushing.
-        await FaultHarnessTests.Eventually(() => sink.Status.WriteFailures >= 250);
+        // This is a byte-accounting assertion, not a filesystem throughput
+        // target. 250 flush-to-disk failures can exceed the generic5s UI wait.
+        await FaultHarnessTests.Eventually(() => sink.Status.WriteFailures >= 250, TimeSpan.FromSeconds(30));
         Assert.True(fixture.StoredBytes <= 196608, "Partially successful writes must be counted before any further append.");
     }
 

@@ -139,9 +139,9 @@ public sealed class FaultHarnessTests
         return current?.FullName ?? throw new InvalidOperationException("Repository root not found");
     }
 
-    internal static async Task Eventually(Func<bool> condition)
+    internal static async Task Eventually(Func<bool> condition, TimeSpan? wait = null)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeout = new CancellationTokenSource(wait ?? TimeSpan.FromSeconds(5));
         while (!condition()) await Task.Delay(10, timeout.Token);
     }
 }
