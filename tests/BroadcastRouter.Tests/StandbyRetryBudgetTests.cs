@@ -5,6 +5,19 @@ namespace BroadcastRouter.Tests;
 
 public sealed class StandbyRetryBudgetTests
 {
+    [Fact]
+    public void InterleavedRetainedExitedSessionsAreChargedOnlyOnce()
+    {
+        var policy = new StandbyRetryBudget();
+        var start = DateTimeOffset.Parse("2025-01-01T00:00:00Z");
+        var first = Guid.NewGuid();
+        Assert.True(policy.RecordFailure(first, start, "first child", 0));
+        Assert.True(policy.RecordFailure(Guid.NewGuid(), start.AddSeconds(2), "second child", 0));
+        Assert.False(policy.RecordFailure(first, start.AddSeconds(3), "retained first child", 0));
+        Assert.False(policy.CircuitOpen);
+        Assert.Equal("second child", policy.LastError);
+    }
+
     private static dynamic Create()
     {
         var type = typeof(SupervisionClock).Assembly.GetType("BroadcastRouter.Application.StandbyRetryBudget");
