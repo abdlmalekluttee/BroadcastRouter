@@ -8,6 +8,77 @@ namespace BroadcastRouter.Tests;
 
 public sealed class StandbyLifecycleTests
 {
+    [Fact]
+    public async Task RepeatedCoordinatorObservationsQualifyOneStableMinute()
+    {
+        await using var lab = await Create(true, exits: false);
+        var budget = lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, StandbyRetryBudget>>("_standbyBudgets")
+            .GetOrAdd("TEST-OUTPUT", _ => new());
+        for (var i = 0; i < 3; i++) budget.RecordFailure(Guid.NewGuid(), lab.Clock.Now, "synthetic circuit failure", 0);
+        lab.Time.Advance(TimeSpan.FromMinutes(6));
+        await lab.Invoke("StartFallbackAsync", lab.Route, CancellationToken.None);
+        var running = typeof(FfmpegProcessSupervisor).GetField("_running", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(lab.Supervisor)!;
+        var managed = ((System.Collections.IEnumerable)running.GetType().GetProperty("Values")!.GetValue(running)!).Cast<object>().Single();
+        for (var second = 0; second <= 60; second++)
+        {
+            managed.GetType().GetProperty("Progress")!.SetValue(managed,
+                new FfmpegProgressSnapshot(second + 1, 25, TimeSpan.FromSeconds(second + 1), 0, 0, 1, lab.Clock.Now, false));
+            await lab.Invoke("MonitorProcessesAsync", CancellationToken.None);
+            await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+            if (second < 60) Assert.True(budget.CircuitOpen);
+            lab.Time.Advance(TimeSpan.FromSeconds(1));
+        }
+        Assert.False(budget.CircuitOpen);
+        Assert.Equal(PortStandbyState.Running, lab.Get<Dictionary<string, PortStandbyStatus>>("_standbys")["TEST-OUTPUT"].State);
+    }
+
+    [Fact]
+    public async Task PendingFallbackCannotReopenStoppedSavedRouteOrCreateSecondOwner()
+    {
+        await using var lab = await Create(true, exits: false);
+        var staleRoute = lab.Route;
+        var portGate = lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim>>("_portGates")
+            .GetOrAdd("TEST-OUTPUT", _ => new(1, 1));
+        await portGate.WaitAsync();
+        Task stop, retry;
+        try
+        {
+            stop = lab.Invoke("StopRouteAsync", lab.Source.Value, true, CancellationToken.None, true);
+            retry = lab.Invoke("StartFallbackAsync", staleRoute, CancellationToken.None);
+            Assert.False(stop.IsCompleted);
+            Assert.False(retry.IsCompleted);
+        }
+        finally { portGate.Release(); }
+        await Task.WhenAll(stop, retry).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(RouteState.WaitingForStream, lab.Route.State);
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        var owners = lab.Supervisor.Snapshot().Where(p => p.Running).ToArray();
+        Assert.Single(owners);
+        Assert.Equal(RouteProcessPurpose.PortStandby, owners[0].Purpose);
+    }
+
+    [Theory]
+    [InlineData("simulation")]
+    [InlineData("validation")]
+    public async Task PendingFallbackRechecksExecutionEligibilityAfterPortGate(string change)
+    {
+        await using var lab = await Create(true, exits: false);
+        var portGate = lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim>>("_portGates")
+            .GetOrAdd("TEST-OUTPUT", _ => new(1, 1));
+        await portGate.WaitAsync();
+        Task retry;
+        try
+        {
+            retry = lab.Invoke("StartFallbackAsync", lab.Route, CancellationToken.None);
+            Assert.False(retry.IsCompleted);
+            if (change == "simulation") lab.Settings.SimulationMode = true;
+            else lab.Set("_validation", new MediaToolValidation(ToolValidationState.Invalid, "fake", "fake", false, false, 0, [], lab.Clock.Now));
+        }
+        finally { portGate.Release(); }
+        await retry.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.DoesNotContain(lab.Supervisor.Snapshot(), p => p.Running);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
