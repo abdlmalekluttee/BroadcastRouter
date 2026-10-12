@@ -122,10 +122,8 @@ public sealed class FaultHarnessTests
         using var handler = new ScriptedWowzaHandler(new RestStep(HttpStatusCode.OK, "{\"unexpectedEnvelope\":true}"));
         using var client = new HttpClient(handler);
         using var document = JsonDocument.Parse("{\"unexpectedEnvelope\":true}");
-        // Harness transport parity, not a claim that empty inventory is correct:
-        // R07's separate KnownDefect test asserts the required rejection.
-        Assert.Equal(WowzaIncomingStreamParser.Parse(document.RootElement).Count,
-            (await Discovery(client).DiscoverAsync(CancellationToken.None)).Count);
+        Assert.Throws<JsonException>(() => WowzaIncomingStreamParser.Parse(document.RootElement));
+        await Assert.ThrowsAsync<JsonException>(() => Discovery(client).DiscoverAsync(CancellationToken.None));
     }
 
     private static WowzaDiscoveryProvider Discovery(HttpClient client) => new(client,

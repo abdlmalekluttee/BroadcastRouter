@@ -57,16 +57,6 @@ public sealed class KnownDefectTests
             "R06: fresh progress with unchanged media counters for one hour must be stalled");
     }
 
-    [Fact, Trait("Finding", "R07")]
-    public void MissingIncomingStreamsIsUnknown()
-    {
-        using var document = JsonDocument.Parse("{\"unexpectedEnvelope\":true}");
-        // Parse currently has no Unknown result: it must reject a malformed schema
-        // rather than present an authoritative successful empty inventory.
-        var error = Record.Exception(() => WowzaIncomingStreamParser.Parse(document.RootElement));
-        Assert.True(error is JsonException, "R07: missing incomingStreams must reject unknown schema, not return an empty success");
-    }
-
     [Fact, Trait("Finding", "R18")]
     public void DiagnosticActorIsRedacted() => Assert.False(AuditJson().Contains("PERSON_EXAMPLE", StringComparison.Ordinal),
         "R18: exported audit must not retain the raw actor");

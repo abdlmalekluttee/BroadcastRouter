@@ -14,6 +14,8 @@ public sealed class WowzaDiscoveryProvider(
     public async Task<IReadOnlyList<DiscoveredSource>> DiscoverAsync(CancellationToken cancellationToken)
     {
         if (!server.Enabled) return [];
+        if (server.Applications.Count == 0 || server.ApplicationInstances.Count == 0)
+            throw new JsonException("Wowza inventory has no configured application/instance scope; observation is unknown.");
         var credential = await credentialResolver.ResolveAsync(server.CredentialReference, cancellationToken).ConfigureAwait(false);
         var sources = new List<DiscoveredSource>();
         foreach (var application in server.Applications)
@@ -53,9 +55,9 @@ public sealed class WowzaDiscoveryProvider(
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            var body = await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false);
-            var detail = body.Length > 300 ? body[..300] : body;
-            throw new HttpRequestException($"Wowza GET {endpoint} returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}. {detail}", null, response.StatusCode);
+            // Error pages can echo credentials, application names or customer data.
+            // Status is sufficient for diagnosis; never log an untrusted response body.
+            throw new HttpRequestException($"Wowza inventory request returned HTTP {(int)response.StatusCode}; observation is unknown.", null, response.StatusCode);
         }
         await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
         return await JsonDocument.ParseAsync(stream, cancellationToken: deadline.Token).ConfigureAwait(false);
@@ -68,37 +70,72 @@ public static class WowzaIncomingStreamParser
 {
     public static IReadOnlyList<WowzaIncomingStreamObservation> Parse(JsonElement root)
     {
-        var array = FindArray(root, "incomingStreams") ?? FindArray(root, "incomingstreams");
-        if (array is null) return [];
+        var envelope = Properties(root);
+        if (!envelope.TryGetValue("incomingStreams", out var array) || array.ValueKind != JsonValueKind.Array)
+            throw Unknown();
         var result = new List<WowzaIncomingStreamObservation>();
-        foreach (var item in array.Value.EnumerateArray())
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in array.EnumerateArray())
         {
-            var name = Text(item, "name") ?? Text(item, "streamName");
-            if (string.IsNullOrWhiteSpace(name)) continue;
-            var connected = Boolean(item, "isConnected") ?? Boolean(item, "isPublished") ?? StateLooksActive(Text(item, "state"));
-            result.Add(new(name, connected, Text(item, "sourceIp") ?? Text(item, "sourceIPAddress"), Long(item, "uptime") ?? Long(item, "uptimeSeconds")));
+            var properties = Properties(item);
+            var name = Text(properties, "name");
+            var alias = Text(properties, "streamName");
+            if (name is not null && alias is not null && name != alias) throw Unknown();
+            name ??= alias;
+            if (string.IsNullOrWhiteSpace(name)) throw Unknown();
+            // Match SourceIdentity normalization before detecting duplicates.
+            name = name.Trim();
+            if (!names.Add(name)) throw Unknown();
+            bool? connected = null;
+            foreach (var key in new[] { "isConnected", "isPublished", "state" })
+            {
+                if (!properties.TryGetValue(key, out var value)) continue;
+                var flag = key == "state" ? State(value) : value.ValueKind switch
+                {
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    _ => throw Unknown()
+                };
+                if (connected is { } previous && previous != flag) throw Unknown();
+                connected = flag;
+            }
+            if (connected is null) throw Unknown();
+            result.Add(new(name, connected.Value, Text(properties, "sourceIp") ?? Text(properties, "sourceIPAddress"),
+                Long(properties, "uptime") ?? Long(properties, "uptimeSeconds")));
         }
         return result;
     }
 
-    private static JsonElement? FindArray(JsonElement element, string name)
+    private static Dictionary<string, JsonElement> Properties(JsonElement element)
     {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var property in element.EnumerateObject())
-            {
-                if (property.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && property.Value.ValueKind == JsonValueKind.Array) return property.Value.Clone();
-                var nested = FindArray(property.Value, name);
-                if (nested is not null) return nested;
-            }
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
-            foreach (var child in element.EnumerateArray()) { var nested = FindArray(child, name); if (nested is not null) return nested; }
-        return null;
+        if (element.ValueKind != JsonValueKind.Object) throw Unknown();
+        var result = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in element.EnumerateObject())
+            if (!result.TryAdd(property.Name, property.Value)) throw Unknown();
+        return result;
     }
 
-    private static string? Text(JsonElement item, string name) => item.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
-    private static bool? Boolean(JsonElement item, string name) => item.TryGetProperty(name, out var value) && (value.ValueKind == JsonValueKind.True || value.ValueKind == JsonValueKind.False) ? value.GetBoolean() : null;
-    private static long? Long(JsonElement item, string name) => item.TryGetProperty(name, out var value) && (value.TryGetInt64(out var result) || long.TryParse(value.ToString(), out result)) ? result : null;
-    private static bool StateLooksActive(string? state) => state is not null && (state.Equals("active", StringComparison.OrdinalIgnoreCase) || state.Equals("published", StringComparison.OrdinalIgnoreCase));
+    private static string? Text(Dictionary<string, JsonElement> item, string name)
+    {
+        if (!item.TryGetValue(name, out var value) || value.ValueKind == JsonValueKind.Null) return null;
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : throw Unknown();
+    }
+
+    private static long? Long(Dictionary<string, JsonElement> item, string name)
+    {
+        if (!item.TryGetValue(name, out var value) || value.ValueKind == JsonValueKind.Null) return null;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number)) return number;
+        if (value.ValueKind == JsonValueKind.String && long.TryParse(value.GetString(), out var text)) return text;
+        throw Unknown();
+    }
+
+    private static bool State(JsonElement value) => value.ValueKind == JsonValueKind.String
+        ? value.GetString()?.ToLowerInvariant() switch
+        {
+            "active" or "published" => true,
+            "inactive" or "disconnected" or "unpublished" => false,
+            _ => throw Unknown()
+        } : throw Unknown();
+
+    private static JsonException Unknown() => new("Wowza inventory schema is missing, invalid or ambiguous; observation is unknown.");
 }

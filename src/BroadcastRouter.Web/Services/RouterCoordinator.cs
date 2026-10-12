@@ -49,6 +49,9 @@ public sealed class RouterCoordinator(
     private readonly StartupRouteRecoveryTracker _startupRecovery = new();
     private readonly RepeatedFailureLogGate _reconciliationFailureLogGate = new();
     private readonly PublisherDisconnectDetector _publisherDisconnectDetector = new(requiredObservations: 2);
+    private long _wowzaRequestSequence;
+    private readonly Dictionary<string, long> _wowzaAcceptedRequests = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PublisherObservationStamp> _publisherObservationStamps = new(StringComparer.Ordinal);
     private readonly HashSet<string> _pendingPublisherRecoveryEpochs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StableRecoveryBudget> _stableRecoveryBudgets = new(StringComparer.Ordinal);
     private readonly DateTimeOffset _startedAt = (clock ?? SupervisionClock.System).Now;
@@ -586,27 +589,31 @@ public sealed class RouterCoordinator(
             if (candidates.Length == 0) continue;
 
             var poll = await PollWowzaServerAsync(profile, cancellationToken);
-            if (poll.Error is not null) continue;
+            if (poll.Error is not null || poll.Superseded) continue;
             var connected = poll.Discovered.Where(source => source.State == SourceState.PublisherActive)
                 .Select(source => source.Identity.Value)
                 .ToHashSet(StringComparer.Ordinal);
 
             foreach (var candidate in candidates)
             {
+                var observationVersion = poll.SourceVersions?.GetValueOrDefault(candidate.SourceId);
+                if (!IsCurrentPublisherObservation(candidate.SourceId, observationVersion)) continue;
                 var publisherConnected = connected.Contains(candidate.SourceId);
                 if (_recoveryReadiness.TryGetValue(candidate.SourceId, out var readiness))
-                    readiness.ObservePublisher(publisherConnected);
+                {
+                    if (publisherConnected) readiness.ObservePublisher(true);
+                    else if (_publisherDisconnectDetector.IsAbsenceConfirmed(candidate.SourceId)) readiness.ObservePublisher(false);
+                }
                 if (publisherConnected)
                 {
                     _publisherLiveHold.Observe(candidate.SourceId, true);
                     telemetry?.ObservePublisher(candidate.SourceId, true);
-                    if (_publisherDisconnectDetector.ObserveConnected(candidate.SourceId))
-                        lock (_gate) _pendingPublisherRecoveryEpochs.Add(candidate.SourceId);
                     var reconcileConnectedRoute = false;
                     var recoveryGate = _routeGates.GetOrAdd(candidate.SourceId, static _ => new SemaphoreSlim(1, 1));
                     if (!await recoveryGate.WaitAsync(0, cancellationToken)) continue;
                     try
                     {
+                        if (!IsCurrentPublisherObservation(candidate.SourceId, observationVersion)) continue;
                         RuntimeRoute? recoveryRoute;
                         DiscoveredSource? recoverySource;
                         lock (_gate)
@@ -662,13 +669,15 @@ public sealed class RouterCoordinator(
 
                 telemetry?.ObservePublisher(candidate.SourceId, false);
                 lock (_gate) _pendingPublisherRecoveryEpochs.Remove(candidate.SourceId);
-                if (!_publisherDisconnectDetector.Observe(candidate.SourceId, publisherConnected: false)) continue;
+                if (!_publisherDisconnectDetector.IsAbsenceConfirmed(candidate.SourceId)) continue;
                 _publisherLiveHold.Observe(candidate.SourceId, false);
 
                 var routeGate = _routeGates.GetOrAdd(candidate.SourceId, static _ => new SemaphoreSlim(1, 1));
                 if (!await routeGate.WaitAsync(0, cancellationToken)) continue;
                 try
                 {
+                    if (!IsCurrentPublisherObservation(candidate.SourceId, observationVersion)
+                        || !_publisherDisconnectDetector.IsAbsenceConfirmed(candidate.SourceId)) continue;
                     RuntimeRoute? route;
                     DiscoveredSource? source;
                     lock (_gate)
@@ -960,6 +969,7 @@ public sealed class RouterCoordinator(
         var discoveryStarted = _clock.GetTimestamp();
 
         var observations = new List<DiscoveredSource>();
+        var observationVersions = new Dictionary<string, long>(StringComparer.Ordinal);
         var successfullyPolledServerIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (settings.SimulationMode) observations.AddRange(BuildSimulationSources());
         else
@@ -968,10 +978,29 @@ public sealed class RouterCoordinator(
             var polls = await Task.WhenAll(enabledProfiles.Select(profile => PollWowzaServerAsync(profile, cancellationToken)));
             foreach (var poll in polls)
             {
-                lock (_gate) _servers[poll.Profile.ServerId] = poll.Health;
+                if (poll.Superseded) continue;
+                if (poll.SourceVersions is { } versions)
+                    foreach (var pair in versions) observationVersions[pair.Key] = pair.Value;
                 if (poll.Error is null)
                 {
-                    observations.AddRange(poll.Discovered);
+                    // One complete missing sample is not a publisher-epoch end.
+                    // Retain the previous observation (including its OLD timestamp)
+                    // until the shared complete-poll detector confirms absence.
+                    var previous = SourcesCopy().Where(source => source.Identity.ServerId.Equals(
+                        poll.Profile.ServerId, StringComparison.OrdinalIgnoreCase))
+                        .ToDictionary(source => source.Identity.Value, StringComparer.Ordinal);
+                    var seen = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var discovered in poll.Discovered)
+                    {
+                        seen.Add(discovered.Identity.Value);
+                        observations.Add(discovered.State == SourceState.PublisherDisconnected
+                            && !_publisherDisconnectDetector.IsAbsenceConfirmed(discovered.Identity.Value)
+                            && previous.TryGetValue(discovered.Identity.Value, out var retained)
+                            ? retained : discovered);
+                    }
+                    observations.AddRange(previous.Values.Where(source => !seen.Contains(source.Identity.Value))
+                        .Select(source => _publisherDisconnectDetector.IsAbsenceConfirmed(source.Identity.Value)
+                            ? source with { State = SourceState.PublisherDisconnected } : source));
                     foreach (var discovered in poll.Discovered.Where(value => value.State == SourceState.PublisherActive))
                         _publisherLiveHold.SeedConnected(discovered.Identity.Value);
                     successfullyPolledServerIds.Add(poll.Profile.ServerId);
@@ -999,8 +1028,10 @@ public sealed class RouterCoordinator(
 
         var enabledServerIds = settings.WowzaServers.Where(profile => profile.Enabled).Select(profile => profile.ServerId).ToArray();
         var staleSources = SourceObservationReconciler.FindStaleSources(
-            SourcesCopy(), observations, enabledServerIds, successfullyPolledServerIds, settings.SimulationMode);
-        if (staleSources.Count > 0)
+            SourcesCopy(), observations, enabledServerIds, successfullyPolledServerIds, settings.SimulationMode)
+            .Where(source => IsCurrentPublisherObservation(source.Identity.Value,
+                observationVersions.TryGetValue(source.Identity.Value, out var version) ? version : null)).ToArray();
+        if (staleSources.Length > 0)
         {
             var routeStates = RoutesCopy().ToDictionary(route => route.SourceId, StringComparer.Ordinal);
             var renamedSources = staleSources.Where(stale => !enabledServerIds.Contains(stale.Identity.ServerId, StringComparer.OrdinalIgnoreCase)
@@ -1026,6 +1057,8 @@ public sealed class RouterCoordinator(
                 }
                 foreach (var stale in retainedOffline)
                 {
+                    if (!IsCurrentPublisherObservation(stale.Identity.Value,
+                        observationVersions.TryGetValue(stale.Identity.Value, out var version) ? version : null)) continue;
                     if (_recoveryReadiness.TryGetValue(stale.Identity.Value, out var readiness))
                         readiness.ObservePublisher(false);
                     _sources[stale.Identity.Value] = stale with
@@ -1064,20 +1097,23 @@ public sealed class RouterCoordinator(
         using var probeConcurrency = new SemaphoreSlim(8, 8);
         var probeTasks = observations.Select(async source =>
         {
-            if (_recoveryReadiness.TryGetValue(source.Identity.Value, out var readiness))
+            var version = observationVersions.TryGetValue(source.Identity.Value, out var observedVersion)
+                ? observedVersion : (long?)null;
+            if (source.State is SourceState.PublisherActive or SourceState.PublisherDisconnected
+                && IsCurrentPublisherObservation(source.Identity.Value, version)
+                && _recoveryReadiness.TryGetValue(source.Identity.Value, out var readiness))
                 readiness.ObservePublisher(source.State == SourceState.PublisherActive);
             await probeConcurrency.WaitAsync(cancellationToken);
-            try { return await ProbeObservationAsync(source, settings, cancellationToken); }
+            try { return await ProbeObservationAsync(source, settings, cancellationToken, version); }
             finally { probeConcurrency.Release(); }
         }).ToArray();
         var probeOutcomes = await Task.WhenAll(probeTasks);
         foreach (var outcome in probeOutcomes)
         {
             var probed = outcome.Source;
-            if (probed.State is SourceState.PublisherDisconnected or SourceState.RtspUnavailable or SourceState.Disabled)
-                lock (_gate) _sourceMissingSince.TryAdd(probed.Identity.Value, _clock.Now);
-            else
-                lock (_gate) _sourceMissingSince.Remove(probed.Identity.Value);
+            var version = observationVersions.TryGetValue(probed.Identity.Value, out var observedVersion)
+                ? observedVersion : (long?)null;
+            if (!IsCurrentPublisherObservation(probed.Identity.Value, version)) continue;
             if (outcome.Probe is { } probe)
             {
                 if (probed.State != SourceState.Ready)
@@ -1095,6 +1131,7 @@ public sealed class RouterCoordinator(
             }
             lock (_gate)
             {
+                if (!IsCurrentPublisherObservation(probed.Identity.Value, version)) continue;
                 _sources[probed.Identity.Value] = probed;
                 if (probed.State == SourceState.Ready)
                 {
@@ -1121,10 +1158,12 @@ public sealed class RouterCoordinator(
     }
 
     private async Task<ProbeOutcome> ProbeObservationAsync(DiscoveredSource source, OperatorSettings settings,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, long? observationVersion)
     {
         lock (_gate)
         {
+            if (!IsCurrentPublisherObservation(source.Identity.Value, observationVersion))
+                return new(source, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false, false);
             if (_routes.TryGetValue(source.Identity.Value, out var recovering)
                 && DesiredRoutePolicy.HasSavedAssignment(recovering)
                 && recovering.PortId is not null
@@ -1141,9 +1180,12 @@ public sealed class RouterCoordinator(
         {
             lock (_gate)
             {
-                _sourceMediaModes.Remove(source.Identity.Value);
-                _lastExtendedVideoProbeAt.Remove(source.Identity.Value);
-                _pendingMediaModeRestarts.Remove(source.Identity.Value);
+                if (IsCurrentPublisherObservation(source.Identity.Value, observationVersion))
+                {
+                    _sourceMediaModes.Remove(source.Identity.Value);
+                    _lastExtendedVideoProbeAt.Remove(source.Identity.Value);
+                    _pendingMediaModeRestarts.Remove(source.Identity.Value);
+                }
             }
             return new(source, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false, false);
         }
@@ -1207,8 +1249,11 @@ public sealed class RouterCoordinator(
             videoConfirmationProbes: extendedVideoConfirmed ? 1 : 2);
         lock (_gate)
         {
-            _sourceMediaModes[source.Identity.Value] = decision.State;
-            if (decision.ModeChanged) _pendingMediaModeRestarts.Add(source.Identity.Value);
+            if (IsCurrentPublisherObservation(source.Identity.Value, observationVersion))
+            {
+                _sourceMediaModes[source.Identity.Value] = decision.State;
+                if (decision.ModeChanged) _pendingMediaModeRestarts.Add(source.Identity.Value);
+            }
         }
         var probe = decision.EffectiveProbe;
         return new(source with { State = SourceProbeReadinessPolicy.Resolve(probe), Media = probe.Media }, probe,
@@ -1231,6 +1276,7 @@ public sealed class RouterCoordinator(
     private async Task<WowzaPollResult> PollWowzaServerAsync(WowzaServerProfile profile,
         CancellationToken cancellationToken)
     {
+        var requestVersion = Interlocked.Increment(ref _wowzaRequestSequence);
         ServerHealth? previousHealth;
         lock (_gate) _servers.TryGetValue(profile.ServerId, out previousHealth);
         try
@@ -1245,11 +1291,41 @@ public sealed class RouterCoordinator(
             var provider = new WowzaDiscoveryProvider(client, server,
                 new StaticCredentialResolver(new CredentialValue(profile.Username, password)), _clock);
             var discovered = await provider.DiscoverAsync(cancellationToken);
-            foreach (var observed in discovered)
-                telemetry?.ObservePublisher(observed.Identity.Value, observed.State == SourceState.PublisherActive);
             var health = new ServerHealth(profile.ServerId, profile.FriendlyName, true, true,
                 discovered.Count, "Discovery succeeded.", _clock.Now);
-            return new(profile, discovered, health, previousHealth is { Reachable: false }, null);
+            var versions = new Dictionary<string, long>(StringComparer.Ordinal);
+            // Only a complete, validated application/instance inventory counts.
+            // Count it exactly once, regardless of the fast/manual consumer.
+            lock (_gate)
+            {
+                if (_wowzaAcceptedRequests.GetValueOrDefault(profile.ServerId) > requestVersion)
+                    return new(profile, [], health, false, null, Superseded: true);
+                _wowzaAcceptedRequests[profile.ServerId] = requestVersion;
+                _servers[profile.ServerId] = health;
+                var connected = discovered.Where(source => source.State == SourceState.PublisherActive)
+                    .Select(source => source.Identity.Value).ToHashSet(StringComparer.Ordinal);
+                var identities = _sources.Values.Where(source => source.Identity.ServerId.Equals(
+                        profile.ServerId, StringComparison.OrdinalIgnoreCase)).Select(source => source.Identity.Value)
+                    .Concat(discovered.Select(source => source.Identity.Value))
+                    .Concat(_publisherObservationStamps.Where(pair => pair.Value.ServerId.Equals(profile.ServerId,
+                        StringComparison.OrdinalIgnoreCase)).Select(pair => pair.Key)).Distinct(StringComparer.Ordinal).ToArray();
+                foreach (var identity in identities)
+                {
+                    versions[identity] = StampPublisherObservation(identity, profile.ServerId, connected.Contains(identity), requestVersion);
+                    telemetry?.ObservePublisher(identity, connected.Contains(identity));
+                    if (connected.Contains(identity))
+                    {
+                        if (_publisherDisconnectDetector.ObserveConnected(identity))
+                            _pendingPublisherRecoveryEpochs.Add(identity);
+                    }
+                    else
+                    {
+                        _publisherDisconnectDetector.Observe(identity, publisherConnected: false);
+                        _pendingPublisherRecoveryEpochs.Remove(identity);
+                    }
+                }
+            }
+            return new(profile, discovered, health, previousHealth is { Reachable: false }, null, versions);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1260,9 +1336,44 @@ public sealed class RouterCoordinator(
             var error = LogRedactor.Redact(ex.Message);
             var health = new ServerHealth(profile.ServerId, profile.FriendlyName, false, false, 0,
                 error, _clock.Now);
+            lock (_gate)
+            {
+                if (_wowzaAcceptedRequests.GetValueOrDefault(profile.ServerId) > requestVersion)
+                    return new(profile, [], health, false, error, Superseded: true);
+                _wowzaAcceptedRequests[profile.ServerId] = requestVersion;
+                _servers[profile.ServerId] = health;
+                var identities = _sources.Values.Where(source => source.Identity.ServerId.Equals(
+                        profile.ServerId, StringComparison.OrdinalIgnoreCase)).Select(source => source.Identity.Value)
+                    .Concat(_publisherObservationStamps.Where(pair => pair.Value.ServerId.Equals(profile.ServerId,
+                        StringComparison.OrdinalIgnoreCase)).Select(pair => pair.Key)).Distinct(StringComparer.Ordinal).ToArray();
+                foreach (var identity in identities)
+                {
+                    _publisherDisconnectDetector.ObserveUnknown(identity);
+                    StampPublisherObservation(identity, profile.ServerId, null, requestVersion);
+                }
+            }
             return new(profile, [], health, false, error);
         }
     }
+
+    // Called under _gate. Equal presence retains its generation so routine fast
+    // polls cannot starve a slower media probe. Unknown/changed presence invalidates
+    // in-flight results without claiming that media or the publisher went offline.
+    private long StampPublisherObservation(string sourceId, string serverId, bool? connected, long version)
+    {
+        if (_publisherObservationStamps.TryGetValue(sourceId, out var previous) && previous.Connected == connected)
+            return previous.Version;
+        _publisherObservationStamps[sourceId] = new(serverId, version, connected);
+        return version;
+    }
+
+    private bool IsCurrentPublisherObservation(string sourceId, long? version)
+    {
+        lock (_gate) return version is null || (_publisherObservationStamps.TryGetValue(sourceId, out var current)
+            && current.Version == version);
+    }
+
+    private sealed record PublisherObservationStamp(string ServerId, long Version, bool? Connected);
 
     private async Task ReconcileRoutesAsync(CancellationToken cancellationToken)
     {
@@ -3057,7 +3168,9 @@ public sealed class RouterCoordinator(
         IReadOnlyList<DiscoveredSource> Discovered,
         ServerHealth Health,
         bool Recovered,
-        string? Error);
+        string? Error,
+        IReadOnlyDictionary<string, long>? SourceVersions = null,
+        bool Superseded = false);
     private static bool IsPermanent(FfmpegFailureCategory category) => category is FfmpegFailureCategory.Authentication or FfmpegFailureCategory.Codec
         or FfmpegFailureCategory.UnsupportedMedia or FfmpegFailureCategory.DeckLinkFormat or FfmpegFailureCategory.Configuration;
     private static string NewCorrelation() => Guid.NewGuid().ToString("N")[..12];

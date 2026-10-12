@@ -43,6 +43,8 @@ var quit = Task.Run(async () =>
 });
 try
 {
+    while (script.ContinueFile is { } continueFile && !File.Exists(continueFile))
+        await Task.Delay(10, complete.Token);
     foreach (var item in script.Events.OrderBy(e => e.AtMilliseconds))
     {
         var wait = TimeSpan.FromMilliseconds(item.AtMilliseconds) - timer.Elapsed;
@@ -64,7 +66,7 @@ catch (OperationCanceledException) when (complete.IsCancellationRequested) { }
 return 0;
 
 internal sealed record Script(Event[] Events, int? ExitAfterMilliseconds, int ExitCode, bool IgnoreQuit, bool Crash,
-    int QuitDelayMilliseconds = 0, string[]? QuitStderr = null, bool ProgressCommands = false);
+    int QuitDelayMilliseconds = 0, string[]? QuitStderr = null, bool ProgressCommands = false, string? ContinueFile = null);
 internal sealed record Event(int AtMilliseconds, string Channel, string Text);
 internal static class Native
 {

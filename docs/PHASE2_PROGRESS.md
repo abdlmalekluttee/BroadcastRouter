@@ -15,7 +15,8 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-10 | R01 | fix/P2-10-standby-lifecycle | [#69](https://github.com/abdlmalekluttee/BroadcastRouter/pull/69) | Review findings fixed test-first; main 246/246; physical qualification and total log-volume measurement pending | [Standby evidence](phase2/P2-10.md) |
 | P2-13 | ForcedTermination | fix/P2-13-graceful-stop | [#71](https://github.com/abdlmalekluttee/BroadcastRouter/pull/71) | Review finding fixed test-first; normal suite 255/255; strict seven OPEN; physical 500-cycle acceptance OPEN | [Stop evidence](phase2/P2-13.md) |
 | P2-03 retention follow-up | R10, R11; Gate A capacity gap | fix/P2-03-shared-retention | [#72](https://github.com/abdlmalekluttee/BroadcastRouter/pull/72) | Fresh review startup finding fixed test-first; normal262/262, strict seven OPEN; measured capacity and visible alarm; hosted checks pending | [Retention evidence](phase2/P2-03-retention.md) |
-| P2-03 disk budget | R10,R11; owner Gate B ruling | fix/P2-03-disk-budget | Pending | Review findings fixed test-first; normal273/273, strict seven OPEN, build green; hosted checks pending | [Disk budget](phase2/P2-03-disk-budget.md) |
+| P2-03 disk budget | R10,R11; owner Gate B ruling | fix/P2-03-disk-budget | [#73](https://github.com/abdlmalekluttee/BroadcastRouter/pull/73) | Review findings fixed test-first; normal273/273, strict seven OPEN, build and all hosted checks green; awaiting owner | [Disk budget](phase2/P2-03-disk-budget.md) |
+| P2-23 | R07 | fix/P2-23-strict-wowza | Pending | Review findings fixed test-first; final normal311/311, strict six OPEN; hosted checks pending | [Strict inventory](phase2/P2-23.md) |
 
 ## Open KnownDefect register
 
@@ -31,7 +32,7 @@ to the normal suite in the same PR.
 | MillisecondQueueWarningsDoNotAuthorizeRecovery | R04 | Open; exact assertion failure required by CI |
 | DuplicateBurstRespectsConfirmationWindow | R05 | Open; exact assertion failure required by CI |
 | FreshProgressDoesNotConcealStalledMedia | R06 | Open; exact assertion failure required by CI |
-| MissingIncomingStreamsIsUnknown | R07 | Open; exact assertion failure required by CI |
+| MissingIncomingStreamsIsUnknown | R07 | Fixed on P2-23 branch; identical assertion promoted to normal suite; not merged/deployed |
 | DiagnosticActorIsRedacted | R18 | Open; exact assertion failure required by CI |
 | DiagnosticReasonIsRedacted | R18 | Open; exact assertion failure required by CI |
 
