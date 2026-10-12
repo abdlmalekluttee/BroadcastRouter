@@ -72,9 +72,55 @@ public sealed class GracefulStopTests(ITestOutputHelper output)
         var session = supervisor.Snapshot().Single();
         await supervisor.StopAsync(fixture.Source, CancellationToken.None);
         await telemetry.FlushAsync().WaitAsync(TimeSpan.FromSeconds(5));
-        var transcript = string.Join("\n", Directory.GetFiles(Path.Combine(fixture.Root, "logs"), session.StderrLog!).Select(File.ReadAllText));
-        foreach (var line in lines) Assert.Contains(line, transcript);
+        var transcript = Directory.GetFiles(Path.Combine(fixture.Root, "logs"), session.StderrLog!).SelectMany(File.ReadAllLines)
+            .Select(line => JsonDocument.Parse(line)).ToArray();
+        try
+        {
+            var retained = transcript.Select(document => document.RootElement.GetProperty("Event").GetProperty("Text").GetString())
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var line in lines) Assert.Contains(line, retained);
+        }
+        finally { foreach (var document in transcript) document.Dispose(); }
         Assert.True(telemetry.Status.RetentionComplete);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StopPhasesRecordMeasuredDurationAndOutcome(bool ignoreQuit)
+    {
+        await using var fixture = new ChildFixture(new
+        {
+            events = new[] { new { atMilliseconds = 0, channel = "stderr", text = "ready" } },
+            quitDelayMilliseconds = 50, ignoreQuit
+        });
+        await using var telemetry = new SupervisionTelemetry(Path.Combine(fixture.Root, "logs"));
+        await using var supervisor = new FfmpegProcessSupervisor(new("unused"), TimeSpan.FromMilliseconds(300), telemetry: telemetry);
+        await fixture.Start(supervisor);
+        var session = supervisor.Snapshot().Single();
+        await supervisor.StopAsync(fixture.Source, CancellationToken.None);
+        await telemetry.FlushAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var documents = Directory.GetFiles(Path.Combine(fixture.Root, "logs"), "*.decisions.*.jsonl")
+            .SelectMany(File.ReadAllLines).Select(line => JsonDocument.Parse(line)).ToArray();
+        try
+        {
+            var phases = documents.Select(document => document.RootElement.GetProperty("Event"))
+                .Where(evt => evt.GetProperty("Trigger").GetString() == "OwnedProcessStopPhase").ToArray();
+            Assert.Contains(phases, evt => evt.GetProperty("Action").GetString() == "QuitSignal");
+            Assert.Contains(phases, evt => evt.GetProperty("Action").GetString() == "ExitWait"
+                && evt.GetProperty("Result").GetString() == (ignoreQuit ? "DeadlineExpired" : "Exited"));
+            Assert.Contains(phases, evt => evt.GetProperty("Action").GetString() == "PipeDrain"
+                && evt.GetProperty("Result").GetString() == "EOF");
+            Assert.Equal(ignoreQuit, phases.Any(evt => evt.GetProperty("Action").GetString() == "ForcedReap"));
+            Assert.All(phases, evt =>
+            {
+                Assert.Equal(session.SessionId, evt.GetProperty("SessionId").GetGuid());
+                Assert.Equal(session.ProcessId, evt.GetProperty("ProcessId").GetInt32());
+                Assert.InRange(evt.GetProperty("DurationMilliseconds").GetDouble(), 0, 10000);
+                Assert.True(evt.GetProperty("WindowMilliseconds").GetDouble() > 0);
+            });
+        }
+        finally { foreach (var document in documents) document.Dispose(); }
     }
 
     internal sealed class ChildFixture : IAsyncDisposable
