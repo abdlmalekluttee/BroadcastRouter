@@ -113,6 +113,20 @@ public sealed class IndependentMediaHealthTests
         Assert.True(result.MayRecover);
     }
 
+    [Fact]
+    public void CounterResetRequiresFreshQualificationInsteadOfInventingStalledMedia()
+    {
+        var tracker = Warm(Av);
+        foreach (var kind in Av) tracker.Observe(kind, 1, Now.AddSeconds(25));
+        var reset = tracker.Snapshot(Now.AddSeconds(26), true);
+        Assert.All(reset.Signals, signal => Assert.Equal(MediaSignalState.Unknown, signal.State));
+        Assert.False(reset.MayRecover);
+        for (var i = 1; i <= 4; i++)
+            foreach (var kind in Av) tracker.Observe(kind, i + 1, Now.AddSeconds(25).AddMilliseconds(i * 500));
+        Assert.All(tracker.Snapshot(Now.AddSeconds(27), true).Signals,
+            signal => Assert.Equal(MediaSignalState.Healthy, signal.State));
+    }
+
     private static MediaEvidenceTracker Warm(MediaSignalKind[] required)
     {
         var tracker = new MediaEvidenceTracker(required, Now);
