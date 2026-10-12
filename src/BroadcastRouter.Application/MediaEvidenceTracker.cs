@@ -18,8 +18,14 @@ public sealed class MediaEvidenceTracker(IEnumerable<MediaSignalKind> required, 
         {
             if (!_signals.TryGetValue(kind, out var signal) || counter < 0
                 || at < startedAt || at < signal.LastObservedAt) return;
+            if (signal.HighWater is not null && counter < signal.HighWater)
+            {
+                // A new counter epoch is unqualified, not proof of a stall in
+                // the previous epoch. Require fresh sustained advancement.
+                _signals[kind] = signal = new Counter();
+            }
             signal.LastObservedAt = at;
-            if (signal.HighWater is not null && counter <= signal.HighWater) return;
+            if (signal.HighWater is not null && counter == signal.HighWater) return;
             signal.HighWater = counter;
             if (signal.LastAdvance is null || at - signal.LastAdvance >= SuspectAfter)
                 signal.RecoverySince = at;

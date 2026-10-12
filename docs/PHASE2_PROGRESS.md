@@ -20,7 +20,8 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-13 | ForcedTermination | fix/P2-13-graceful-stop | [#71](https://github.com/abdlmalekluttee/BroadcastRouter/pull/71) | Review finding fixed test-first; normal suite 255/255; strict seven OPEN; physical 500-cycle acceptance OPEN | [Stop evidence](phase2/P2-13.md) |
 | P2-03 retention follow-up | R10, R11; Gate A capacity gap | fix/P2-03-shared-retention | [#72](https://github.com/abdlmalekluttee/BroadcastRouter/pull/72) | Fresh review startup finding fixed test-first; normal262/262, strict seven OPEN; measured capacity and visible alarm; hosted checks pending | [Retention evidence](phase2/P2-03-retention.md) |
 | P2-03 disk budget | R10,R11; owner Gate B ruling | fix/P2-03-disk-budget | [#73](https://github.com/abdlmalekluttee/BroadcastRouter/pull/73) | Review findings fixed test-first; normal273/273, strict seven OPEN, build and all hosted checks green; awaiting owner | [Disk budget](phase2/P2-03-disk-budget.md) |
-| P2-23 | R07 | fix/P2-23-strict-wowza | [#74](https://github.com/abdlmalekluttee/BroadcastRouter/pull/74) | Hosted junction timeout and local cleanup failures retained; fixture corrections reviewed/test-first; Release315/315, strict six OPEN; hosted rerun pending | [Strict inventory](phase2/P2-23.md) |
+| P2-23 | R07 | fix/P2-23-strict-wowza | [#74](https://github.com/abdlmalekluttee/BroadcastRouter/pull/74) | Fixture corrections reviewed/test-first; Release315/315, strict six OPEN; Build/Main suite/KnownDefect hosted rerun38314054985 all green | [Strict inventory](phase2/P2-23.md) |
+| P2-22 | R06 | fix/P2-22-media-health | Not opened | WIP components42/42, Release357/357, strict five OPEN; independent signals and bounded channels not yet integrated; not merge/deploy ready | [Media evidence checkpoint](phase2/P2-22.md) |
 
 ## Open KnownDefect register
 
@@ -35,7 +36,7 @@ to the normal suite in the same PR.
 | SamePacketAudioBurstDoesNotAuthorizeRecovery | R04 | Open; exact assertion failure required by CI |
 | MillisecondQueueWarningsDoNotAuthorizeRecovery | R04 | Open; exact assertion failure required by CI |
 | DuplicateBurstRespectsConfirmationWindow | R05 | Open; exact assertion failure required by CI |
-| FreshProgressDoesNotConcealStalledMedia | R06 | Open; exact assertion failure required by CI |
+| FreshProgressDoesNotConcealStalledMedia | R06 | Identical probe promoted on P2-22 WIP branch; broader finding still OPEN pending coordinator/hold/UI integration |
 | MissingIncomingStreamsIsUnknown | R07 | Fixed on P2-23 branch; identical assertion promoted to normal suite; not merged/deployed |
 | DiagnosticActorIsRedacted | R18 | Open; exact assertion failure required by CI |
 | DiagnosticReasonIsRedacted | R18 | Open; exact assertion failure required by CI |
@@ -109,4 +110,31 @@ state and untouched production outputs at the end. An initial short bench window
 and dedicated test-stream reuse were approved. A consistent backup and UI-only
 release/restore rehearsal are recorded privately. That rehearsal verifies saved
 settings and process ownership, not physical picture/audio on an unobserved port.
-The repeated-cycle qualification is ongoing; hardware Gate B remains OPEN.
+The first repeated-cycle session has ended and all five saved assignments and
+port overrides were compared equal to their original private snapshot. No
+production application/service replacement or restart occurred. The faithful
+configuration cohort completed 500 stops (100 live, 400 standby): zero forced
+terminations, all exit codes zero, nearest-rank p99 1199.4283 ms, maximum
+1265.5513 ms. The tested stop budget remains 5 seconds; this is margin over one
+measured workload, not proof for all workloads.
+
+One verified output/input loopback produced 100 tone captures and 100 bit-exact
+silent standby captures. Six representative captures were independently checked
+for stereo tone/silence, image and interlaced mode. This does not qualify the
+other physical connectors. The 2,272 monitor samples recorded maximum host CPU
+37%, no reported driver errors, unchanged production service PID and no protected
+output owners. No bench media owners remained at session end. The data volume
+had 641.05 GiB free (68.86%) at the final batch check.
+
+Earlier failed experiments remain disclosed: a monitor file-sharing abort and a
+publisher reader sharing failure were corrected in private bench tooling. One
+earlier receiver stop was forced after its harness omitted the production input
+timeout. It is not included in the faithful-configuration cohort and is not
+discarded evidence. The dedicated publisher subsequently exited zero; its
+wrapper reported the intentional bench-stop exception. Private evidence contains
+the individual measurements and all failed runs.
+
+Hardware Gate B remains OPEN: standby busy/unavailable matrix and historical
+failure-code root cause remain unproven. No 72-hour soak, all-port qualification,
+full-service Session 0 qualification or reboot test is claimed. Later-phase
+native-runtime and healthy-fixture requirements remain open.
