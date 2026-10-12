@@ -15,13 +15,23 @@ if (OperatingSystem.IsWindows()) Native.SetErrorMode(0x0002 | 0x8000);
 var script = JsonSerializer.Deserialize<Script>(await File.ReadAllTextAsync(scriptPath),
     new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new InvalidDataException("Missing script");
 if (script.Events.Any(e => e.AtMilliseconds is < 0 or > 60000)
-    || script.ExitAfterMilliseconds is < 0 or > 60000) return 65;
+    || script.ExitAfterMilliseconds is < 0 or > 60000
+    || script.QuitDelayMilliseconds is < 0 or > 60000) return 65;
 using var complete = new CancellationTokenSource();
 var timer = Stopwatch.StartNew();
 var quit = Task.Run(async () =>
 {
     while (await Console.In.ReadLineAsync() is { } line)
-        if (line == "q" && !script.IgnoreQuit) { complete.Cancel(); return; }
+        if (line == "q" && !script.IgnoreQuit)
+        {
+            await Console.Error.WriteLineAsync("synthetic quit received");
+            await Console.Error.FlushAsync();
+            await Task.Delay(script.QuitDelayMilliseconds);
+            foreach (var text in script.QuitStderr ?? []) await Console.Error.WriteLineAsync(text);
+            await Console.Error.FlushAsync();
+            complete.Cancel();
+            return;
+        }
 });
 try
 {
@@ -45,7 +55,8 @@ try
 catch (OperationCanceledException) when (complete.IsCancellationRequested) { }
 return 0;
 
-internal sealed record Script(Event[] Events, int? ExitAfterMilliseconds, int ExitCode, bool IgnoreQuit, bool Crash);
+internal sealed record Script(Event[] Events, int? ExitAfterMilliseconds, int ExitCode, bool IgnoreQuit, bool Crash,
+    int QuitDelayMilliseconds = 0, string[]? QuitStderr = null);
 internal sealed record Event(int AtMilliseconds, string Channel, string Text);
 internal static class Native
 {
