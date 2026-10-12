@@ -49,7 +49,8 @@ public sealed class RouterCoordinator(
     private readonly StartupRouteRecoveryTracker _startupRecovery = new();
     private readonly RepeatedFailureLogGate _reconciliationFailureLogGate = new();
     private readonly PublisherDisconnectDetector _publisherDisconnectDetector = new(requiredObservations: 2);
-    private readonly Dictionary<string, DateTimeOffset> _connectedPublisherRecoveryAttemptAt = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _pendingPublisherRecoveryEpochs = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, StableRecoveryBudget> _stableRecoveryBudgets = new(StringComparer.Ordinal);
     private readonly DateTimeOffset _startedAt = (clock ?? SupervisionClock.System).Now;
     private readonly object _livenessGate = new();
     private readonly ProcessCpuSampler _cpuSampler = new(TimeSpan.FromMilliseconds(500));
@@ -594,20 +595,23 @@ public sealed class RouterCoordinator(
                 {
                     _publisherLiveHold.Observe(candidate.SourceId, true);
                     telemetry?.ObservePublisher(candidate.SourceId, true);
-                    _publisherDisconnectDetector.ObserveConnected(candidate.SourceId);
+                    if (_publisherDisconnectDetector.ObserveConnected(candidate.SourceId))
+                        lock (_gate) _pendingPublisherRecoveryEpochs.Add(candidate.SourceId);
                     var reconcileConnectedRoute = false;
                     var recoveryGate = _routeGates.GetOrAdd(candidate.SourceId, static _ => new SemaphoreSlim(1, 1));
                     if (!await recoveryGate.WaitAsync(0, cancellationToken)) continue;
                     try
                     {
-                        telemetry?.ObservePublisher(candidate.SourceId, true);
-                        _publisherDisconnectDetector.ObserveConnected(candidate.SourceId);
                         RuntimeRoute? recoveryRoute;
                         DiscoveredSource? recoverySource;
                         lock (_gate)
                         {
                             _routes.TryGetValue(candidate.SourceId, out recoveryRoute);
                             _sources.TryGetValue(candidate.SourceId, out recoverySource);
+                            // Consume only under the route gate. A busy gate must
+                            // not lose an observed reconnect; a steady connected
+                            // publisher has no new epoch to spend.
+                            if (!_pendingPublisherRecoveryEpochs.Remove(candidate.SourceId)) continue;
                         }
                         if (recoveryRoute is null || recoverySource is null) continue;
                         var ownsLiveProcess = supervisor.IsRunning(
@@ -618,20 +622,16 @@ public sealed class RouterCoordinator(
                                 recoveryRoute, ownsLiveProcess)) continue;
 
                         var now = _clock.Now;
-                        bool recoveryThrottled;
-                        lock (_gate)
-                        {
-                            recoveryThrottled = _connectedPublisherRecoveryAttemptAt.TryGetValue(candidate.SourceId, out var attemptedAt)
-                                && now - attemptedAt < TimeSpan.FromSeconds(1);
-                            if (!recoveryThrottled) _connectedPublisherRecoveryAttemptAt[candidate.SourceId] = now;
-                        }
-                        if (recoveryThrottled) continue;
-
+                        if (_recoveryReadiness.TryGetValue(candidate.SourceId, out var recoveryReadiness))
+                            recoveryReadiness.AccelerateForPublisherEpoch();
                         using var acceleration = telemetry?.BeginDecision(candidate.SourceId, recoveryRoute.PortId,
-                            OwnedSnapshot(candidate.SourceId), "PublisherConnectedRecoveryEligible",
-                            "Existing connected-publisher eligibility; 1-second attempt throttle; epoch does not currently gate acceleration",
-                            1000, ["Keep retry deadline", "Wait for media proof"], "AccelerateRecovery", recoveryRoute.State.ToString());
-                        var publisherRestored = RapidStreamRecoveryPolicy.MarkPublisherRestored(recoverySource, now);
+                            OwnedSnapshot(candidate.SourceId), "ConfirmedPublisherReconnect",
+                            "One acceleration per confirmed disconnect-to-connect epoch; retry debt retained",
+                            null, ["Keep retry deadline"], "AccelerateRecoveryProbe", recoveryRoute.State.ToString());
+                        // REST presence is not decoded media. In particular a
+                        // waiting route must not hand off from standby using
+                        // cached pre-disconnect media metadata alone.
+                        var publisherRestored = recoverySource with { State = SourceState.PublisherActive, LastObservedAt = now };
                         lock (_gate)
                         {
                             _sources[candidate.SourceId] = publisherRestored;
@@ -644,8 +644,8 @@ public sealed class RouterCoordinator(
                         acceleration?.Complete(OwnedSnapshot(candidate.SourceId), "RetryMadeImmediatelyEligible", dueRoute.State.ToString());
                         await LogAsync("Information", "PublisherPresence",
                             missingExpectedLiveOwner
-                                ? "Wowza reports the saved publisher connected and its starting/running live owner has exited; route recovery was made immediately eligible without waiting for FFprobe."
-                                : "Wowza reports the saved publisher connected; fallback or waiting-for-stream recovery was made immediately eligible without waiting for FFprobe.",
+                                ? "A confirmed publisher reconnect accelerated recovery of its missing live owner once; fresh media qualification is still required."
+                                : "A confirmed publisher reconnect accelerated saved-route recovery once; fallback stays until fresh media qualifies.",
                             candidate.SourceId, cancellationToken: cancellationToken);
                         reconcileConnectedRoute = true;
                     }
@@ -656,6 +656,7 @@ public sealed class RouterCoordinator(
                 }
 
                 telemetry?.ObservePublisher(candidate.SourceId, false);
+                lock (_gate) _pendingPublisherRecoveryEpochs.Remove(candidate.SourceId);
                 if (!_publisherDisconnectDetector.Observe(candidate.SourceId, publisherConnected: false)) continue;
                 _publisherLiveHold.Observe(candidate.SourceId, false);
 
@@ -680,7 +681,6 @@ public sealed class RouterCoordinator(
                         "Two consecutive publisher-missing observations", null, true, cancellationToken);
                     lock (_gate)
                     {
-                        _connectedPublisherRecoveryAttemptAt.Remove(candidate.SourceId);
                         _sources[candidate.SourceId] = source with
                         {
                             State = SourceState.PublisherDisconnected,
@@ -2162,6 +2162,12 @@ public sealed class RouterCoordinator(
                 var compactFailureDetail = process.MediaHealth.HasAnomalies
                     ? process.MediaHealth.ToDiagnosticSummary()
                     : processDetail;
+                var resetRetryBudget = StableRetryBudgetSatisfied(process, now);
+                if (resetRetryBudget && route.RestartCount > 0)
+                    telemetry?.Record(route.SourceId, route.PortId, process, "StableRecoveryQualified",
+                        SupervisionTelemetry.Evidence(process, _clock, route.State.ToString()), null,
+                        "60s advancing unique output frames and media time; fresh progress; no recent classified anomaly",
+                        StableRecoveryBudget.StableWindow.TotalMilliseconds, ["Retain retry debt"], "ResetRetryBudget", "Reset");
                 await ReplaceRouteAsync(route with
                 {
                     State = state,
@@ -2170,7 +2176,7 @@ public sealed class RouterCoordinator(
                     Speed = progress?.Speed,
                     DroppedFrames = progress?.DroppedFrames ?? 0,
                     DuplicatedFrames = progress?.DuplicatedFrames ?? 0,
-                    RestartCount = state == RouteState.Running ? 0 : route.RestartCount,
+                    RestartCount = resetRetryBudget ? 0 : route.RestartCount,
                     StartedAt = process.StartedAt,
                     FailureCategory = outputDiagnostic ? outputCategory.ToString() :
                         route.FailureCategory?.StartsWith("DeckLink", StringComparison.Ordinal) == true ? null : route.FailureCategory,
@@ -2320,6 +2326,25 @@ public sealed class RouterCoordinator(
         }
         await ReplaceRouteAsync(retry, route.State, cancellationToken);
         decision?.Complete(OwnedSnapshot(route.SourceId), "RetryScheduled", retry.State.ToString());
+    }
+
+    private bool StableRetryBudgetSatisfied(RouteProcessSnapshot process, DateTimeOffset now)
+    {
+        StableRecoveryBudget budget;
+        lock (_gate)
+        {
+            if (!_stableRecoveryBudgets.TryGetValue(process.Source.Value, out budget!))
+                _stableRecoveryBudgets[process.Source.Value] = budget = new();
+        }
+        var progress = process.Progress;
+        var healthy = process is { Running: true, Purpose: RouteProcessPurpose.Live, InputFailure: null }
+            && (process.MediaHealth.LastAnomalyAt is null || now - process.MediaHealth.LastAnomalyAt > StableRecoveryBudget.MaximumObservationGap);
+        var satisfied = budget.Observe(process.SessionId,
+            progress is null ? 0 : Math.Max(0, progress.Frame - progress.DuplicatedFrames),
+            progress?.OutputTime ?? TimeSpan.Zero, progress?.LastProgressAt ?? now, now, healthy);
+        if (satisfied && _recoveryReadiness.TryGetValue(process.Source.Value, out var readiness))
+            readiness.ResetRetryBudget();
+        return satisfied;
     }
 
     private async Task RestartReservedRouteAsync(RuntimeRoute route, CancellationToken cancellationToken, bool force = false)

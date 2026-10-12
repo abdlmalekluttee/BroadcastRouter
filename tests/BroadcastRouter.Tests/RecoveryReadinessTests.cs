@@ -121,6 +121,47 @@ public sealed class RecoveryReadinessTests
     }
 
     [Fact]
+    public void EpochAccelerationDoesNotForgiveProbeDebt()
+    {
+        var time = new ManualTimeProvider();
+        dynamic gate = NewGate(new SupervisionClock(time));
+        var calls = 0;
+        Func<Task<StreamProbeResult>> probe = () => { calls++; return Task.FromResult(new StreamProbeResult(false, false, null, "RtspNotFound", "synthetic")); };
+        for (var i = 0; i < 6; i++) { gate.Poll("synthetic", true, true, probe); time.Advance(TimeSpan.FromSeconds(30)); }
+        gate.Poll("synthetic", true, true, probe);
+        var before = calls;
+        gate.AccelerateForPublisherEpoch();
+        gate.Poll("synthetic", true, true, probe);
+        Assert.Equal(before + 1, calls);
+        time.Advance(TimeSpan.FromSeconds(29));
+        gate.Poll("synthetic", true, true, probe);
+        Assert.Equal(before + 1, calls);
+        time.Advance(TimeSpan.FromSeconds(1));
+        gate.Poll("synthetic", true, true, probe);
+        Assert.Equal(before + 2, calls);
+    }
+
+    [Fact]
+    public async Task ReconnectWaitsForOldProbeThenRunsOneFreshProbe()
+    {
+        var time = new ManualTimeProvider();
+        dynamic gate = NewGate(new SupervisionClock(time));
+        var pending = new TaskCompletionSource<StreamProbeResult>();
+        var calls = 0;
+        Func<Task<StreamProbeResult>> probe = () => ++calls == 1 ? pending.Task : Task.FromResult(Av());
+        Assert.Null((object?)gate.Poll("synthetic", true, true, probe));
+        gate.AccelerateForPublisherEpoch();
+        Assert.Null((object?)gate.Poll("synthetic", true, true, probe));
+        Assert.Equal(1, calls);
+        pending.SetResult(Av());
+        Assert.Null((object?)gate.Poll("synthetic", true, true, probe));
+        await FaultHarnessTests.Eventually(() => (object?)gate.Poll("synthetic", true, true, probe) is not null);
+        Assert.Equal(2, calls);
+        Assert.Null((object?)gate.Poll("synthetic", true, true, probe));
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
     public void FirstPublisherObservationAfterProofInvalidatesUnknownGeneration()
     {
         dynamic gate = NewGate(new SupervisionClock(new ManualTimeProvider()));

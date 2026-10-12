@@ -16,6 +16,7 @@ public sealed class RecoveryReadinessGate(SupervisionClock clock)
     private long _pendingGeneration;
     private bool? _publisherConnected;
     private int _failures;
+    private bool _acceleratedProbePending;
     private DateTimeOffset _nextProbe = DateTimeOffset.MinValue;
     private StreamProbeResult? _proof;
     private long _proofGeneration;
@@ -31,6 +32,18 @@ public sealed class RecoveryReadinessGate(SupervisionClock clock)
     }
 
     public void Invalidate() { lock (_gate) _generation++; }
+
+    public void AccelerateForPublisherEpoch()
+    {
+        lock (_gate)
+        {
+            _generation++;
+            _nextProbe = clock.Now;
+            _acceleratedProbePending = _pending is not null;
+        }
+    }
+
+    public void ResetRetryBudget() { lock (_gate) _failures = 0; }
 
     public bool TryAuthorizeHandoff(StreamProbeResult proof)
     {
@@ -74,7 +87,8 @@ public sealed class RecoveryReadinessGate(SupervisionClock clock)
             if (!qualified)
             {
                 _failures = Math.Min(_failures + 1, DelaysSeconds.Length);
-                _nextProbe = clock.Now.AddSeconds(DelaysSeconds[_failures - 1]);
+                _nextProbe = _acceleratedProbePending ? clock.Now : clock.Now.AddSeconds(DelaysSeconds[_failures - 1]);
+                _acceleratedProbePending = false;
                 return null;
             }
             // Consume each proof once. A failed start needs a new sample, never
