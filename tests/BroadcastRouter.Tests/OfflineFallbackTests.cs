@@ -25,6 +25,119 @@ public sealed class OfflineFallbackTests
         Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
     }
 
+    [Fact]
+    public async Task TwentyFourHoursOfflineKeepsExactFallbackOwner()
+    {
+        await using var lab = await RecoveryLab.Create();
+        var original = lab.Owner;
+        for (var second = 0; second < 86400; second++)
+        {
+            await lab.RestartDue();
+            lab.Time.Advance(TimeSpan.FromSeconds(1));
+        }
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
+        Assert.Equal(original.SessionId, lab.Owner.SessionId);
+        Assert.Equal(1, lab.Events.Count(e => e.State == RouteProcessLifecycleState.Started));
+        Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
+    }
+
+    [Fact]
+    public async Task RealProbeQualificationProducesExactlyOneSerializedHandoff()
+    {
+        await using var lab = await RecoveryLab.Create();
+        await lab.InstallFakeMediaTools();
+        var old = lab.Owner;
+        await lab.RestartDue();
+        for (var i = 0; i < 100 && !lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live); i++)
+        {
+            await Task.Delay(20);
+            await lab.RestartDue();
+        }
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live),
+            "R02: a fresh decoded AV probe did not produce a live handoff");
+        await FaultHarnessTests.Eventually(() => lab.Owner.Progress?.Frame > 0);
+        for (var i = 0; i < 20; i++) await lab.RestartDue();
+        var events = lab.Events.ToArray();
+        Assert.Equal(2, events.Count(e => e.State == RouteProcessLifecycleState.Started));
+        Assert.Equal(1, events.Count(e => e.State == RouteProcessLifecycleState.StopRequested));
+        Assert.True(Array.FindIndex(events, e => e.State == RouteProcessLifecycleState.Exited && e.ProcessId == old.ProcessId)
+            < Array.FindIndex(events, e => e.State == RouteProcessLifecycleState.Started && e.ProcessId != old.ProcessId));
+        Assert.NotEqual(old.SessionId, lab.Owner.SessionId);
+    }
+
+    [Fact]
+    public async Task StaleMediaModeRequestCannotBypassReadiness()
+    {
+        await using var lab = await RecoveryLab.Create();
+        lab.Sources[lab.Source.Value] = lab.Sources[lab.Source.Value] with { State = SourceState.Ready, Media = RecoveryReadinessTests.Av().Media };
+        lab.Get<HashSet<string>>("_pendingMediaModeRestarts").Add(lab.Source.Value);
+        await lab.Invoke("RestartRoutesForMediaModeChangesAsync", CancellationToken.None);
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
+        Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
+    }
+
+    [Fact]
+    public async Task DiscoveryDoesNotBypassRecoveryProbeBackoff()
+    {
+        await using var lab = await RecoveryLab.Create();
+        await lab.InstallFakeMediaTools();
+        var known = RecoveryReadinessTests.Av().Media;
+        lab.Sources[lab.Source.Value] = lab.Sources[lab.Source.Value] with { Media = known };
+        var observation = lab.Sources[lab.Source.Value] with { State = SourceState.PublisherActive, Media = null };
+        var task = lab.Invoke("ProbeObservationAsync", observation, lab.Settings, CancellationToken.None);
+        await task;
+        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+        Assert.Null(result.GetType().GetProperty("Probe")!.GetValue(result));
+        var source = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
+        Assert.Equal(SourceState.PublisherActive, source.State);
+        Assert.Equal(known, source.Media);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task InvalidOutputOrToolsNeverStopsFallback(bool disablePort)
+    {
+        await using var lab = await RecoveryLab.Create();
+        await lab.InstallFakeMediaTools();
+        if (disablePort)
+        {
+            var ports = lab.Get<Dictionary<string, DeckLinkPort>>("_ports");
+            ports["TEST-OUTPUT"] = ports["TEST-OUTPUT"] with { IsOutputPort = false };
+        }
+        else lab.Set("_validation", new MediaToolValidation(ToolValidationState.Invalid, "fake", "fake", false, false, 0, [], lab.Clock.Now));
+        for (var i = 0; i < 30; i++) { await lab.RestartDue(); await Task.Delay(20); }
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
+        Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
+    }
+
+    [Fact]
+    public async Task FlapWhileWaitingForPortGateKeepsFallbackUntouched()
+    {
+        await using var lab = await RecoveryLab.Create();
+        await lab.InstallFakeMediaTools();
+        var portGate = lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim>>("_portGates")
+            .GetOrAdd("TEST-OUTPUT", _ => new(1, 1));
+        await portGate.WaitAsync();
+        var attempt = Task.Run(async () =>
+        {
+            for (var i = 0; i < 100; i++) { await lab.RestartDue(); await Task.Delay(20); }
+        });
+        try
+        {
+            await FaultHarnessTests.Eventually(() => lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")
+                .TryGetValue(lab.Source.Value, out var gate) && (DateTimeOffset)typeof(RecoveryReadinessGate)
+                    .GetField("_nextProbe", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(gate)! >= lab.Clock.Now.AddSeconds(30));
+            // The proof has been consumed; the handoff must wait for the port
+            // semaphore without stopping the current writer.
+            Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
+            lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value].Invalidate();
+        }
+        finally { portGate.Release(); await attempt; }
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
+        Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
+    }
+
     internal sealed class RecoveryLab : IAsyncDisposable
     {
         private const BindingFlags Fields = BindingFlags.Instance | BindingFlags.NonPublic;
@@ -47,12 +160,13 @@ public sealed class OfflineFallbackTests
             Directory.CreateDirectory(Root);
             Clock = new(Time);
             Store = new(Path.Combine(Root, "test.db"));
-            Supervisor = new(new FfmpegRouteOptions("missing-test-executable"), TimeSpan.FromSeconds(1), Clock);
+            var executable = Path.Combine(Root, "BroadcastRouter.FakeFfmpeg.exe");
+            Supervisor = new(new FfmpegRouteOptions(executable), TimeSpan.FromSeconds(1), Clock);
             Coordinator = new(Store, null!, null!, NullLogger<RouterCoordinator>.Instance, Clock);
             Set("_supervisor", Supervisor);
             // Keep the existing supervisor; no real executable can ever be launched.
-            Set("_supervisorPath", "missing-test-executable");
-            Settings.MediaTools.FfmpegPath = "missing-test-executable";
+            Set("_supervisorPath", executable);
+            Settings.MediaTools.FfmpegPath = executable;
             Set("_supervisorInputReadTimeoutMilliseconds", Settings.Routing.InputReadTimeoutMilliseconds);
             Settings.SimulationMode = false;
             Supervisor.LifecycleChanged += Events.Enqueue;
@@ -90,6 +204,25 @@ public sealed class OfflineFallbackTests
         }
 
         public Task RestartDue() => Invoke("RestartReservedRouteAsync", Route, CancellationToken.None, false);
+        public async Task InstallFakeMediaTools()
+        {
+            var bin = Path.Combine(FaultHarnessTests.RepositoryRoot(), "tests", "BroadcastRouter.FakeFfmpeg", "bin", "Release", "net8.0");
+            foreach (var file in Directory.GetFiles(bin)) File.Copy(file, Path.Combine(Root, Path.GetFileName(file)));
+            var executable = Path.Combine(Root, "BroadcastRouter.FakeFfmpeg.exe");
+            Settings.MediaTools.FfmpegPath = executable;
+            Settings.MediaTools.FfprobePath = executable;
+            Set("_supervisorPath", executable);
+            Set("_validation", new MediaToolValidation(ToolValidationState.Valid, "fake", "fake", true, true, 1, [], Clock.Now));
+            await File.WriteAllTextAsync(Path.Combine(Root, "probe.json"), JsonSerializer.Serialize(new
+            {
+                events = new[] { new { atMilliseconds = 0, channel = "stdout", text = """
+                  {"streams":[{"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"25/1","nb_read_frames":"50"},
+                  {"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_frames":"94"}]}
+                  """ } }, exitAfterMilliseconds = 20
+            }));
+            await File.WriteAllTextAsync(Path.Combine(Root, "live.json"), JsonSerializer.Serialize(new
+            { events = new[] { new { atMilliseconds = 0, channel = "stdout", text = "frame=1\nout_time_us=40000\nprogress=continue" } } }));
+        }
         public Task Invoke(string method, params object?[] args) => (Task)typeof(RouterCoordinator).GetMethod(method, Fields)!.Invoke(Coordinator, args)!;
         public T Get<T>(string name) => (T)typeof(RouterCoordinator).GetField(name, Fields)!.GetValue(Coordinator)!;
         public void Set(string name, object value) => typeof(RouterCoordinator).GetField(name, Fields)!.SetValue(Coordinator, value);

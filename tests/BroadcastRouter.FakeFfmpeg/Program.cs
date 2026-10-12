@@ -3,9 +3,14 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 
 // Test-only child: no network, media devices or application endpoints.
-if (args.Length != 1) return 64;
+// In an isolated copied fixture directory, accept the application's real tokenized
+// media-tool arguments. This executable never opens URLs or hardware.
+var scriptPath = args.Length == 1 ? args[0]
+    : args.Contains("-show_streams") ? Path.Combine(AppContext.BaseDirectory, "probe.json")
+    : args.Contains("-progress") ? Path.Combine(AppContext.BaseDirectory, "live.json") : null;
+if (scriptPath is null || !File.Exists(scriptPath)) return 64;
 if (OperatingSystem.IsWindows()) Native.SetErrorMode(0x0002 | 0x8000);
-var script = JsonSerializer.Deserialize<Script>(await File.ReadAllTextAsync(args[0]),
+var script = JsonSerializer.Deserialize<Script>(await File.ReadAllTextAsync(scriptPath),
     new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new InvalidDataException("Missing script");
 if (script.Events.Any(e => e.AtMilliseconds is < 0 or > 60000)
     || script.ExitAfterMilliseconds is < 0 or > 60000) return 65;
