@@ -80,6 +80,28 @@ public sealed class GracefulStopTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task TimedOutDrainNeverBecomesEofWhenCancelledReadersFinish()
+    {
+        var managedType = typeof(FfmpegProcessSupervisor).GetNestedType("ManagedProcess", BindingFlags.NonPublic)!;
+        using var process = new Process();
+        var managed = Activator.CreateInstance(managedType, new SourceIdentity("TEST", "fixture", "_default_", "drain"),
+            RouteProcessPurpose.Live, process, DateTimeOffset.UnixEpoch)!;
+        using var cancellation = (CancellationTokenSource)managedType.GetProperty("PumpCancellation")!.GetValue(managed)!;
+        var reader = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Match the production pumps: cancellation is caught and their Task ends
+        // successfully, even though no EOF was received from the pipe.
+        using var registration = cancellation.Token.Register(() => reader.TrySetResult());
+        managedType.GetProperty("ErrorTask")!.SetValue(managed, reader.Task);
+        var method = typeof(FfmpegProcessSupervisor).GetMethod("DrainPumpsAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var first = (Task<bool>)method.Invoke(null, [managed])!;
+        var overlapping = (Task<bool>)method.Invoke(null, [managed])!;
+        Assert.False(await first.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False(await overlapping.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.False(await (Task<bool>)method.Invoke(null, [managed])!);
+    }
+
+    [Fact]
     public async Task RepeatedCooperativeHandoffsLeaveNoOwnedChildAndDoNotKillAnUnrelatedChild()
     {
         await using var fixture = new ChildFixture(new
