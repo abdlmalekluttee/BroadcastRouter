@@ -309,6 +309,8 @@ public sealed class FfmpegProcessSupervisor(
         {
             managed.StopBudgetMilliseconds = stopTimeout.TotalMilliseconds;
             ReportLifecycle(managed, RouteProcessLifecycleState.StopRequested);
+            var signalStarted = _clock.GetTimestamp();
+            var signalResult = "Sent";
             var signal = SignalQuitAsync(managed.Process);
             try
             {
@@ -317,31 +319,48 @@ public sealed class FfmpegProcessSupervisor(
             catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException
                                        or TimeoutException or OperationCanceledException)
             {
+                signalResult = ex is OperationCanceledException ? "Cancelled" : ex.GetType().Name;
                 _ = signal.ContinueWith(static task => _ = task.Exception,
                     CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
             }
+            RecordStopPhase(managed, "QuitSignal", signalStarted, QuitSignalTimeout, signalResult);
 
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(stopTimeout);
-            try { await managed.Process.WaitForExitAsync(deadline.Token).ConfigureAwait(false); }
+            var exitStarted = _clock.GetTimestamp();
+            try
+            {
+                await managed.Process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+                RecordStopPhase(managed, "ExitWait", exitStarted, stopTimeout, "Exited");
+            }
             catch (OperationCanceledException)
             {
                 cancellationRequested = cancellationToken.IsCancellationRequested;
+                RecordStopPhase(managed, "ExitWait", exitStarted, stopTimeout,
+                    cancellationRequested ? "Cancelled" : "DeadlineExpired");
+                var reapStarted = _clock.GetTimestamp();
                 if (!managed.Process.HasExited)
                 {
                     managed.Process.Kill(entireProcessTree: true);
                     ReportLifecycle(managed, RouteProcessLifecycleState.ForcedTermination);
                 }
                 using var reapDeadline = new CancellationTokenSource(ProcessReapTimeout);
-                try { await managed.Process.WaitForExitAsync(reapDeadline.Token).ConfigureAwait(false); }
+                try
+                {
+                    await managed.Process.WaitForExitAsync(reapDeadline.Token).ConfigureAwait(false);
+                    RecordStopPhase(managed, "ForcedReap", reapStarted, ProcessReapTimeout, "Exited");
+                }
                 catch (OperationCanceledException) when (reapDeadline.IsCancellationRequested)
                 {
+                    RecordStopPhase(managed, "ForcedReap", reapStarted, ProcessReapTimeout, "DeadlineExpired");
                     throw new TimeoutException($"Owned FFmpeg process {managed.ProcessId} did not exit after forced termination.");
                 }
             }
         }
 
-        await DrainPumpsAsync(managed).ConfigureAwait(false);
+        var drainStarted = _clock.GetTimestamp();
+        var drained = await DrainPumpsAsync(managed).ConfigureAwait(false);
+        RecordStopPhase(managed, "PipeDrain", drainStarted, StreamDrainTimeout, drained ? "EOF" : "Incomplete");
         RememberLast(CreateSnapshot(managed));
         ReportLifecycle(managed, RouteProcessLifecycleState.Exited, SafeExitCode(managed.Process));
         managed.Process.Dispose();
@@ -354,10 +373,19 @@ public sealed class FfmpegProcessSupervisor(
         await process.StandardInput.FlushAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
-    private static async Task DrainPumpsAsync(ManagedProcess managed)
+    private void RecordStopPhase(ManagedProcess managed, string phase, long started, TimeSpan budget, string result)
+    {
+        if (telemetry is null) return;
+        var snapshot = CreateSnapshot(managed);
+        telemetry.Record(managed.Source.Value, managed.OutputId, snapshot, "OwnedProcessStopPhase",
+            SupervisionTelemetry.Evidence(snapshot, _clock), null, "Bounded I/O phase; not media health",
+            budget.TotalMilliseconds, [], phase, result, durationMilliseconds: _clock.GetElapsedTime(started).TotalMilliseconds);
+    }
+
+    private static async Task<bool> DrainPumpsAsync(ManagedProcess managed)
     {
         var pumps = Task.WhenAll(managed.ProgressTask ?? Task.CompletedTask, managed.ErrorTask ?? Task.CompletedTask);
-        try { await pumps.WaitAsync(StreamDrainTimeout).ConfigureAwait(false); }
+        try { await pumps.WaitAsync(StreamDrainTimeout).ConfigureAwait(false); return true; }
         catch (TimeoutException)
         {
             // After OS exit, readers normally finish at EOF, including buffered
@@ -368,6 +396,7 @@ public sealed class FfmpegProcessSupervisor(
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         }
         catch (OperationCanceledException) when (managed.PumpCancellation.IsCancellationRequested) { }
+        return false;
     }
 
     private SemaphoreSlim OwnerGate(string owner) => _ownerGates.GetOrAdd(owner, static _ => new SemaphoreSlim(1, 1));

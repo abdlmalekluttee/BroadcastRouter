@@ -19,7 +19,7 @@ public sealed record SupervisionDecisionRecord(DateTimeOffset Utc, long Monotoni
     string RouteId, string? OutputId, long SourceEpoch, Guid? SessionId, int? ProcessId,
     DateTimeOffset? ProcessStartUtc, string Trigger, SupervisionEvidence Before, SupervisionEvidence? After,
     string Threshold, double? WindowMilliseconds, IReadOnlyList<string> SuppressedAlternatives,
-    string Action, string Result, string? StderrLog, Guid DecisionId);
+    string Action, string Result, string? StderrLog, Guid DecisionId, double? DurationMilliseconds = null);
 
 public sealed record TelemetryStatus(long Accepted, long Written, long Dropped, long WriteFailures,
     long AbandonedAtShutdown, long CapacityEvictions, long ExpiredFiles, DateTimeOffset? OldestRetainedSegmentWriteUtc)
@@ -94,14 +94,15 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
 
     public Guid Record(string source, string? output, RouteProcessSnapshot? process, string trigger,
         SupervisionEvidence before, SupervisionEvidence? after, string threshold, double? windowMilliseconds,
-        IReadOnlyList<string> suppressedAlternatives, string action, string result, Guid? decisionId = null)
+        IReadOnlyList<string> suppressedAlternatives, string action, string result, Guid? decisionId = null,
+        double? durationMilliseconds = null)
     {
         var id = decisionId ?? Guid.NewGuid();
         var record = new SupervisionDecisionRecord(_clock.UtcNow, _clock.GetTimestamp(), ServiceRunId,
             OpaqueId(source), output is null ? null : OpaqueId(output), SourceEpoch(source),
             process?.SessionId, process?.ProcessId, process?.ProcessStartUtc,
             Safe(trigger), Clean(before), after is null ? null : Clean(after), Safe(threshold), windowMilliseconds,
-            suppressedAlternatives.Select(Safe).ToArray(), Safe(action), Safe(result), process?.StderrLog, id);
+            suppressedAlternatives.Select(Safe).ToArray(), Safe(action), Safe(result), process?.StderrLog, id, durationMilliseconds);
         Enqueue($"run-{ServiceRunId:N}.decisions", record);
         return id;
     }
