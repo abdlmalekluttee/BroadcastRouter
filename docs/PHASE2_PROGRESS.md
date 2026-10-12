@@ -16,7 +16,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-13 | ForcedTermination | fix/P2-13-graceful-stop | [#71](https://github.com/abdlmalekluttee/BroadcastRouter/pull/71) | Review finding fixed test-first; normal suite 255/255; strict seven OPEN; physical 500-cycle acceptance OPEN | [Stop evidence](phase2/P2-13.md) |
 | P2-03 retention follow-up | R10, R11; Gate A capacity gap | fix/P2-03-shared-retention | [#72](https://github.com/abdlmalekluttee/BroadcastRouter/pull/72) | Fresh review startup finding fixed test-first; normal262/262, strict seven OPEN; measured capacity and visible alarm; hosted checks pending | [Retention evidence](phase2/P2-03-retention.md) |
 | P2-03 disk budget | R10,R11; owner Gate B ruling | fix/P2-03-disk-budget | [#73](https://github.com/abdlmalekluttee/BroadcastRouter/pull/73) | Review findings fixed test-first; normal273/273, strict seven OPEN, build and all hosted checks green; awaiting owner | [Disk budget](phase2/P2-03-disk-budget.md) |
-| P2-23 | R07 | fix/P2-23-strict-wowza | [#74](https://github.com/abdlmalekluttee/BroadcastRouter/pull/74) | Review findings fixed test-first; hosted310/311 cleanup failure followed by harness correction; local313/313, strict six OPEN; hosted rerun pending | [Strict inventory](phase2/P2-23.md) |
+| P2-23 | R07 | fix/P2-23-strict-wowza | [#74](https://github.com/abdlmalekluttee/BroadcastRouter/pull/74) | Hosted junction timeout and local cleanup failures retained; fixture corrections reviewed/test-first; Release315/315, strict six OPEN; hosted rerun pending | [Strict inventory](phase2/P2-23.md) |
 
 ## Open KnownDefect register
 
@@ -88,8 +88,10 @@ The one-step restore requirement is superseded: consistent DB backup + exact
 before values, UI-only release/restore of the fifth assigned test connector,
 then release the five assigned connectors and restore all five at session end.
 Exact private UI procedure recorded; next window explicitly approved privately.
-No hardware mutation has yet occurred. Abort/monitoring/protected-output limits
-remain unchanged. Phase C fakes authorized in order P2-23,22,20,21,24; hardware
+Bench release/restoration and isolated hardware qualification have now started
+under the owner's separately expanded window. Exact settings and evidence remain
+private; no hardware gate completion is implied. Abort/monitoring/protected-output
+limits remain unchanged. Phase C fakes authorized in order P2-23,22,20,21,24; hardware
 Gate B must close before Gate C can pass. Existing PRs #66–72 remain untouched.
 The137GB storm budget above is historical/rejected; replacement10GB budget and
 free-space reserve are tracked separately, not amended into the frozen branches.
@@ -100,7 +102,7 @@ between start/stop cycles; 500 cycles in 100-cycle batches with checks between t
 Monitor production route states, Windows events and host CPU throughout. Abort on
 any production state change, DeckLink/driver error, or CPU above 70%. Verify release
 state and untouched production outputs at the end. An initial short bench window
-and dedicated test-stream reuse were approved. No release or hardware test has
-occurred: the revised UI round-trip has not yet been exercised. Read-only
-preflight snapshots retain the same service PID, revision, output flags and saved
-assignments. The approved next window starts with backup and rollback rehearsal.
+and dedicated test-stream reuse were approved. A consistent backup and UI-only
+release/restore rehearsal are recorded privately. That rehearsal verifies saved
+settings and process ownership, not physical picture/audio on an unobserved port.
+The repeated-cycle qualification is ongoing; hardware Gate B remains OPEN.

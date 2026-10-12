@@ -163,17 +163,22 @@ public sealed class StrictWowzaTests
         script["continueFile"] = release;
         await File.WriteAllTextAsync(scriptPath, script.ToJsonString());
         var marker = Path.Combine(lab.Root, "probe-starts.log");
-        var probesBefore = File.ReadAllLines(marker).Length;
+        var probesBefore = ProbeMarker.CountStarted(marker);
         http.Mode = omitted ? "mixed-omitted" : "mixed";
         var discovery = lab.Invoke("DiscoverAndProbeAsync", CancellationToken.None, true);
         try
         {
-            await FaultHarnessTests.Eventually(() => File.ReadAllLines(marker).Length > probesBefore);
+            await FaultHarnessTests.Eventually(() => ProbeMarker.CountStarted(marker) > probesBefore);
             http.Mode = "connected";
             await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
         }
-        finally { await File.WriteAllTextAsync(release, "continue"); }
-        await discovery;
+        finally
+        {
+            await File.WriteAllTextAsync(release, "continue");
+            // Even a failed assertion must join discovery before the lab clears
+            // SQLite pools and removes the child's release marker/database.
+            await discovery;
+        }
         await lab.Invoke("ReconcileRoutesAsync", CancellationToken.None);
         Assert.Equal(session, lab.Owner.SessionId);
         Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live),
@@ -197,8 +202,11 @@ public sealed class StrictWowzaTests
             http.Mode = "connected";
             await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
         }
-        finally { http.Release.TrySetResult(); }
-        await discovery;
+        finally
+        {
+            http.Release.TrySetResult();
+            await discovery;
+        }
         http.Mode = "offline";
         await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
         Assert.Equal(session, lab.Owner.SessionId);
@@ -217,16 +225,19 @@ public sealed class StrictWowzaTests
         script["continueFile"] = release;
         await File.WriteAllTextAsync(scriptPath, script.ToJsonString());
         var marker = Path.Combine(lab.Root, "probe-starts.log");
-        var probesBefore = File.ReadAllLines(marker).Length;
+        var probesBefore = ProbeMarker.CountStarted(marker);
         var discovery = lab.Invoke("DiscoverAndProbeAsync", CancellationToken.None, true);
         try
         {
-            await FaultHarnessTests.Eventually(() => File.ReadAllLines(marker).Length > probesBefore);
+            await FaultHarnessTests.Eventually(() => ProbeMarker.CountStarted(marker) > probesBefore);
             for (var sample = 0; sample < 3; sample++)
                 await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
         }
-        finally { await File.WriteAllTextAsync(release, "continue"); }
-        await discovery;
+        finally
+        {
+            await File.WriteAllTextAsync(release, "continue");
+            await discovery;
+        }
         var incoming = Assert.Single(lab.Sources.Values, source => source.Identity.StreamName == "source-B");
         Assert.Equal(SourceState.Ready, incoming.State);
         Assert.True(incoming.Media?.HasUsableVideo);
