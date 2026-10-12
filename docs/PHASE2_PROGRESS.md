@@ -10,7 +10,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-02 | R04, R05, R06, R07, R18; harness | fix/P2-02-test-harness | [#64](https://github.com/abdlmalekluttee/BroadcastRouter/pull/64), integrated with #63 | Owner integrated; matrix rows assigned to owning tasks | [P2-02 evidence](phase2/P2-02.md) |
 | P2-03 | R10, R11 | fix/P2-03-session-telemetry | [#65](https://github.com/abdlmalekluttee/BroadcastRouter/pull/65) | Owner merged; retention/full-transcript follow-ups remain | [P2-03 evidence](phase2/P2-03.md) |
 | P2-03 follow-up | Startup timestamp-only writes | fix/P2-03-startup-migration | [#66](https://github.com/abdlmalekluttee/BroadcastRouter/pull/66) | Independent review and GitHub checks passed; main 187/187; awaiting owner | [Startup evidence](phase2/P2-03-startup.md) |
-| P2-11 | R02 | fix/P2-11-offline-fallback | Pending | Software implementation under independent review; not deployed | [Recovery evidence](phase2/P2-11.md) |
+| P2-11 | R02 | fix/P2-11-offline-fallback | Pending | Independent review approved software scope; main 211/211; bench pending | [Recovery evidence](phase2/P2-11.md) |
 
 ## Open KnownDefect register
 
