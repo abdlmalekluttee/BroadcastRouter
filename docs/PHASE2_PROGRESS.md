@@ -9,7 +9,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-01 | R16, R23 | fix/P2-01-repo-provenance | [#63](https://github.com/abdlmalekluttee/BroadcastRouter/pull/63) | Owner merged; Gate A conditionally accepted | [P2-01 evidence](phase2/P2-01.md) |
 | P2-02 | R04, R05, R06, R07, R18; harness | fix/P2-02-test-harness | [#64](https://github.com/abdlmalekluttee/BroadcastRouter/pull/64), integrated with #63 | Owner integrated; matrix rows assigned to owning tasks | [P2-02 evidence](phase2/P2-02.md) |
 | P2-03 | R10, R11 | fix/P2-03-session-telemetry | [#65](https://github.com/abdlmalekluttee/BroadcastRouter/pull/65) | Owner merged; retention/full-transcript follow-ups remain | [P2-03 evidence](phase2/P2-03.md) |
-| P2-03 follow-up | Startup timestamp-only writes | fix/P2-03-startup-migration | Pending | Test-first fix; independent review pending | [Startup evidence](phase2/P2-03-startup.md) |
+| P2-03 follow-up | Startup timestamp-only writes | fix/P2-03-startup-migration | Pending | Independent review approved; main 187/187; awaiting owner | [Startup evidence](phase2/P2-03-startup.md) |
 
 ## Open KnownDefect register
 
