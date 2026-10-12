@@ -12,7 +12,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-03 follow-up | Startup timestamp-only writes | fix/P2-03-startup-migration | [#66](https://github.com/abdlmalekluttee/BroadcastRouter/pull/66) | Independent review and GitHub checks passed; main 187/187; awaiting owner | [Startup evidence](phase2/P2-03-startup.md) |
 | P2-11 | R02 | fix/P2-11-offline-fallback | [#67](https://github.com/abdlmalekluttee/BroadcastRouter/pull/67) | Independent review approved software scope; main 211/211; required hosted CI green; bench pending | [Recovery evidence](phase2/P2-11.md) |
 | P2-12 | R08 | fix/P2-12-publisher-epochs | [#68](https://github.com/abdlmalekluttee/BroadcastRouter/pull/68) | Independent software review approved; main 225/225; required hosted CI green; physical qualification pending | [Epoch evidence](phase2/P2-12.md) |
-| P2-10 | R01 | fix/P2-10-standby-lifecycle | Pending | Review findings fixed test-first; main 246/246; physical qualification and total log-volume measurement pending | [Standby evidence](phase2/P2-10.md) |
+| P2-10 | R01 | fix/P2-10-standby-lifecycle | [#69](https://github.com/abdlmalekluttee/BroadcastRouter/pull/69) | Review findings fixed test-first; main 246/246; physical qualification and total log-volume measurement pending | [Standby evidence](phase2/P2-10.md) |
 
 ## Open KnownDefect register
 
