@@ -28,7 +28,17 @@ trigger counts actual UPDATEs rather than relying only on timestamp round-trips.
 - Genuine manual legacy assignment migration: correct desired output retained,
   transient owner/frame/deadline removed, one write and one state-history row.
 - Implementation: retain the rebased record as the comparison baseline.
-- Full suite, strict KnownDefect and independent-review results follow in the PR.
+- Full main suite: 187 passed, 0 failed, 0 skipped (15 seconds).
+- Strict KnownDefect: all seven exact expected failures; all seven remain OPEN.
+- CI validator and provenance tests: 12 + 12 passed.
+- Fresh independent reviewer: no Critical/Important/Minor findings; approved the
+  narrow correction subject to required hosted CI and owner-only merge. Reviewer
+  independently ran startup 4/4, main 187/187, and strict KnownDefect checks.
+
+Review rulings: future Phase B implementations, deferred Gate A work, physical
+qualification and deployment are outside this correction, and remain required
+under their own gates. Reviewer used existing binaries; implementer ran fresh
+build/tests. No deferred minor findings.
 
 Existing saved-assignment startup reset policy is deliberately unchanged. This
 fix does not claim to eliminate writes caused by genuine reset-policy changes.
