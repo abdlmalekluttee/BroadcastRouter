@@ -9,6 +9,83 @@ namespace BroadcastRouter.Tests;
 
 public sealed class TelemetryStorageTests
 {
+    [Fact]
+    public async Task ShortLivedSessionsShareCapacityInsteadOfEvictingRecentEvidence()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "router-shared-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using var telemetry = new SupervisionTelemetry(root, maxFileBytes: 65536, maxFiles: 20);
+            for (var index = 0; index < 100; index++)
+                telemetry.Stderr(Guid.NewGuid(), $"session-evidence-{index:D3}");
+            await telemetry.FlushAsync();
+            Assert.True(telemetry.Status.RetentionComplete, "Short-lived sessions must share segments, not evict fresh evidence by session count.");
+            var retained = Directory.GetFiles(root, "*.jsonl").SelectMany(File.ReadAllLines).ToArray();
+            Assert.Equal(100, retained.Length);
+            Assert.InRange(Directory.GetFiles(root, "*.jsonl").Length, 1, 3);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task CapacityLossRemainsVisibleAfterTelemetryRestart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "router-retention-alarm-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using (var first = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 2))
+            {
+                for (var index = 0; index < 60; index++) first.Stderr(Guid.NewGuid(), new string('x', 2000));
+                await first.FlushAsync();
+                Assert.False(first.Status.RetentionComplete);
+            }
+            await using var next = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 2);
+            await next.FlushAsync();
+            Assert.False(next.Status.RetentionComplete, "Restart must not hide the existing retention gap.");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task SessionReconstructionSurvivesInterleavingRotationAndServiceEpochs()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "router-reconstruct-" + Guid.NewGuid().ToString("N"));
+        var session = Guid.NewGuid();
+        var foreignSession = Guid.NewGuid();
+        try
+        {
+            string reference;
+            Guid run;
+            await using (var first = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 100))
+            {
+                run = first.ServiceRunId;
+                reference = first.StderrReference(session);
+                for (var index = 0; index < 100; index++)
+                {
+                    first.Stderr(session, $"wanted-{index:D3} " + new string('x', 600));
+                    first.Stderr(foreignSession, "unrelated session");
+                }
+                await first.FlushAsync();
+                Assert.True(first.Status.RetentionComplete);
+            }
+            await using (var second = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 100))
+            {
+                second.Stderr(session, "different service epoch");
+                await second.FlushAsync();
+            }
+            var records = Directory.GetFiles(root, reference).SelectMany(File.ReadAllLines)
+                .Select(line => JsonSerializer.Deserialize<JsonElement>(line))
+                .Where(record => record.GetProperty("Event").GetProperty("ServiceRunId").GetGuid() == run
+                    && record.GetProperty("Event").GetProperty("SessionId").GetGuid() == session)
+                .OrderBy(record => record.GetProperty("Sequence").GetInt64()).ToArray();
+            Assert.Equal(100, records.Length);
+            Assert.Equal(100, records.Select(record => record.GetProperty("Sequence").GetInt64()).Distinct().Count());
+            for (var index = 0; index < 100; index++)
+                Assert.Equal($"wanted-{index:D3} " + new string('x', 600), records[index].GetProperty("Event").GetProperty("Text").GetString());
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
     [Theory]
     [InlineData("Authorization: Basic FAKE_BASIC_PAYLOAD", "FAKE_BASIC_PAYLOAD")]
     [InlineData("Authorization: Bearer FAKE_BEARER_PAYLOAD", "FAKE_BEARER_PAYLOAD")]
