@@ -29,6 +29,8 @@ public sealed record TelemetryStatus(long Accepted, long Written, long Dropped, 
     public bool RetentionComplete => IsHealthy;
 }
 
+public readonly record struct TelemetryVolumeSpace(long TotalBytes, long AvailableBytes);
+
 /// <summary>
 /// Non-blocking, bounded diagnostics. No disk work runs in media/route callbacks.
 /// Retention is at most 30 days, additionally bounded by file count and bytes.
@@ -69,7 +71,8 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
         Volatile.Read(ref _initialized) != 0);
 
     public SupervisionTelemetry(string root, SupervisionClock? clock = null,
-        int maxFileBytes = DefaultSegmentBytes, int maxFiles = DefaultMaxSegments, int queueCapacity = 4096)
+        int maxFileBytes = DefaultSegmentBytes, int maxFiles = DefaultMaxSegments, int queueCapacity = 4096,
+        long maxTotalBytes = 10_000_000_000, Func<string, TelemetryVolumeSpace>? readVolumeSpace = null)
     {
         if (maxFileBytes < 16384 || maxFiles < 2 || queueCapacity < 1) throw new ArgumentOutOfRangeException(nameof(maxFileBytes));
         _root = Path.GetFullPath(root);
