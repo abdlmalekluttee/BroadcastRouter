@@ -62,7 +62,8 @@ var dataDirectory = Path.IsPathRooted(dataSetting) ? dataSetting : Path.Combine(
 Directory.CreateDirectory(dataDirectory);
 await using var supervisionTelemetry = new SupervisionTelemetry(Path.Combine(dataDirectory, "telemetry"), SupervisionClock.System,
     maxFileBytes: builder.Configuration.GetValue("Telemetry:SegmentBytes", SupervisionTelemetry.DefaultSegmentBytes),
-    maxFiles: builder.Configuration.GetValue("Telemetry:MaxSegments", SupervisionTelemetry.DefaultMaxSegments));
+    maxFiles: builder.Configuration.GetValue("Telemetry:MaxSegments", SupervisionTelemetry.DefaultMaxSegments),
+    maxTotalBytes: builder.Configuration.GetValue("Telemetry:MaxTotalBytes", SupervisionTelemetry.DefaultMaxTotalBytes));
 builder.Services.AddSingleton(supervisionTelemetry);
 builder.Logging.AddProvider(new RouterFileLoggerProvider(supervisionTelemetry));
 var databasePath = Path.Combine(dataDirectory, "broadcast-router.db");

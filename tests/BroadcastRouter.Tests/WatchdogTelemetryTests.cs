@@ -20,7 +20,7 @@ public sealed class WatchdogTelemetryTests
         try
         {
             var clock = new SupervisionClock(new ManualTimeProvider());
-            await using var telemetry = new SupervisionTelemetry(root, clock);
+            await using var telemetry = new SupervisionTelemetry(root, clock, readVolumeSpace: TelemetryTestVolume.Read);
             using var coordinator = new RouterCoordinator(null!, null!, null!, NullLogger<RouterCoordinator>.Instance, clock, telemetry);
             var calls = 0;
             using var watchdog = new RouterCoordinatorWatchdog(coordinator, null!, NullLogger<RouterCoordinatorWatchdog>.Instance, clock, telemetry)

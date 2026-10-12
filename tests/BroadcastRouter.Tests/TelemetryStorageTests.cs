@@ -15,7 +15,7 @@ public sealed class TelemetryStorageTests
         var root = Path.Combine(Path.GetTempPath(), "router-shared-" + Guid.NewGuid().ToString("N"));
         try
         {
-            await using var telemetry = new SupervisionTelemetry(root, maxFileBytes: 65536, maxFiles: 20);
+            await using var telemetry = new SupervisionTelemetry(root, maxFileBytes: 65536, maxFiles: 20, readVolumeSpace: TelemetryTestVolume.Read);
             for (var index = 0; index < 100; index++)
                 telemetry.Stderr(Guid.NewGuid(), $"session-evidence-{index:D3}");
             await telemetry.FlushAsync();
@@ -33,13 +33,13 @@ public sealed class TelemetryStorageTests
         var root = Path.Combine(Path.GetTempPath(), "router-retention-alarm-" + Guid.NewGuid().ToString("N"));
         try
         {
-            await using (var first = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 2))
+            await using (var first = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 2, readVolumeSpace: TelemetryTestVolume.Read))
             {
                 for (var index = 0; index < 60; index++) first.Stderr(Guid.NewGuid(), new string('x', 2000));
                 await first.FlushAsync();
                 Assert.False(first.Status.RetentionComplete);
             }
-            await using var next = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 2);
+            await using var next = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 2, readVolumeSpace: TelemetryTestVolume.Read);
             Assert.False(next.Status.RetentionComplete, "An idle restart must not report healthy before loading the existing retention gap.");
             await FaultHarnessTests.Eventually(() => next.Status.CapacityEvictions > 0);
         }
@@ -55,7 +55,7 @@ public sealed class TelemetryStorageTests
         {
             var marker = Path.Combine(root, "retention-loss.json");
             await File.WriteAllTextAsync(marker, "not valid state");
-            await using var telemetry = new SupervisionTelemetry(root);
+            await using var telemetry = new SupervisionTelemetry(root, readVolumeSpace: TelemetryTestVolume.Read);
             Assert.False(telemetry.Status.IsHealthy, "Unread retention state must not be reported healthy.");
             await FaultHarnessTests.Eventually(() => telemetry.Status.WriteFailures > 0);
             Assert.Equal("not valid state", await File.ReadAllTextAsync(marker));
@@ -73,7 +73,7 @@ public sealed class TelemetryStorageTests
         {
             string reference;
             Guid run;
-            await using (var first = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 100))
+            await using (var first = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 100, readVolumeSpace: TelemetryTestVolume.Read))
             {
                 run = first.ServiceRunId;
                 reference = first.StderrReference(session);
@@ -85,7 +85,7 @@ public sealed class TelemetryStorageTests
                 await first.FlushAsync();
                 Assert.True(first.Status.RetentionComplete);
             }
-            await using (var second = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 100))
+            await using (var second = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 100, readVolumeSpace: TelemetryTestVolume.Read))
             {
                 second.Stderr(session, "different service epoch");
                 await second.FlushAsync();
@@ -134,7 +134,7 @@ public sealed class TelemetryStorageTests
                 events = Enumerable.Range(0, 150).Select(index => new { atMilliseconds = 0, channel = "stderr", text = "evidence-line-" + index }).ToArray()
             }));
             var clock = new SupervisionClock(new ManualTimeProvider());
-            await using var telemetry = new SupervisionTelemetry(logs, clock);
+            await using var telemetry = new SupervisionTelemetry(logs, clock, readVolumeSpace: TelemetryTestVolume.Read);
             await using var supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions("unused"), TimeSpan.FromSeconds(1), clock, telemetry);
             telemetry.ObservePublisher(source.Value, true);
             var start = new ProcessStartInfo(executable)
@@ -195,7 +195,7 @@ public sealed class TelemetryStorageTests
         var provider = new ManualTimeProvider();
         try
         {
-            await using var telemetry = new SupervisionTelemetry(directory, new SupervisionClock(provider), maxFileBytes: 16384, maxFiles: 3);
+            await using var telemetry = new SupervisionTelemetry(directory, new SupervisionClock(provider), maxFileBytes: 16384, maxFiles: 3, readVolumeSpace: TelemetryTestVolume.Read);
             var foreign = Path.Combine(directory, "unrelated.jsonl");
             await File.WriteAllTextAsync(foreign, "must survive");
             var session = Guid.NewGuid();
@@ -225,7 +225,7 @@ public sealed class TelemetryStorageTests
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
-            var telemetry = new SupervisionTelemetry(root)
+            var telemetry = new SupervisionTelemetry(root, readVolumeSpace: TelemetryTestVolume.Read)
             {
                 ShutdownDrainTimeout = TimeSpan.FromMilliseconds(100),
                 BeforeWriteForTesting = () => { entered.TrySetResult(); return release.Task; }
@@ -275,8 +275,9 @@ public sealed class TelemetryStorageTests
         var root = Path.Combine(parent, "logs");
         try
         {
-            await using var telemetry = new SupervisionTelemetry(root);
-            Directory.Delete(root); // Exact newly created empty fixture directory.
+            await using var telemetry = new SupervisionTelemetry(root, readVolumeSpace: TelemetryTestVolume.Read);
+            await telemetry.FlushAsync();
+            Directory.Delete(root, true); // Exact newly created fixture, including its initialized marker.
             await File.WriteAllTextAsync(root, "synthetic disk fault");
             telemetry.Stderr(Guid.NewGuid(), "must not block caller");
             await Assert.ThrowsAsync<IOException>(() => telemetry.FlushAsync().WaitAsync(TimeSpan.FromSeconds(5)));

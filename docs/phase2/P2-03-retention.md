@@ -1,5 +1,11 @@
 # P2-03 follow-up — shared telemetry capacity and visible loss
 
+Historical evidence for PR #72. The owner subsequently REJECTED its 137 GB
+storm-sized budget. Current limits and measurement supersede that sizing in
+[P2-03 disk budget](P2-03-disk-budget.md). The accepted shared-segment design
+remains. The one-step rollback requirement below was also superseded by the
+owner-approved, verified UI release/restore procedure.
+
 Scope: storage layout and diagnostics only. No routing policy, process deadline,
 driver, service, production configuration, or physical output change. Owner
 approved shared rotating segments with complete per-session reconstruction.

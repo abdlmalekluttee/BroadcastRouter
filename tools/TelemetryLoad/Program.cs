@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Text.Json;
 using BroadcastRouter.Infrastructure;
 
-// Local storage-only measurement. No server, network, process supervisor or device.
+// Historical storage-only churn benchmark; NOT the post-Phase-B sizing workload.
+// Use PhaseBTelemetryMeasurementTests for the normal + offline 24-hour baseline.
+// No server, network, process supervisor or device.
 // Leaves the synthetic output for inspection; never deletes an existing directory.
 var count = args.Length == 1 ? int.Parse(args[0]) : 1000;
 if (args.Length > 1 || count is < 1 or > 10000) throw new ArgumentException("Usage: TelemetryLoad [sessions:1..10000]");
@@ -31,8 +33,6 @@ Console.WriteLine(JsonSerializer.Serialize(new
     ElapsedSeconds = started.Elapsed.TotalSeconds, Files = files.Length, Bytes = bytes,
     sink.Status, SegmentBytes = SupervisionTelemetry.DefaultSegmentBytes,
     MaxSegments = SupervisionTelemetry.DefaultMaxSegments,
-    ConfiguredCapacityBytes = (long)SupervisionTelemetry.DefaultSegmentBytes * SupervisionTelemetry.DefaultMaxSegments,
-    SingleStormThirtyDayTimesTwoBytes = (long)Math.Ceiling(bytes / (double)count * 439315 * 2),
-    AllOwnersThirtyDayTimesTwoBytes = (long)Math.Ceiling(bytes / (double)count * 624413 * 2)
+    ConfiguredCapacityBytes = SupervisionTelemetry.DefaultMaxTotalBytes
 }, new JsonSerializerOptions { WriteIndented = true }));
 if (!sink.Status.RetentionComplete || sink.Status.Accepted != sink.Status.Written) Environment.ExitCode = 1;

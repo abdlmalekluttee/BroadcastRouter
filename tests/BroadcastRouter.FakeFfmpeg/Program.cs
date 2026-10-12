@@ -22,6 +22,13 @@ var timer = Stopwatch.StartNew();
 var quit = Task.Run(async () =>
 {
     while (await Console.In.ReadLineAsync() is { } line)
+    {
+        if (script.ProgressCommands && line.Split(' ') is ["progress", var frame, var microseconds]
+            && long.TryParse(frame, out _) && long.TryParse(microseconds, out _))
+        {
+            await Console.Out.WriteLineAsync($"frame={frame}\nfps=25\nspeed=1\nout_time_us={microseconds}\nprogress=continue");
+            await Console.Out.FlushAsync();
+        }
         if (line == "q" && !script.IgnoreQuit)
         {
             await Console.Error.WriteLineAsync("synthetic quit received");
@@ -32,6 +39,7 @@ var quit = Task.Run(async () =>
             complete.Cancel();
             return;
         }
+    }
 });
 try
 {
@@ -56,7 +64,7 @@ catch (OperationCanceledException) when (complete.IsCancellationRequested) { }
 return 0;
 
 internal sealed record Script(Event[] Events, int? ExitAfterMilliseconds, int ExitCode, bool IgnoreQuit, bool Crash,
-    int QuitDelayMilliseconds = 0, string[]? QuitStderr = null);
+    int QuitDelayMilliseconds = 0, string[]? QuitStderr = null, bool ProgressCommands = false);
 internal sealed record Event(int AtMilliseconds, string Channel, string Text);
 internal static class Native
 {

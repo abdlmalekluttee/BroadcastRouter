@@ -31,7 +31,7 @@ public sealed class TelemetryAlarmTests
         var root = Path.Combine(Path.GetTempPath(), "router-alarm-ui-" + Guid.NewGuid().ToString("N"));
         try
         {
-            await using var telemetry = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 2);
+            await using var telemetry = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 2, readVolumeSpace: TelemetryTestVolume.Read);
             if (loseEvidence)
                 for (var index = 0; index < 50; index++) telemetry.Stderr(Guid.NewGuid(), new string('x', 2000));
             await telemetry.FlushAsync();

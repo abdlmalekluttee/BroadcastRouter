@@ -15,6 +15,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-10 | R01 | fix/P2-10-standby-lifecycle | [#69](https://github.com/abdlmalekluttee/BroadcastRouter/pull/69) | Review findings fixed test-first; main 246/246; physical qualification and total log-volume measurement pending | [Standby evidence](phase2/P2-10.md) |
 | P2-13 | ForcedTermination | fix/P2-13-graceful-stop | [#71](https://github.com/abdlmalekluttee/BroadcastRouter/pull/71) | Review finding fixed test-first; normal suite 255/255; strict seven OPEN; physical 500-cycle acceptance OPEN | [Stop evidence](phase2/P2-13.md) |
 | P2-03 retention follow-up | R10, R11; Gate A capacity gap | fix/P2-03-shared-retention | [#72](https://github.com/abdlmalekluttee/BroadcastRouter/pull/72) | Fresh review startup finding fixed test-first; normal262/262, strict seven OPEN; measured capacity and visible alarm; hosted checks pending | [Retention evidence](phase2/P2-03-retention.md) |
+| P2-03 disk budget | R10,R11; owner Gate B ruling | fix/P2-03-disk-budget | Pending | Review findings fixed test-first; normal273/273, strict seven OPEN, build green; hosted checks pending | [Disk budget](phase2/P2-03-disk-budget.md) |
 
 ## Open KnownDefect register
 
@@ -81,6 +82,17 @@ folder. Exact operational before/after configuration and a one-step rollback mus
 be recorded in a PRIVATE copy of this progress document and shown to the owner
 before applying the release; public git never contains operational identifiers.
 
+Owner ruling after Gate B: SOFTWARE PART ACCEPTED, hardware BLOCKED-ON-BENCH.
+The one-step restore requirement is superseded: consistent DB backup + exact
+before values, UI-only release/restore of the fifth assigned test connector,
+then release the five assigned connectors and restore all five at session end.
+Exact private UI procedure recorded; next window explicitly approved privately.
+No hardware mutation has yet occurred. Abort/monitoring/protected-output limits
+remain unchanged. Phase C fakes authorized in order P2-23,22,20,21,24; hardware
+Gate B must close before Gate C can pass. Existing PRs #66–72 remain untouched.
+The137GB storm budget above is historical/rejected; replacement10GB budget and
+free-space reserve are tracked separately, not amended into the frozen branches.
+
 Before each session, propose start time/duration and obtain window approval. Only
 dedicated synthetic test sources; no on-air pulls. Minimum two seconds per connector
 between start/stop cycles; 500 cycles in 100-cycle batches with checks between them.
@@ -88,6 +100,6 @@ Monitor production route states, Windows events and host CPU throughout. Abort o
 any production state change, DeckLink/driver error, or CPU above 70%. Verify release
 state and untouched production outputs at the end. An initial short bench window
 and dedicated test-stream reuse were approved. No release or hardware test has
-occurred: the deployed UI lacks a verified durable one-step restore. Read-only
+occurred: the revised UI round-trip has not yet been exercised. Read-only
 preflight snapshots retain the same service PID, revision, output flags and saved
-assignments. A later window must be approved after rollback is verified and shown.
+assignments. The approved next window starts with backup and rollback rehearsal.
