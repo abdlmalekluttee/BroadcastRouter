@@ -24,11 +24,20 @@ the target of either negative test. No agent merge was performed.
 | Force push backward | `ad8e2dcb7e0fc7b6cf4819394998b84c27d5cb79` | 1 | GH013; cannot force-push; PR required; 3 required status checks expected |
 
 The temporary ref was verified unchanged after both rejections. The temporary
-ruleset and test branch were then deleted, each verified absent. Main protection
-was compared before/after and was unchanged. Thus cleanup did not weaken main.
+ruleset and test branch deletion calls succeeded. A separate read-only follow-up
+on 2026-10-12 verified both API reads returned HTTP 404 and `git ls-remote` listed
+no matching branch. It also compared the test rules' configured requirements
+against current main protection and found parity.
+
+The original script compared main protection before/after in memory and recorded
+`mainProtectionUnchanged: true`; it did **not** retain those two raw snapshots.
+That historical comparison is recorded evidence, not independently reconstructable
+raw-snapshot proof. The follow-up retains current main protection separately and
+does not retroactively establish the missing historical snapshots.
 
 The full command outputs and ruleset snapshot are retained privately as
-`protection-proof.json`; the public summary contains no operational server data.
+`protection-proof.json` and `protection-cleanup-verification.json`; the public
+summary contains no operational server data.
 These were actual negative GitHub tests, not a claim that a local static test
 proves server enforcement. This documentation-only PR records the owner's
 requested Gate A follow-up; no runtime, CI policy or recovery behavior changes.
@@ -41,3 +50,10 @@ an owner deliberately changing protection. The separate bot account is not yet
 available. Runner immutability remains the explicitly accepted risk: hosted
 windows-2022, recorded ImageVersion, and identical two-clean-build payload hashes,
 not pinned immutable images or self-hosted infrastructure.
+
+Independent review found no Critical issue and one Important evidence overclaim
+(absence read-back), corrected above with actual read-only checks. The historical
+snapshot limitation remains explicit. No runtime tests are implied by this
+documentation review; hosted PR checks still apply. Exclusions were GitHub
+mutations, production/hardware access, runtime tests and merge; none was needed
+to review the retained proof. No operational permission is expanded by this PR.
