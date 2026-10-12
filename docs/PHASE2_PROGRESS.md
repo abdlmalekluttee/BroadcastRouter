@@ -6,9 +6,10 @@ Deployment requires separate explicit approval and a maintenance window.
 
 | Task | Findings | Branch | PR | Status | Evidence link |
 |---|---|---|---|---|---|
-| P2-01 | R16, R23 | fix/P2-01-repo-provenance | [#63](https://github.com/abdlmalekluttee/BroadcastRouter/pull/63) | Awaiting owner; partial acceptance | [P2-01 evidence](phase2/P2-01.md) |
-| P2-02 | R04, R05, R06, R07, R18; harness | fix/P2-02-test-harness | [#64](https://github.com/abdlmalekluttee/BroadcastRouter/pull/64) | Draft; CI green; full matrix gap open | [P2-02 evidence](phase2/P2-02.md) |
-| P2-03 | R10, R11 | fix/P2-03-session-telemetry | [#65](https://github.com/abdlmalekluttee/BroadcastRouter/pull/65) | Draft review approved; retention/full-transcript gaps open | [P2-03 evidence](phase2/P2-03.md) |
+| P2-01 | R16, R23 | fix/P2-01-repo-provenance | [#63](https://github.com/abdlmalekluttee/BroadcastRouter/pull/63) | Owner merged; Gate A conditionally accepted | [P2-01 evidence](phase2/P2-01.md) |
+| P2-02 | R04, R05, R06, R07, R18; harness | fix/P2-02-test-harness | [#64](https://github.com/abdlmalekluttee/BroadcastRouter/pull/64), integrated with #63 | Owner integrated; matrix rows assigned to owning tasks | [P2-02 evidence](phase2/P2-02.md) |
+| P2-03 | R10, R11 | fix/P2-03-session-telemetry | [#65](https://github.com/abdlmalekluttee/BroadcastRouter/pull/65) | Owner merged; retention/full-transcript follow-ups remain | [P2-03 evidence](phase2/P2-03.md) |
+| P2-03 follow-up | Startup timestamp-only writes | fix/P2-03-startup-migration | Pending | Test-first fix; independent review pending | [Startup evidence](phase2/P2-03-startup.md) |
 
 ## Open KnownDefect register
 
@@ -38,16 +39,45 @@ to the normal suite in the same PR.
   conversation resolution and linear history. Zero approvals, admin enforcement,
   no force-push or deletion. Human-only merging is a procedural restriction.
 - Evidence bundles stay internal; public tests use synthetic data only.
-- Gate A is NOT passed. No physical stability or media qualification is claimed.
+- Gate A was conditionally accepted by the owner on 2026-10-12; Phase B authorized.
+  No physical stability or media qualification is claimed. The historical Gate A
+  report records the original report, not this subsequent owner decision.
 
-## Gate A acceptance gaps
+## Gate A conditions and follow-ups (owner decision, 2026-10-12)
 
-- P2-01 pins the hosted runner OS family, not an immutable VM image. Direct-push
-  rejection was not tested by sending a real main update: doing so risks violating
-  the no-direct-push rule if protection is wrong. Protection was read back instead.
-- P2-01's required KnownDefect check fails closed until P2-02 supplies the harness.
-  The owner must decide the stacked-PR bootstrap order; do not waive protection.
-- P2-02's full end-to-end acceptance matrix is not implemented; see its coverage table.
-- P2-03 demonstrates specific injected-fault transcripts, not every policy path;
-  bounded file retention can evict evidence before 30 days. No retention soak is claimed.
-- These are draft task PRs, not merge/release readiness. Production stays unchanged.
+- Accepted residual risk: windows-2022 plus recorded ImageVersion and two-clean-build
+  hash comparison, rather than immutable or self-hosted runner infrastructure.
+- Integration dependency resolved by the owner. Fetched main ac0dbae matches the
+  prior Phase A tree byte-for-byte. Old branch tips have a verified private recovery
+  bundle; local main and the three stale task branches now match origin/main.
+  The three remote task branches were already deleted when fetched.
+- Required follow-up: test direct/force push rejection on a throwaway protection-test/*
+  ruleset matching main, never against main. Remove temporary branch/ruleset afterward.
+- Full fault matrix deferred by design: every row in P2-02's coverage table is an
+  acceptance requirement of P2-10–13, P2-20–24, or P2-30–33. Every gate lists closed/open rows.
+- Required telemetry follow-up: configurable segment capacity; harness measurement
+  at worst-case churn; capacity >= 30 days x measured daily bytes x 2. Early eviction
+  must produce a visible health/UI alarm, not only a counter. No retention soak claimed.
+- Triage accepted: drop 6a859fc. Reimplement only required portions of e96c565,
+  0e7d471 and 6e03693 under their owning tasks, test-first; no cherry-picks.
+- Bot account pending creation by owner. Until supplied, current owner-account
+  protection and human-only merge remain. Then switch account, add owner CODEOWNERS,
+  and require one approval with code-owner review; no credential collection in git.
+- Phase B order: startup follow-up, P2-11, P2-12, P2-10, P2-13. Stop at Gate B.
+
+## Shared-bench safety
+
+Only the specifically assigned idle test connectors may be released through the
+application and tested in an owner-approved window. No port carrying a route,
+other connector, production binary, media-tool installation, service, driver,
+profile or Wowza configuration may be changed. Bench artifacts stay in a separate
+folder. Exact operational before/after configuration and a one-step rollback must
+be recorded in a PRIVATE copy of this progress document and shown to the owner
+before applying the release; public git never contains operational identifiers.
+
+Before each session, propose start time/duration and obtain window approval. Only
+dedicated synthetic test sources; no on-air pulls. Minimum two seconds per connector
+between start/stop cycles; 500 cycles in 100-cycle batches with checks between them.
+Monitor production route states, Windows events and host CPU throughout. Abort on
+any production state change, DeckLink/driver error, or CPU above 70%. Verify release
+state and untouched production outputs at the end. No bench session authorized yet.

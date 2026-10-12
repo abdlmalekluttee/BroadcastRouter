@@ -372,10 +372,12 @@ public sealed class RouterCoordinator(
             };
         foreach (var route in await store.LoadRoutesAsync(stoppingToken))
         {
-            var migrated = DesiredRoutePolicy.MigrateLegacy(_clock.CaptureBoundary().RouteFromUtc(route));
+            var rebased = _clock.CaptureBoundary().RouteFromUtc(route);
+            var migrated = DesiredRoutePolicy.MigrateLegacy(rebased);
             migrated = DesiredRoutePolicy.ResetTransientStateForStartup(migrated, _clock.Now);
             _routes[migrated.SourceId] = migrated;
-            if (migrated != route) await store.SaveRouteAsync(RouteForPersistence(migrated), route.State, stoppingToken);
+            // Compare in one clock domain: rebasing alone is not a migration.
+            if (migrated != rebased) await store.SaveRouteAsync(RouteForPersistence(migrated), route.State, stoppingToken);
             if (migrated.PortId is not null && migrated.State is not RouteState.Released and not RouteState.Disabled)
                 _startupRecovery.Track(migrated.SourceId);
         }
