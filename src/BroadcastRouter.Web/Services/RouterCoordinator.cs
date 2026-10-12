@@ -38,7 +38,7 @@ public sealed class RouterCoordinator(
     private readonly PublisherLiveHoldPolicy _publisherLiveHold = new();
     private readonly Dictionary<string, int> _heldRecoveryLoggedPid = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PortStandbyStatus> _standbys = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, DateTimeOffset> _standbyRetryAt = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, StandbyRetryBudget> _standbyBudgets = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _standbyConfigurationSignatures = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _processDiagnosticSignatures = new(StringComparer.Ordinal);
     private readonly Dictionary<string, FfmpegInputFreezeDetector> _inputFreezeDetectors = new(StringComparer.Ordinal);
@@ -1845,6 +1845,11 @@ public sealed class RouterCoordinator(
             if (activeRoute is not null)
             {
                 await StopPortStandbyAsync(port.StableId, cancellationToken);
+                if (!settings.SimulationMode && activeRoute.State is RouteState.Reconnecting or RouteState.Fallback)
+                {
+                    await StartFallbackAsync(activeRoute, cancellationToken);
+                    continue;
+                }
                 SetStandbyStatus(port.StableId, PortStandbyState.Live, null, "Live route owns output", null);
                 continue;
             }
@@ -1876,22 +1881,7 @@ public sealed class RouterCoordinator(
                     "Media Tools validation or required standby filters have not passed.");
                 continue;
             }
-            if (_standbyRetryAt.TryGetValue(port.StableId, out var retryAt) && retryAt > _clock.Now)
-                continue;
-
             var owner = StandbyIdentity(port.StableId);
-            var process = _supervisor?.Snapshot().FirstOrDefault(value => value.Source == owner && value.Running);
-            if (process is not null)
-            {
-                string? appliedSignature;
-                lock (_gate) _standbyConfigurationSignatures.TryGetValue(port.StableId, out appliedSignature);
-                if (string.Equals(appliedSignature, desiredSignature, StringComparison.Ordinal))
-                {
-                    SetStandbyStatus(port.StableId, PortStandbyState.Running, process.ProcessId, "Standby screen on air", null);
-                    continue;
-                }
-            }
-
             var portGate = _portGates.GetOrAdd(port.StableId, static _ => new SemaphoreSlim(1, 1));
             if (!await portGate.WaitAsync(0, cancellationToken)) continue;
             try
@@ -1905,29 +1895,27 @@ public sealed class RouterCoordinator(
                 // the one-second reconciler, and a live cutover can all reach this path.
                 // Stopping outside the gate allowed a replacement to start while the old
                 // FFmpeg child was still releasing DeckLink audio/video resources.
-                process = _supervisor?.Snapshot().FirstOrDefault(value => value.Source == owner && value.Running);
-                if (process is not null)
+                var process = _supervisor?.Snapshot().FirstOrDefault(value => value.Source == owner);
+                if (process?.Running == true)
                 {
                     string? appliedSignature;
                     lock (_gate) _standbyConfigurationSignatures.TryGetValue(port.StableId, out appliedSignature);
-                    if (string.Equals(appliedSignature, desiredSignature, StringComparison.Ordinal))
+                    if (!string.Equals(appliedSignature, desiredSignature, StringComparison.Ordinal))
                     {
-                        SetStandbyStatus(port.StableId, PortStandbyState.Running, process.ProcessId, "Standby screen on air", null);
-                        continue;
+                        await StopOwnedForDecisionAsync(owner, port.StableId, "StandbyConfigurationChanged",
+                            "Applied and desired standby signatures differ", false, cancellationToken);
+                        ClearStandbyState(port.StableId);
+                        process = null; // Intentional replacement is not an early failure.
                     }
-
-                    await StopOwnedForDecisionAsync(owner, port.StableId, "StandbyConfigurationChanged",
-                        "Applied and desired standby signatures differ", false, cancellationToken);
-                    ClearStandbyState(port.StableId);
-                    await LogAsync("Information", "PortStandby",
-                        $"Standby configuration changed for {DeckLinkDisplayName.Full(port)}; owned process {process.ProcessId} exited before replacement.",
-                        cancellationToken: cancellationToken);
                 }
+                var budget = _standbyBudgets.GetOrAdd(port.StableId, static _ => new());
+                if (await KeepStandbyOwnerAsync(port.StableId, process, budget, cancellationToken)) continue;
+                if (!budget.CanAttempt(_clock.Now)) { ShowStandbyFailure(port.StableId, budget); continue; }
                 EnsureSupervisor(settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
                 SetStandbyStatus(port.StableId, PortStandbyState.Starting, null, "Starting standby screen", null);
                 using var standbyDecision = telemetry?.BeginDecision(owner.Value, port.StableId, OwnedSnapshot(owner.Value),
                     "StandbyRequired", "Output enabled; standby configured; no active route; retry deadline elapsed",
-                    10000, ["Wait", "Keep previous owner"], "StartPortStandby");
+                    null, ["Wait", "Keep previous owner"], "StartPortStandby");
                 try
                 {
                     await _supervisor!.StartPortStandbyAsync(owner, port, preset.ToDomain(),
@@ -1935,25 +1923,76 @@ public sealed class RouterCoordinator(
                             EmptyToNull(configuration.StandbyLogoPath), configuration.StandbyLabel, configuration.StandbyShowClock),
                         cancellationToken);
                     var started = _supervisor.Snapshot().FirstOrDefault(value => value.Source == owner && value.Running);
-                    _standbyRetryAt.Remove(port.StableId);
                     lock (_gate) _standbyConfigurationSignatures[port.StableId] = desiredSignature;
-                    SetStandbyStatus(port.StableId, PortStandbyState.Running, started?.ProcessId, "Standby screen on air", null);
+                    SetStandbyStatus(port.StableId, PortStandbyState.Starting, started?.ProcessId,
+                        "Standby process started; awaiting first frame", budget.LastError);
                     standbyDecision?.Complete(started, "ProcessStartedNotMediaQualified");
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
-                    _standbyRetryAt[port.StableId] = _clock.Now.AddSeconds(10);
-                    SetStandbyStatus(port.StableId, PortStandbyState.Failed, null, "Standby start failed",
-                        LogRedactor.Redact(ex.Message));
-                    standbyDecision?.Complete(OwnedSnapshot(owner.Value), "StartFailedRetryIn10Seconds", PortStandbyState.Failed.ToString());
-                    await LogAsync("Warning", "PortStandby",
-                        $"Standby screen could not start for {DeckLinkDisplayName.Full(port)}: {ex.Message}",
-                        cancellationToken: cancellationToken);
+                    await RecordStandbyFailureAsync(port.StableId, budget, null, ex.Message, cancellationToken);
+                    standbyDecision?.Complete(OwnedSnapshot(owner.Value), "StartFailedBoundedRetry", PortStandbyState.Failed.ToString());
                 }
             }
             finally { portGate.Release(); }
         }
     }
+
+    // Called only under the port gate for both idle slates and route fallback.
+    private async Task<bool> KeepStandbyOwnerAsync(string portId, RouteProcessSnapshot? process,
+        StandbyRetryBudget budget, CancellationToken cancellationToken)
+    {
+        if (process is null || !process.Running && process.StopRequested) return false;
+        if (process.Running)
+        {
+            if (process.Progress?.Frame > 0)
+            {
+                budget.ObserveProgress(process.SessionId, process.Progress.Frame, process.Progress.OutputTime,
+                    process.Progress.LastProgressAt, _clock.Now);
+                SetStandbyStatus(portId, PortStandbyState.Running, process.ProcessId,
+                    budget.CircuitOpen ? "Standby generating; circuit recovery qualifying" : "Standby generating frames",
+                    budget.LastError);
+                return true;
+            }
+            if (_clock.Now - process.StartedAt < TimeSpan.FromSeconds(_settings.Routing.FirstProgressTimeoutSeconds))
+            {
+                SetStandbyStatus(portId, PortStandbyState.Starting, process.ProcessId,
+                    "Standby process started; awaiting first frame", budget.LastError);
+                return true;
+            }
+            await StopOwnedForDecisionAsync(process.Source, portId, "StandbyNoFirstFrame",
+                "Configured first-progress deadline expired", false, cancellationToken);
+            await RecordStandbyFailureAsync(portId, budget, process,
+                "No first standby frame before startup deadline. " + string.Join(" | ", process.RecentErrors.TakeLast(5)), cancellationToken);
+        }
+        else await RecordStandbyFailureAsync(portId, budget, process,
+            $"Standby exited ({process.ExitCode}). " + string.Join(" | ", process.RecentErrors.TakeLast(5)), cancellationToken);
+        return false;
+    }
+
+    private async Task RecordStandbyFailureAsync(string portId, StandbyRetryBudget budget,
+        RouteProcessSnapshot? process, string detail, CancellationToken cancellationToken)
+    {
+        var wasOpen = budget.CircuitOpen;
+        if (!budget.RecordFailure(process?.SessionId ?? Guid.NewGuid(), _clock.Now,
+                LogRedactor.Redact(detail), Random.Shared.NextDouble())) return;
+        ShowStandbyFailure(portId, budget);
+        var opened = !wasOpen && budget.CircuitOpen;
+        telemetry?.Record(process?.Source.Value ?? StandbyIdentity(portId).Value, portId, process, "StandbyFailure",
+            SupervisionTelemetry.Evidence(process, _clock), null,
+            "3 failures/60s opens circuit; open retry >=5m; first-frame launch qualification; 60s stable recovery",
+            (budget.NextAttempt - _clock.Now).TotalMilliseconds, ["Immediate reopen"],
+            opened ? "StandbyCircuitOpen" : "StandbyRetryScheduled", budget.LastError ?? "Failed");
+        await LogAsync(opened ? "Warning" : "Information", opened ? "StandbyCircuitOpen" : "StandbyRetry",
+            $"Output standby failure; {(budget.CircuitOpen ? "circuit open" : "bounded retry")}; next attempt in {(budget.NextAttempt - _clock.Now).TotalSeconds:F1}s. {budget.LastError}",
+            process?.Source.Value, cancellationToken: cancellationToken);
+    }
+
+    private void ShowStandbyFailure(string portId, StandbyRetryBudget budget) =>
+        SetStandbyStatus(portId, PortStandbyState.Failed, null,
+            budget.CircuitOpen ? "Standby circuit open — automatic retry no sooner than 5 minutes"
+                : "Standby failed — bounded retry pending", budget.LastError);
 
     private async Task StopPortStandbyAsync(string portId, CancellationToken cancellationToken)
     {
@@ -2067,6 +2106,23 @@ public sealed class RouterCoordinator(
                 if (route is null) continue;
                 var progress = process.Progress;
                 var now = _clock.Now;
+                if (process.Purpose == RouteProcessPurpose.Fallback)
+                {
+                    // Fallback failures belong to the per-output standby circuit,
+                    // not the live source retry budget. Never immediately relaunch
+                    // a failed slate via ScheduleRetryAsync.
+                    if (route.State is RouteState.Fallback or RouteState.Reconnecting)
+                    {
+                        await StartFallbackAsync(route, cancellationToken);
+                        var fallback = OwnedSnapshot(route.SourceId);
+                        var fallbackState = fallback is { Running: true, Progress.Frame: > 0 }
+                            ? RouteState.Fallback : RouteState.Reconnecting;
+                        if (route.State != fallbackState)
+                            await ReplaceRouteAsync(route with { State = fallbackState, UpdatedAt = _clock.Now },
+                                route.State, cancellationToken);
+                    }
+                    continue;
+                }
                 var hold = ShouldHoldLiveOutput(route, process);
                 if (hold && (process.InputFailure is not null
                     || FfmpegStallDetector.IsFirstProgressTimedOut(true, progress, process.StartedAt, now,
@@ -2432,10 +2488,29 @@ public sealed class RouterCoordinator(
                 value.StableId.Equals(route.PortId, StringComparison.OrdinalIgnoreCase));
         }
         if (port is null || preset is null) throw new InvalidOperationException("The reserved port or output preset is unavailable.");
+        var portGate = _portGates.GetOrAdd(route.PortId, static _ => new SemaphoreSlim(1, 1));
+        await portGate.WaitAsync(cancellationToken);
+        try
+        {
+        lock (_gate)
+        {
+            if (_emergencyStopped || !_ports.TryGetValue(route.PortId, out var currentPort) || !currentPort.IsOutputPort
+                || !_routes.TryGetValue(route.SourceId, out var currentRoute) || currentRoute.PortId != route.PortId
+                || !_reservations.Snapshot().Any(lease => lease.PortId == route.PortId && lease.Source.Value == route.SourceId)) return;
+        }
+        var existing = OwnedSnapshot(route.SourceId);
+        if (existing is { Running: true, Purpose: RouteProcessPurpose.Live }) return;
+        var budget = _standbyBudgets.GetOrAdd(route.PortId, static _ => new());
+        if (existing?.Purpose == RouteProcessPurpose.Fallback
+            && await KeepStandbyOwnerAsync(route.PortId, existing, budget, cancellationToken)) return;
+        if (!budget.CanAttempt(_clock.Now)) { ShowStandbyFailure(route.PortId, budget); return; }
+        await StopPortStandbyAsync(route.PortId, cancellationToken);
         EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
         using var fallbackDecision = telemetry?.BeginDecision(route.SourceId, route.PortId, OwnedSnapshot(route.SourceId),
             route.FailureCategory ?? "FallbackRequested", "Reserved output; configured fallback or recovery standby",
             null, ["Keep live owner", "Leave output idle"], "StartFallback", route.State.ToString());
+        try
+        {
         if (portConfiguration?.StandbyEnabled == true)
         {
             await _supervisor!.StartRecoveryStandbyAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(),
@@ -2449,6 +2524,17 @@ public sealed class RouterCoordinator(
                 preset.StandbyMode, preset.StandbyValue, cancellationToken);
         }
         fallbackDecision?.Complete(OwnedSnapshot(route.SourceId), "ProcessStartedNotMediaQualified", RouteState.Fallback.ToString());
+        SetStandbyStatus(route.PortId, PortStandbyState.Starting, OwnedSnapshot(route.SourceId)?.ProcessId,
+            "Standby process started; awaiting first frame", budget.LastError);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            await RecordStandbyFailureAsync(route.PortId, budget, null, ex.Message, cancellationToken);
+            fallbackDecision?.Complete(OwnedSnapshot(route.SourceId), "StartFailedBoundedRetry");
+        }
+        }
+        finally { portGate.Release(); }
     }
 
     private async Task StopRouteAsync(string sourceId, bool forceRelease, CancellationToken cancellationToken,
