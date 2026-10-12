@@ -48,7 +48,11 @@
         </header>
         <main class="br-page-wrapper page-wrapper">
             <section class="content br-content container-xl">
-                @if (!Telemetry.Status.RetentionComplete)
+                @if (!Telemetry.Status.Initialized)
+                {
+                    <div class="notice" role="status">Checking diagnostic storage…</div>
+                }
+                else if (!Telemetry.Status.RetentionComplete)
                 {
                     <div class="notice danger" role="alert" data-telemetry-alarm>
                         <strong>Diagnostic history is incomplete.</strong>

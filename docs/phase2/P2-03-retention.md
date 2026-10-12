@@ -19,6 +19,10 @@ approved shared rotating segments with complete per-session reconstruction.
   A crash between marking and deleting can over-report loss, never hide it.
   Normal 30-day age expiry does not create a loss alarm. An unreadable/corrupt
   loss record degrades storage rather than authorizing further deletion.
+- Fresh review reproduced an idle restart reporting healthy until the next
+  record/flush. The worker now checks prior loss immediately. Until that check
+  completes, health is not green and the UI says it is checking storage. A
+  corrupt marker raises a write failure without waiting for any new record.
 
 No new operator setting or dismiss button. Capacity lives in application config:
 
@@ -106,8 +110,30 @@ do not publish raw shared segments as if they contained only one session.
   It was not counted as the red reproduction; sequential rerun produced the
   expected two assertion failures above.
 
-Full suite, strict KnownDefect verification and fresh independent review are
-pending. Seven KnownDefects remain OPEN; this is not Gate B acceptance.
+Fresh independent review found one Important startup-alarm defect, reproduced
+in `2f16723` by two exact assertion failures, then corrected in one fix pass;
+focused storage/alarm tests pass 23/23. No second review is implied. Final full
+suite and strict KnownDefect verification are pending. Seven KnownDefects remain
+OPEN; this is not Gate B acceptance.
+
+## Review exclusions and rulings
+
+- Queue drops, I/O errors, and abandoned shutdown records still have run-local
+  counters; this change persists capacity loss only. Their cross-restart history
+  can remain incomplete. No claim of universal durable loss accounting is made.
+- Capacity is sized for the stated measured fixture, not arbitrary verbosity.
+  Actual disk headroom/log volume and a retention soak remain deployment checks;
+  cost if underestimated: early eviction with a sticky alarm.
+- Already lost legacy evidence cannot be recovered by migration. A clean new
+  marker is not proof of completeness before this version.
+- The existing trusted, single-host telemetry directory assumption remains.
+  Reparse checks are not a hostile local filesystem race defense, nor a
+  multi-writer storage protocol; do not share a directory between hosts.
+- Real browser layout/live announcement, physical silence/driver/Session 0,
+  500-cycle qualification, disk soak and deployment rollback are unverified.
+  Renderer and software tests do not substitute for those acceptance checks.
+- The seven KnownDefects and unrelated routing/auth/export issues remain with
+  their owning tasks. These are open risks, not accepted production fixes.
 
 ## Operational caveats
 

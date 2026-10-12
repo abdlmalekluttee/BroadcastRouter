@@ -86,4 +86,8 @@ dedicated synthetic test sources; no on-air pulls. Minimum two seconds per conne
 between start/stop cycles; 500 cycles in 100-cycle batches with checks between them.
 Monitor production route states, Windows events and host CPU throughout. Abort on
 any production state change, DeckLink/driver error, or CPU above 70%. Verify release
-state and untouched production outputs at the end. No bench session authorized yet.
+state and untouched production outputs at the end. An initial short bench window
+and dedicated test-stream reuse were approved. No release or hardware test has
+occurred: the deployed UI lacks a verified durable one-step restore. Read-only
+preflight snapshots retain the same service PID, revision, output flags and saved
+assignments. A later window must be approved after rollback is verified and shown.

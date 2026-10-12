@@ -22,9 +22,10 @@ public sealed record SupervisionDecisionRecord(DateTimeOffset Utc, long Monotoni
     string Action, string Result, string? StderrLog, Guid DecisionId, double? DurationMilliseconds = null);
 
 public sealed record TelemetryStatus(long Accepted, long Written, long Dropped, long WriteFailures,
-    long AbandonedAtShutdown, long CapacityEvictions, long ExpiredFiles, DateTimeOffset? OldestRetainedSegmentWriteUtc)
+    long AbandonedAtShutdown, long CapacityEvictions, long ExpiredFiles, DateTimeOffset? OldestRetainedSegmentWriteUtc,
+    bool Initialized = true)
 {
-    public bool IsHealthy => Dropped == 0 && WriteFailures == 0 && AbandonedAtShutdown == 0 && CapacityEvictions == 0;
+    public bool IsHealthy => Initialized && Dropped == 0 && WriteFailures == 0 && AbandonedAtShutdown == 0 && CapacityEvictions == 0;
     public bool RetentionComplete => IsHealthy;
 }
 
@@ -58,12 +59,14 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     private long _sequence;
     private long _lastPrune;
     private bool _retentionStateLoaded;
+    private int _initialized;
     private bool _disposed;
     public Guid ServiceRunId { get; } = Guid.NewGuid();
     public TelemetryStatus Status => new(Interlocked.Read(ref _accepted), Interlocked.Read(ref _written),
         Interlocked.Read(ref _dropped), Interlocked.Read(ref _writeFailures), Interlocked.Read(ref _abandoned),
         Interlocked.Read(ref _capacityEvictions), Interlocked.Read(ref _expiredFiles),
-        Interlocked.Read(ref _oldestRetainedTicks) is var ticks && ticks > 0 ? new DateTimeOffset(ticks, TimeSpan.Zero) : null);
+        Interlocked.Read(ref _oldestRetainedTicks) is var ticks && ticks > 0 ? new DateTimeOffset(ticks, TimeSpan.Zero) : null,
+        Volatile.Read(ref _initialized) != 0);
 
     public SupervisionTelemetry(string root, SupervisionClock? clock = null,
         int maxFileBytes = DefaultSegmentBytes, int maxFiles = DefaultMaxSegments, int queueCapacity = 4096)
@@ -214,6 +217,11 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
 
     private async Task ConsumeAsync()
     {
+        // Check prior loss even on an idle host. Keep this I/O on the worker,
+        // away from media callbacks; unread retention state is not healthy.
+        try { LoadRetentionState(); }
+        catch { Interlocked.Increment(ref _writeFailures); }
+        finally { Volatile.Write(ref _initialized, 1); }
         await foreach (var item in _queue.Reader.ReadAllAsync().ConfigureAwait(false))
         {
             try
