@@ -18,7 +18,8 @@ public sealed record StreamProbeResult(
     MediaProperties? Media,
     string? FailureCategory,
     string? Detail,
-    bool AudioReceived = false);
+    bool AudioReceived = false,
+    bool DecodedAudioReceived = false);
 
 public interface IDeckLinkEnumerator
 {

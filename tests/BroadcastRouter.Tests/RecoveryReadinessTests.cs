@@ -35,11 +35,11 @@ public sealed class RecoveryReadinessTests
             Assert.Null((object?)gate.Poll("synthetic", true, true, probe));
             time.Advance(TimeSpan.FromSeconds(1));
         }
-        Assert.InRange(count, 2800, 2900);
+        Assert.Equal(2884, count);
     }
 
     [Fact]
-    public void PendingProbeDoesNotBlockAndOneResultIsConsumedOnce()
+    public async Task PendingProbeDoesNotBlockAndOneResultIsConsumedOnce()
     {
         dynamic gate = NewGate(new SupervisionClock(new ManualTimeProvider()));
         var complete = new TaskCompletionSource<StreamProbeResult>();
@@ -48,7 +48,7 @@ public sealed class RecoveryReadinessTests
         for (var i = 0; i < 50; i++) Assert.Null((object?)gate.Poll("synthetic", true, true, probe));
         Assert.Equal(1, count);
         complete.SetResult(Av());
-        Assert.NotNull((object?)gate.Poll("synthetic", true, true, probe));
+        await FaultHarnessTests.Eventually(() => (object?)gate.Poll("synthetic", true, true, probe) is not null);
         Assert.Null((object?)gate.Poll("synthetic", true, true, probe));
         Assert.Equal(1, count);
     }
@@ -86,6 +86,48 @@ public sealed class RecoveryReadinessTests
         var result = Av() with { FramesReceived = video };
         Func<Task<StreamProbeResult>> probe = () => Task.FromResult(result);
         Assert.NotNull((object?)gate.Poll("synthetic", video, audio, probe));
+    }
+
+    [Fact]
+    public void UnknownPreviousTracksCanQualifyAnAudioOnlySource()
+    {
+        dynamic gate = NewGate(new SupervisionClock(new ManualTimeProvider()));
+        var audio = FfprobeStreamProbe.Parse("""
+          {"streams":[{"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_frames":"94"}]}
+          """);
+        Func<Task<StreamProbeResult>> probe = () => Task.FromResult(audio);
+        Assert.NotNull((object?)gate.Poll("synthetic", (bool?)null, (bool?)null, probe));
+    }
+
+    [Fact]
+    public async Task SimulationCanQualifyDecodedAudio()
+    {
+        var result = await new SimulationStreamProbe().ProbeAsync(new Uri("rtsp://example.invalid/fixture"), CancellationToken.None);
+        dynamic gate = NewGate(new SupervisionClock(new ManualTimeProvider()));
+        Func<Task<StreamProbeResult>> probe = () => Task.FromResult(result);
+        Assert.NotNull((object?)gate.Poll("simulation", true, true, probe));
+    }
+
+    [Fact]
+    public void ProofExpiresBeforeHandoffAndCannotBeReused()
+    {
+        var time = new ManualTimeProvider();
+        dynamic gate = NewGate(new SupervisionClock(time));
+        Func<Task<StreamProbeResult>> probe = () => Task.FromResult(Av());
+        var proof = (StreamProbeResult)gate.Poll("synthetic", true, true, probe);
+        time.Advance(TimeSpan.FromSeconds(3));
+        Assert.False((bool)gate.TryAuthorizeHandoff(proof));
+        Assert.False((bool)gate.TryAuthorizeHandoff(proof));
+    }
+
+    [Fact]
+    public void ConfigurationChangeInvalidatesCompletedProof()
+    {
+        dynamic gate = NewGate(new SupervisionClock(new ManualTimeProvider()));
+        Func<Task<StreamProbeResult>> probe = () => Task.FromResult(Av());
+        var proof = (StreamProbeResult)gate.Poll("before", true, true, probe);
+        gate.Poll("after", true, true, probe);
+        Assert.False((bool)gate.TryAuthorizeHandoff(proof));
     }
 
     [Fact]

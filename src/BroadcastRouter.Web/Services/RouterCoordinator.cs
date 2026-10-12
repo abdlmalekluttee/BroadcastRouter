@@ -30,6 +30,7 @@ public sealed class RouterCoordinator(
     private readonly Dictionary<string, DateTimeOffset> _sourceReadySince = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _simulationFaults = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _routeGates = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, RecoveryReadinessGate> _recoveryReadiness = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _portGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _settingsMutationGate = new(1, 1);
     private readonly SemaphoreSlim _discoveryGate = new(1, 1);
@@ -587,6 +588,8 @@ public sealed class RouterCoordinator(
             foreach (var candidate in candidates)
             {
                 var publisherConnected = connected.Contains(candidate.SourceId);
+                if (_recoveryReadiness.TryGetValue(candidate.SourceId, out var readiness))
+                    readiness.ObservePublisher(publisherConnected);
                 if (publisherConnected)
                 {
                     _publisherLiveHold.Observe(candidate.SourceId, true);
@@ -1018,6 +1021,8 @@ public sealed class RouterCoordinator(
                 }
                 foreach (var stale in retainedOffline)
                 {
+                    if (_recoveryReadiness.TryGetValue(stale.Identity.Value, out var readiness))
+                        readiness.ObservePublisher(false);
                     _sources[stale.Identity.Value] = stale with
                     {
                         State = SourceState.PublisherDisconnected,
@@ -1054,6 +1059,8 @@ public sealed class RouterCoordinator(
         using var probeConcurrency = new SemaphoreSlim(8, 8);
         var probeTasks = observations.Select(async source =>
         {
+            if (_recoveryReadiness.TryGetValue(source.Identity.Value, out var readiness))
+                readiness.ObservePublisher(source.State == SourceState.PublisherActive);
             await probeConcurrency.WaitAsync(cancellationToken);
             try { return await ProbeObservationAsync(source, settings, cancellationToken); }
             finally { probeConcurrency.Release(); }
@@ -1111,6 +1118,19 @@ public sealed class RouterCoordinator(
     private async Task<ProbeOutcome> ProbeObservationAsync(DiscoveredSource source, OperatorSettings settings,
         CancellationToken cancellationToken)
     {
+        lock (_gate)
+        {
+            if (_routes.TryGetValue(source.Identity.Value, out var recovering)
+                && recovering.PortId is not null
+                && recovering.State is RouteState.Fallback or RouteState.Reconnecting)
+            {
+                // The recovery gate owns the probe cadence while standby holds
+                // the connector. Discovery must not create a second probe loop,
+                // or erase the last known expected tracks on an offline sample.
+                var retained = source with { Media = _sources.GetValueOrDefault(source.Identity.Value)?.Media ?? source.Media };
+                return new(retained, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false, false);
+            }
+        }
         if (source.State is SourceState.PublisherDisconnected or SourceState.Disabled)
         {
             lock (_gate)
@@ -1479,6 +1499,14 @@ public sealed class RouterCoordinator(
             // A reconnecting saved route may currently own its generated fallback.
             // Reap that exact owner before the live FFmpeg process is started; otherwise
             // the supervisor correctly rejects the replacement as duplicate ownership.
+            if (active && route.State is RouteState.Fallback or RouteState.Reconnecting)
+            {
+                var qualified = PollRecoveryReadiness(route, source, preset, cancellationToken);
+                if (qualified is null) return;
+                await StartRouteWithRecoveryAsync(route with { PortId = port.StableId, PortName = DeckLinkDisplayName.Full(port) },
+                    qualified.Source, port, preset, cancellationToken, qualified);
+                return;
+            }
             if (active && ownedProcess is not null && _supervisor is not null)
                 await StopOwnedForDecisionAsync(identity, route.PortId, "SavedRouteLiveHandoff",
                     "Effective source active; existing owner reaped before live start", true, cancellationToken);
@@ -1524,8 +1552,10 @@ public sealed class RouterCoordinator(
                 }
 
                 if (route is null || source?.State != SourceState.Ready || port is null || preset is null
-                    || route.State is not (RouteState.Starting or RouteState.Running or RouteState.Reconnecting or RouteState.Fallback))
+                    || route.State is not (RouteState.Starting or RouteState.Running))
                 {
+                    // Recovery owns fresh track qualification. A previously
+                    // queued live-mode request must never tear down fallback.
                     lock (_gate) _pendingMediaModeRestarts.Remove(sourceId);
                     continue;
                 }
@@ -1556,11 +1586,11 @@ public sealed class RouterCoordinator(
     }
 
     private async Task StartRouteWithRecoveryAsync(RuntimeRoute route, DiscoveredSource source, DeckLinkPort port,
-        OutputPresetProfile preset, CancellationToken cancellationToken)
+        OutputPresetProfile preset, CancellationToken cancellationToken, RecoveryQualification? qualification = null)
     {
         try
         {
-            await StartRouteAsync(route, source, port, preset, cancellationToken);
+            await StartRouteAsync(route, source, port, preset, cancellationToken, qualification);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1705,7 +1735,8 @@ public sealed class RouterCoordinator(
         finally { routeGate.Release(); }
     }
 
-    private async Task StartRouteAsync(RuntimeRoute route, DiscoveredSource source, DeckLinkPort port, OutputPresetProfile preset, CancellationToken cancellationToken)
+    private async Task StartRouteAsync(RuntimeRoute route, DiscoveredSource source, DeckLinkPort port, OutputPresetProfile preset,
+        CancellationToken cancellationToken, RecoveryQualification? qualification = null)
     {
         var portGate = _portGates.GetOrAdd(port.StableId, static _ => new SemaphoreSlim(1, 1));
         await portGate.WaitAsync(cancellationToken);
@@ -1714,6 +1745,42 @@ public sealed class RouterCoordinator(
             null, ["Keep standby", "Wait"], "StartLiveOwner", route.State.ToString());
         try
         {
+            if (qualification is not null)
+            {
+                bool eligible;
+                lock (_gate)
+                {
+                    var currentPort = _ports.GetValueOrDefault(port.StableId);
+                    var currentSource = _sources.GetValueOrDefault(route.SourceId);
+                    var currentRoute = _routes.GetValueOrDefault(route.SourceId);
+                    var currentPreset = _settings.Presets.FirstOrDefault(value => value.Id == currentRoute?.PresetId);
+                    eligible = !_emergencyStopped
+                        && (_settings.SimulationMode || _validation.CanStartHardwareRoutes)
+                        && currentPort is { IsOutputPort: true } && currentPreset is not null
+                        && Compatible(currentPort, currentPreset, null)
+                        && currentSource is not null && currentSource.State != SourceState.Disabled
+                        && currentRoute?.PortId == port.StableId
+                        && RecoveryConfigurationSignature(currentSource, currentPreset) == qualification.ConfigurationSignature
+                        && _reservations.Snapshot().Any(lease => lease.PortId == port.StableId && lease.Source == source.Identity);
+                }
+                if (!eligible)
+                {
+                    qualification.Gate.Invalidate();
+                    decision?.Complete(OwnedSnapshot(route.SourceId), "OutputOrConfigurationChangedFallbackRetained", route.State.ToString());
+                    return;
+                }
+                if (!qualification.Gate.TryAuthorizeHandoff(qualification.Proof))
+                {
+                    decision?.Complete(OwnedSnapshot(route.SourceId), "ProofExpiredOrSourceChangedFallbackRetained", route.State.ToString());
+                    return;
+                }
+                // Recheck proof after acquiring the output gate, then reap the
+                // exact fallback before replacement. No DeckLink I/O in probing.
+                await StopOwnedForDecisionAsync(source.Identity, port.StableId, "QualifiedRecoveryHandoff",
+                    "Fresh decoded expected tracks; source generation unchanged; exclusive output gate",
+                    true, cancellationToken);
+                lock (_gate) _sources[source.Identity.Value] = source;
+            }
             var standbyOwner = StandbyIdentity(port.StableId);
             var standbyWasRunning = _supervisor?.Snapshot().Any(value => value.Source == standbyOwner && value.Running) == true;
             if (standbyWasRunning)
@@ -2275,14 +2342,54 @@ public sealed class RouterCoordinator(
             if (!force && (current.State is not (RouteState.Reconnecting or RouteState.Fallback)
                 || current.RetryAt is null || current.RetryAt > _clock.Now)) return;
             if (_simulationFaults.ContainsKey(current.SourceId)) return;
-            if (_supervisor is not null && current.State == RouteState.Fallback)
+            RecoveryQualification? qualification = null;
+            if (!force)
+            {
+                qualification = PollRecoveryReadiness(current, source, preset, cancellationToken);
+                if (qualification is null) return;
+                source = qualification.Source;
+            }
+            if (force && _supervisor is not null && current.State == RouteState.Fallback)
                 await StopOwnedForDecisionAsync(source.Identity, current.PortId, "ReservedRouteRetryHandoff",
                     force ? "Explicit forced retry" : "Existing retry deadline elapsed; hold not active",
                     true, cancellationToken);
-            await StartRouteWithRecoveryAsync(current, source, port, preset, cancellationToken);
+            await StartRouteWithRecoveryAsync(current, source, port, preset, cancellationToken, qualification);
         }
         finally { routeGate.Release(); }
     }
+
+    private RecoveryQualification? PollRecoveryReadiness(RuntimeRoute route, DiscoveredSource source,
+        OutputPresetProfile preset, CancellationToken cancellationToken)
+    {
+        if (source.State == SourceState.Disabled) return null;
+        var gate = _recoveryReadiness.GetOrAdd(source.Identity.Value, _ => new RecoveryReadinessGate(_clock));
+        bool? requireVideo = source.Media?.HasUsableVideo;
+        bool? requireAudio = !preset.IncludeAudio ? false : source.Media is null ? null : source.Media.AudioCodec is not null;
+        var probePath = _settings.MediaTools.FfprobePath;
+        var signature = RecoveryConfigurationSignature(source, preset);
+        var proof = gate.Poll($"{signature}|{requireVideo}|{requireAudio}", requireVideo, requireAudio,
+            async () =>
+            {
+                using var decision = telemetry?.BeginDecision(route.SourceId, route.PortId, OwnedSnapshot(route.SourceId),
+                    "RecoveryReadinessDue", "Probe-only; 1/2/5/10/20/30 second backoff; decoded expected tracks",
+                    8000, ["Stop fallback", "Open DeckLink"], "ProbeRecoveryMedia", route.State.ToString());
+                var result = _settings.SimulationMode
+                    ? await new SimulationStreamProbe().ProbeAsync(source.RtspUri, cancellationToken)
+                    : await new FfprobeStreamProbe(probePath, TimeSpan.FromSeconds(8)).ProbeAsync(source.RtspUri, cancellationToken);
+                decision?.Complete(OwnedSnapshot(route.SourceId), result.FailureCategory ?? "ProbeSampleReceived", route.State.ToString());
+                return result;
+            });
+        if (proof is null) return null;
+        var qualified = source with { State = SourceState.Ready, Media = proof.Media, LastObservedAt = _clock.Now };
+        return new(qualified, gate, proof, signature);
+    }
+
+    // Private in-memory equality token only; never log or persist URI/credentials.
+    private string RecoveryConfigurationSignature(DiscoveredSource source, OutputPresetProfile preset) =>
+        $"{source.RtspUri.AbsoluteUri}|{_settings.MediaTools.FfprobePath}|{_settings.MediaTools.FfmpegPath}|{JsonSerializer.Serialize(preset)}";
+
+    private sealed record RecoveryQualification(DiscoveredSource Source, RecoveryReadinessGate Gate,
+        StreamProbeResult Proof, string ConfigurationSignature);
 
     private async Task StartFallbackAsync(RuntimeRoute route, CancellationToken cancellationToken)
     {

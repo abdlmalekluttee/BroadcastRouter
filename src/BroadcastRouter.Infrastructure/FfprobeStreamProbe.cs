@@ -97,12 +97,13 @@ public sealed class FfprobeStreamProbe(
 
         var audioCount = audio is null ? 0 : ReadCount(audio.Value);
         var audioReceived = audioCount > 0;
+        var decodedAudioReceived = audio is not null && Integer64(audio.Value, "nb_read_frames") > 0;
         if (video is null)
         {
             var audioMedia = new MediaProperties(null, audio is null ? null : Text(audio.Value, "codec_name"), null, null, null, null,
                 audio is null ? null : Integer(audio.Value, "sample_rate"), audio is null ? null : Integer(audio.Value, "channels"), false);
             return audioReceived
-                ? new(true, false, audioMedia, null, $"Received {audioCount} audio packet(s)/frame(s); continuous black video will be generated for routing.", true)
+                ? new(true, false, audioMedia, null, $"Received {audioCount} audio packet(s)/frame(s); continuous black video will be generated for routing.", true, decodedAudioReceived)
                 : new(true, false, audioMedia, "AudioOnly", "Audio metadata was detected, but no audio packets or frames were received.");
         }
 
@@ -130,9 +131,9 @@ public sealed class FfprobeStreamProbe(
             sustainedVideo,
             interlaced);
         return sustainedVideo
-            ? new(true, true, media, null, $"Received {frameCount} video frame(s) during validation.", audioReceived)
+            ? new(true, true, media, null, $"Received {frameCount} video frame(s) during validation.", audioReceived, decodedAudioReceived)
             : audioReceived
-                ? new(true, false, media, null, $"Received {audioCount} audio packet(s)/frame(s) while video delivered only {frameCount} frame(s); continuous black video will be generated for routing.", true)
+                ? new(true, false, media, null, $"Received {audioCount} audio packet(s)/frame(s) while video delivered only {frameCount} frame(s); continuous black video will be generated for routing.", true, decodedAudioReceived)
             : new(true, false, media, "NoVideoFrames", "Video metadata was detected but no decoded/read frames were reported.");
     }
 
