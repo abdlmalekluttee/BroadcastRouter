@@ -5,6 +5,17 @@ namespace BroadcastRouter.Tests;
 
 public sealed class StableRecoveryBudgetTests
 {
+    [Fact]
+    public void RepeatedStaleSampleNeverQualifiesRecovery()
+    {
+        var policy = new StableRecoveryBudget();
+        var now = DateTimeOffset.Parse("2025-01-01T00:00:00Z");
+        var session = Guid.NewGuid();
+        for (var i = 0; i < 120; i++)
+            Assert.False(policy.Observe(session, 1, TimeSpan.FromSeconds(1), now, now.AddSeconds(i), true));
+        Assert.False(policy.Observe(session, 2, TimeSpan.FromSeconds(2), now.AddSeconds(120), now.AddSeconds(120), true));
+    }
+
     private static dynamic Policy()
     {
         var type = typeof(SupervisionClock).Assembly.GetType("BroadcastRouter.Application.StableRecoveryBudget");

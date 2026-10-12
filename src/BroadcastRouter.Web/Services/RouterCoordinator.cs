@@ -1852,7 +1852,16 @@ public sealed class RouterCoordinator(
                 await StopPortStandbyAsync(port.StableId, cancellationToken);
                 if (!settings.SimulationMode && activeRoute.State is RouteState.Reconnecting or RouteState.Fallback)
                 {
-                    await StartFallbackAsync(activeRoute, cancellationToken);
+                    var routeGate = _routeGates.GetOrAdd(activeRoute.SourceId, static _ => new SemaphoreSlim(1, 1));
+                    if (!await routeGate.WaitAsync(0, cancellationToken)) continue;
+                    try
+                    {
+                        lock (_gate) _routes.TryGetValue(activeRoute.SourceId, out activeRoute);
+                        if (activeRoute?.PortId == port.StableId
+                            && activeRoute.State is RouteState.Reconnecting or RouteState.Fallback)
+                            await StartFallbackAsync(activeRoute, cancellationToken);
+                    }
+                    finally { routeGate.Release(); }
                     continue;
                 }
                 SetStandbyStatus(port.StableId, PortStandbyState.Live, null, "Live route owns output", null);
@@ -1980,7 +1989,7 @@ public sealed class RouterCoordinator(
         RouteProcessSnapshot? process, string detail, CancellationToken cancellationToken)
     {
         var wasOpen = budget.CircuitOpen;
-        if (!budget.RecordFailure(process?.SessionId ?? Guid.NewGuid(), _clock.Now,
+        if (!budget.RecordFailure(process?.SessionId, _clock.Now,
                 LogRedactor.Redact(detail), Random.Shared.NextDouble())) return;
         ShowStandbyFailure(portId, budget);
         var opened = !wasOpen && budget.CircuitOpen;
@@ -2483,26 +2492,31 @@ public sealed class RouterCoordinator(
     private async Task StartFallbackAsync(RuntimeRoute route, CancellationToken cancellationToken)
     {
         if (route.PortId is null) return;
-        DeckLinkPort? port;
-        OutputPresetProfile? preset;
-        DeckLinkPortOverride? portConfiguration;
+        RuntimeRoute? expectedRoute;
         lock (_gate)
         {
-            _ports.TryGetValue(route.PortId, out port);
-            preset = _settings.Presets.FirstOrDefault(x => x.Id == route.PresetId);
-            portConfiguration = _settings.DeckLinkPortOverrides.FirstOrDefault(value =>
-                value.StableId.Equals(route.PortId, StringComparison.OrdinalIgnoreCase));
+            if (!_routes.TryGetValue(route.SourceId, out expectedRoute)) return;
         }
-        if (port is null || preset is null) throw new InvalidOperationException("The reserved port or output preset is unavailable.");
         var portGate = _portGates.GetOrAdd(route.PortId, static _ => new SemaphoreSlim(1, 1));
         await portGate.WaitAsync(cancellationToken);
         try
         {
+            DeckLinkPort? port;
+            OutputPresetProfile? preset;
+            DeckLinkPortOverride? portConfiguration;
             lock (_gate)
             {
-                if (_emergencyStopped || !_ports.TryGetValue(route.PortId, out var currentPort) || !currentPort.IsOutputPort
+                if (_emergencyStopped || _settings.SimulationMode || !_validation.CanStartHardwareRoutes
+                    || !_ports.TryGetValue(route.PortId, out port) || !port.IsOutputPort
                     || !_routes.TryGetValue(route.SourceId, out var currentRoute) || currentRoute.PortId != route.PortId
+                    || currentRoute != expectedRoute
                     || !_reservations.Snapshot().Any(lease => lease.PortId == route.PortId && lease.Source.Value == route.SourceId)) return;
+                // Resolve current device/config only after acquiring its gate. A
+                // saved route stop or settings change can occur while waiting.
+                preset = _settings.Presets.FirstOrDefault(x => x.Id == route.PresetId);
+                portConfiguration = _settings.DeckLinkPortOverrides.FirstOrDefault(value =>
+                    value.StableId.Equals(route.PortId, StringComparison.OrdinalIgnoreCase));
+                if (preset is null || portConfiguration?.StandbyEnabled == true && !_validation.PortStandbySupported) return;
             }
             var existing = OwnedSnapshot(route.SourceId);
             if (existing is { Running: true, Purpose: RouteProcessPurpose.Live }) return;
