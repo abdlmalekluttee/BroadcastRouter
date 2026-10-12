@@ -25,7 +25,7 @@ public sealed class RecoveryReadinessGate(SupervisionClock clock)
     {
         lock (_gate)
         {
-            if (_publisherConnected is not null && _publisherConnected != connected) _generation++;
+            if (_publisherConnected != connected) _generation++;
             _publisherConnected = connected;
         }
     }
