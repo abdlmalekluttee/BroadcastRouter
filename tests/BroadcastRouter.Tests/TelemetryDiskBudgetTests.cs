@@ -22,7 +22,7 @@ public sealed class TelemetryDiskBudgetTests
     }
 
     [Theory]
-    [InlineData(100_000_000_000, 20_000_000_000)]
+    [InlineData(50_000_000_000, 20_000_000_000)]
     [InlineData(300_000_000_000, 60_000_000_000)]
     public async Task EveryAppendRespectsLargerOfTwentyPercentAndTwentyGb(long total, long floor)
     {
@@ -80,6 +80,63 @@ public sealed class TelemetryDiskBudgetTests
             Assert.IsType<ArgumentOutOfRangeException>(error);
         }
         finally { if (created is not null) await created.DisposeAsync(); }
+    }
+
+    [Fact]
+    public async Task EmptyMarkerObjectMustNotClearAnUnknownRetentionHistory()
+    {
+        using var fixture = new VolumeFixture(100_000_000_000, 80_000_000_000);
+        await File.WriteAllTextAsync(Path.Combine(fixture.Root, "retention-loss.json"), "{}");
+        await using var sink = fixture.Sink();
+        try { await sink.FlushAsync(); } catch (IOException) { }
+        Assert.False(sink.Status.RetentionComplete, "A marker missing its schema and counters is not a healthy history.");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FreshStartPressureStaysUnhealthyAfterSpaceRecoveryAndRestart(bool restartBeforeSpaceRecovery)
+    {
+        using var fixture = new VolumeFixture(100_000_000_000, 19_000_000_000);
+        await using (var first = fixture.Sink())
+        {
+            first.Stderr(Guid.Empty, "lost-at-initial-disk-pressure");
+            try { await first.FlushAsync(); } catch (IOException) { }
+            Assert.Equal(0, first.Status.Written);
+            if (!restartBeforeSpaceRecovery)
+            {
+                fixture.FreeBeforeFiles = 80_000_000_000;
+                await first.FlushAsync();
+            }
+        }
+        fixture.FreeBeforeFiles = 80_000_000_000;
+        await using var restarted = fixture.Sink();
+        await restarted.FlushAsync();
+        Assert.False(restarted.Status.RetentionComplete, "Initial pressure must not become a healthy zero-loss epoch after restart.");
+    }
+
+    [Fact]
+    public async Task UncertainAppendCannotHideBytesFromAdmissionControl()
+    {
+        using var fixture = new VolumeFixture(100_000_000_000, 80_000_000_000);
+        await using var sink = new SupervisionTelemetry(fixture.Root, maxFileBytes: 16384, maxFiles: 1000,
+            maxTotalBytes: 196608, readVolumeSpace: _ => new(100_000_000_000, fixture.FreeBytes),
+            openAppend: path => new UncertainFileStream(path));
+        for (var i = 0; i < 250; i++) sink.Stderr(Guid.Empty, new string('x', 2000));
+        // A flush inventory would mask the undercount. Observe the actual files
+        // after every accepted write has reported its failure, before flushing.
+        await FaultHarnessTests.Eventually(() => sink.Status.WriteFailures >= 250);
+        Assert.True(fixture.StoredBytes <= 196608, "Partially successful writes must be counted before any further append.");
+    }
+
+    private sealed class UncertainFileStream(string path) : FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read)
+    {
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await base.WriteAsync(buffer, cancellationToken);
+            await base.FlushAsync(cancellationToken);
+            throw new IOException("Synthetic write completed partially/uncertainly before failure");
+        }
     }
 
     private sealed class VolumeFixture(long total, long free) : IDisposable

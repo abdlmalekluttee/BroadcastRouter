@@ -22,7 +22,7 @@ public sealed class CoordinatorTelemetryTests
             var clock = new SupervisionClock(new ManualTimeProvider());
             var store = new SqliteDataStore(Path.Combine(root, "test.db"));
             await store.InitializeAsync();
-            await using var telemetry = new SupervisionTelemetry(Path.Combine(root, "logs"), clock);
+            await using var telemetry = new SupervisionTelemetry(Path.Combine(root, "logs"), clock, readVolumeSpace: TelemetryTestVolume.Read);
             await using var supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions("unused"), TimeSpan.FromSeconds(1), clock, telemetry);
             using var coordinator = new RouterCoordinator(store, null!, null!, NullLogger<RouterCoordinator>.Instance, clock, telemetry);
             var source = new SourceIdentity("TEST", "fixture", "_default_", "source-A");

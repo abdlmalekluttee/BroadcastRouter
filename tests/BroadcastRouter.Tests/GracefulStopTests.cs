@@ -142,7 +142,7 @@ public sealed class GracefulStopTests(ITestOutputHelper output)
             events = new[] { new { atMilliseconds = 0, channel = "stderr", text = "ready" } },
             quitStderr = lines
         });
-        await using var telemetry = new SupervisionTelemetry(Path.Combine(fixture.Root, "logs"));
+        await using var telemetry = new SupervisionTelemetry(Path.Combine(fixture.Root, "logs"), readVolumeSpace: TelemetryTestVolume.Read);
         await using var supervisor = new FfmpegProcessSupervisor(new("unused"), TimeSpan.FromSeconds(3), telemetry: telemetry);
         await fixture.Start(supervisor);
         var session = supervisor.Snapshot().Single();
@@ -171,7 +171,7 @@ public sealed class GracefulStopTests(ITestOutputHelper output)
             events = new[] { new { atMilliseconds = 0, channel = "stderr", text = "ready" } },
             quitDelayMilliseconds = 50, ignoreQuit
         });
-        await using var telemetry = new SupervisionTelemetry(Path.Combine(fixture.Root, "logs"));
+        await using var telemetry = new SupervisionTelemetry(Path.Combine(fixture.Root, "logs"), readVolumeSpace: TelemetryTestVolume.Read);
         await using var supervisor = new FfmpegProcessSupervisor(new("unused"), TimeSpan.FromMilliseconds(300), telemetry: telemetry);
         await fixture.Start(supervisor);
         var session = supervisor.Snapshot().Single();

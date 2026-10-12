@@ -23,9 +23,9 @@ public sealed record SupervisionDecisionRecord(DateTimeOffset Utc, long Monotoni
 
 public sealed record TelemetryStatus(long Accepted, long Written, long Dropped, long WriteFailures,
     long AbandonedAtShutdown, long CapacityEvictions, long ExpiredFiles, DateTimeOffset? OldestRetainedSegmentWriteUtc,
-    bool Initialized = true)
+    bool Initialized = true, long DiskPressureEvents = 0, bool UnrecordedHistory = false)
 {
-    public bool IsHealthy => Initialized && Dropped == 0 && WriteFailures == 0 && AbandonedAtShutdown == 0 && CapacityEvictions == 0;
+    public bool IsHealthy => Initialized && Dropped == 0 && WriteFailures == 0 && AbandonedAtShutdown == 0 && CapacityEvictions == 0 && DiskPressureEvents == 0 && !UnrecordedHistory;
     public bool RetentionComplete => IsHealthy;
 }
 
@@ -39,14 +39,24 @@ public readonly record struct TelemetryVolumeSpace(long TotalBytes, long Availab
 /// </summary>
 public sealed class SupervisionTelemetry : IAsyncDisposable
 {
-    // 128 GiB maximum occupied segment capacity; not preallocated. Sized from
-    // tools/TelemetryLoad's full synthetic churn fixture (see P2-03 retention evidence).
+    // Decimal GB. A second, independent disk reserve can reduce this capacity.
+    public const long DefaultMaxTotalBytes = 10_000_000_000;
+    private const long MinimumFreeBytes = 20_000_000_000;
+    private const int StorageHeadroomBytes = 65536;
+    private const int RetentionMarkerBytes = 4096;
     public const int DefaultSegmentBytes = 16 * 1024 * 1024;
     public const int DefaultMaxSegments = 8192;
     private readonly string _root;
     private readonly SupervisionClock _clock;
     private readonly int _maxFileBytes;
     private readonly int _maxFiles;
+    private readonly long _maxTotalBytes;
+    private readonly Func<string, TelemetryVolumeSpace> _readVolumeSpace;
+    private readonly Func<string, Stream> _openAppend;
+    private long _retainedBytes, _diskPressureEvents;
+    private bool _markerProvisioned;
+    private bool _inventoryKnown;
+    private int _unrecordedHistory;
     private readonly byte[] _identityKey = RandomNumberGenerator.GetBytes(32);
     private readonly Channel<Pending> _queue;
     private readonly Task _worker;
@@ -68,17 +78,26 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
         Interlocked.Read(ref _dropped), Interlocked.Read(ref _writeFailures), Interlocked.Read(ref _abandoned),
         Interlocked.Read(ref _capacityEvictions), Interlocked.Read(ref _expiredFiles),
         Interlocked.Read(ref _oldestRetainedTicks) is var ticks && ticks > 0 ? new DateTimeOffset(ticks, TimeSpan.Zero) : null,
-        Volatile.Read(ref _initialized) != 0);
+        Volatile.Read(ref _initialized) != 0, Interlocked.Read(ref _diskPressureEvents), Volatile.Read(ref _unrecordedHistory) != 0);
 
     public SupervisionTelemetry(string root, SupervisionClock? clock = null,
         int maxFileBytes = DefaultSegmentBytes, int maxFiles = DefaultMaxSegments, int queueCapacity = 4096,
-        long maxTotalBytes = 10_000_000_000, Func<string, TelemetryVolumeSpace>? readVolumeSpace = null)
+        long maxTotalBytes = DefaultMaxTotalBytes, Func<string, TelemetryVolumeSpace>? readVolumeSpace = null,
+        Func<string, Stream>? openAppend = null)
     {
         if (maxFileBytes < 16384 || maxFiles < 2 || queueCapacity < 1) throw new ArgumentOutOfRangeException(nameof(maxFileBytes));
+        if (maxTotalBytes < StorageHeadroomBytes + 16384 || maxTotalBytes > DefaultMaxTotalBytes)
+            throw new ArgumentOutOfRangeException(nameof(maxTotalBytes));
         _root = Path.GetFullPath(root);
+        // An existing directory without a marker may be an earlier failed
+        // initialization. It is not evidence that its history is complete.
+        _unrecordedHistory = Directory.Exists(_root) && !File.Exists(Path.Combine(_root, "retention-loss.json")) ? 1 : 0;
         _clock = clock ?? SupervisionClock.System;
         _maxFileBytes = maxFileBytes;
         _maxFiles = maxFiles;
+        _maxTotalBytes = maxTotalBytes;
+        _readVolumeSpace = readVolumeSpace ?? ReadVolumeSpace;
+        _openAppend = openAppend ?? (path => new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read));
         RejectReparsePath(_root);
         Directory.CreateDirectory(_root);
         RejectReparsePath(_root);
@@ -222,7 +241,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     {
         // Check prior loss even on an idle host. Keep this I/O on the worker,
         // away from media callbacks; unread retention state is not healthy.
-        try { LoadRetentionState(); }
+        try { Prune(); }
         catch { Interlocked.Increment(ref _writeFailures); }
         finally { Volatile.Write(ref _initialized, 1); }
         await foreach (var item in _queue.Reader.ReadAllAsync().ConfigureAwait(false))
@@ -237,6 +256,10 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
                 RejectReparsePath(_root);
                 var bytes = Encoding.UTF8.GetBytes(item.Json!);
                 if (bytes.Length > _maxFileBytes) throw new IOException("Telemetry record exceeds segment limit.");
+                if (!_inventoryKnown) Prune();
+                // Each append checks available disk space, not just rotations. No
+                // filesystem call occurs in the producer/media callback.
+                if (!EnsureCapacity(bytes.Length)) { Interlocked.Increment(ref _dropped); continue; }
                 if (!_segments.TryGetValue(item.Stem!, out var segment) || segment.Length + bytes.Length > _maxFileBytes)
                 {
                     if (_segments.Count >= 64) _segments.Remove(_segments.Keys.First());
@@ -246,15 +269,20 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
                     Prune(reserveFile: true);
                 }
                 RejectReparsePath(segment.Path);
-                using (var stream = new FileStream(segment.Path, FileMode.Append, FileAccess.Write, FileShare.Read))
+                using (var stream = _openAppend(segment.Path))
                     await stream.WriteAsync(bytes, _shutdown.Token).ConfigureAwait(false);
                 segment.Length += bytes.Length;
+                _retainedBytes += bytes.Length;
                 File.SetLastWriteTimeUtc(segment.Path, _clock.UtcNow.UtcDateTime);
                 Interlocked.Increment(ref _written);
                 if (_clock.GetElapsedTime(_lastPrune) >= TimeSpan.FromMinutes(1)) Prune();
             }
             catch
             {
+                // WriteAsync or Dispose may throw after consuming disk. Never
+                // admit another record using lengths from before that attempt.
+                _inventoryKnown = false;
+                _segments.Clear();
                 Interlocked.Increment(ref _writeFailures);
                 item.Flush?.TrySetException(new IOException("Telemetry storage is degraded; inspect disk access/capacity."));
             }
@@ -266,10 +294,12 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     {
         RejectReparsePath(_root);
         LoadRetentionState();
+        ProvisionRetentionMarker();
         var files = Directory.EnumerateFiles(_root, "*.jsonl", SearchOption.TopDirectoryOnly)
             .Where(path => IsOwnedName(Path.GetFileName(path))).Select(path => new FileInfo(path))
             .OrderByDescending(file => file.LastWriteTimeUtc).ToArray();
         var keep = _maxFiles - (reserveFile ? 1 : 0);
+        _retainedBytes = files.Sum(file => file.Length);
         long oldest = 0;
         foreach (var file in files.Select((value, index) => (value, index)))
         {
@@ -280,14 +310,68 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
             // Persist the alarm before deleting evidence, so a crash/restart
             // cannot make an incomplete history look complete again.
             if (!expired) SaveRetentionLoss(checked(Interlocked.Read(ref _capacityEvictions) + 1));
-            File.Delete(file.value.FullName); // Only validated telemetry names within this dedicated directory.
+            DeleteSegment(file.value);
             if (expired) Interlocked.Increment(ref _expiredFiles);
             else Interlocked.Increment(ref _capacityEvictions);
-            foreach (var key in _segments.Where(pair => pair.Value.Path == file.value.FullName).Select(pair => pair.Key).ToArray())
-                _segments.Remove(key);
         }
         Interlocked.Exchange(ref _oldestRetainedTicks, oldest);
         _lastPrune = _clock.GetTimestamp();
+        EnsureCapacity(0);
+        _inventoryKnown = true;
+    }
+
+    private static TelemetryVolumeSpace ReadVolumeSpace(string path)
+    {
+        var drive = new DriveInfo(Path.GetPathRoot(path)!);
+        return new(drive.TotalSize, drive.AvailableFreeSpace);
+    }
+
+    private (long Free, long Floor) ReadReserve()
+    {
+        var space = _readVolumeSpace(_root);
+        if (space.TotalBytes <= 0 || space.AvailableBytes < 0 || space.AvailableBytes > space.TotalBytes)
+            throw new IOException("Cannot establish telemetry volume capacity.");
+        return (space.AvailableBytes, Math.Max(MinimumFreeBytes, (long)Math.Ceiling(space.TotalBytes * .2m)));
+    }
+
+    private bool EnsureCapacity(int incomingBytes)
+    {
+        LoadRetentionState();
+        ProvisionRetentionMarker();
+        var reserve = ReadReserve();
+        bool DiskLow() => reserve.Free - incomingBytes - StorageHeadroomBytes < reserve.Floor;
+        bool CapLow() => _retainedBytes + incomingBytes + StorageHeadroomBytes > _maxTotalBytes;
+        if (!DiskLow() && !CapLow()) return true;
+        if (DiskLow())
+        {
+            // Fixed-size preallocated marker: overwriting does not allocate
+            // another segment/control file while the disk is under pressure.
+            SaveRetentionLoss(Interlocked.Read(ref _capacityEvictions), diskPressure: true);
+            Interlocked.Exchange(ref _diskPressureEvents, 1);
+        }
+        var oldestFirst = Directory.EnumerateFiles(_root, "*.jsonl", SearchOption.TopDirectoryOnly)
+            .Where(path => IsOwnedName(Path.GetFileName(path))).Select(path => new FileInfo(path))
+            .OrderBy(file => file.LastWriteTimeUtc).ThenBy(file => file.Name, StringComparer.Ordinal).ToArray();
+        foreach (var file in oldestFirst)
+        {
+            if (!DiskLow() && !CapLow()) break;
+            RejectReparsePath(file.FullName);
+            var expired = _clock.UtcNow - new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero) >= TimeSpan.FromDays(30);
+            if (!expired) SaveRetentionLoss(checked(Interlocked.Read(ref _capacityEvictions) + 1));
+            DeleteSegment(file);
+            if (expired) Interlocked.Increment(ref _expiredFiles);
+            else Interlocked.Increment(ref _capacityEvictions);
+            reserve = ReadReserve(); // Do not assume deleting a file reclaimed disk blocks.
+        }
+        return !DiskLow() && !CapLow(); // No reclaimable evidence: discard new logs, not media.
+    }
+
+    private void DeleteSegment(FileInfo file)
+    {
+        File.Delete(file.FullName);
+        _retainedBytes -= file.Length;
+        foreach (var key in _segments.Where(pair => pair.Value.Path == file.FullName).Select(pair => pair.Key).ToArray())
+            _segments.Remove(key);
     }
 
     private static bool IsOwnedName(string name) => System.Text.RegularExpressions.Regex.IsMatch(name,
@@ -303,27 +387,56 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
         {
             if (new FileInfo(path).Length > 4096) throw new IOException("Invalid retention state.");
             var state = JsonSerializer.Deserialize<RetentionLoss>(File.ReadAllText(path));
-            if (state is null || state.CapacityEvictions < 1) throw new IOException("Invalid retention state.");
+            if (state is null || state.CapacityEvictions < 0 || state.DiskPressureEvents < 0
+                || (state.Version != 1 && !(state.Version == 0 && state.CapacityEvictions > 0)))
+                throw new IOException("Invalid retention state.");
             Interlocked.Exchange(ref _capacityEvictions, state.CapacityEvictions);
+            Interlocked.Exchange(ref _diskPressureEvents, state.DiskPressureEvents);
+            Volatile.Write(ref _unrecordedHistory, state.UnrecordedHistory ? 1 : 0);
         }
         _retentionStateLoaded = true;
     }
 
-    private void SaveRetentionLoss(long count)
+    private void ProvisionRetentionMarker()
     {
+        if (_markerProvisioned) return;
         var path = Path.Combine(_root, "retention-loss.json");
-        var temporary = Path.Combine(_root, "retention-loss.tmp");
         RejectReparsePath(path);
-        RejectReparsePath(temporary);
-        using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+        if (!File.Exists(path) || new FileInfo(path).Length != RetentionMarkerBytes)
         {
-            JsonSerializer.Serialize(stream, new RetentionLoss(count, _clock.UtcNow));
-            stream.Flush(flushToDisk: true);
+            var reserve = ReadReserve();
+            if (reserve.Free - StorageHeadroomBytes < reserve.Floor)
+            {
+                Interlocked.Exchange(ref _diskPressureEvents, 1);
+                throw new IOException("Insufficient disk reserve to initialize telemetry safely.");
+            }
+            WriteRetentionMarker(path, FileMode.OpenOrCreate, Interlocked.Read(ref _capacityEvictions), Interlocked.Read(ref _diskPressureEvents));
         }
-        File.Move(temporary, path, overwrite: true);
+        _markerProvisioned = true;
     }
 
-    private sealed record RetentionLoss(long CapacityEvictions, DateTimeOffset LastLossUtc);
+    private void SaveRetentionLoss(long count, bool diskPressure = false)
+    {
+        var path = Path.Combine(_root, "retention-loss.json");
+        RejectReparsePath(path);
+        WriteRetentionMarker(path, FileMode.Open, count, diskPressure ? 1 : Interlocked.Read(ref _diskPressureEvents));
+    }
+
+    private void WriteRetentionMarker(string path, FileMode mode, long evictions, long pressure)
+    {
+        var json = JsonSerializer.SerializeToUtf8Bytes(new RetentionLoss(evictions, _clock.UtcNow, pressure, 1,
+            Volatile.Read(ref _unrecordedHistory) != 0));
+        var padded = Enumerable.Repeat((byte)' ', RetentionMarkerBytes).ToArray();
+        json.CopyTo(padded, 0);
+        using var stream = new FileStream(path, mode, FileAccess.Write, FileShare.Read);
+        stream.Write(padded);
+        stream.SetLength(RetentionMarkerBytes);
+        stream.Flush(flushToDisk: true);
+        // A torn marker is invalid and therefore fails closed on the next start.
+    }
+
+    private sealed record RetentionLoss(long CapacityEvictions, DateTimeOffset LastLossUtc, long DiskPressureEvents = 0,
+        int Version = 0, bool UnrecordedHistory = false);
 
     private static void RejectReparsePath(string path)
     {

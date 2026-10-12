@@ -180,6 +180,8 @@ public sealed class OfflineFallbackTests
         public SqliteDataStore Store { get; }
         public RouterCoordinator Coordinator { get; }
         public FfmpegProcessSupervisor Supervisor { get; }
+        public SupervisionTelemetry? Telemetry { get; }
+        private Microsoft.Extensions.Logging.LoggerFactory? _loggerFactory;
         public System.Collections.Concurrent.ConcurrentQueue<RouteProcessLifecycleEvent> Events { get; } = new();
         public RouteProcessSnapshot Owner => Supervisor.Snapshot().Single(p => p.Source == Source);
         public Dictionary<string, RuntimeRoute> Routes => Get<Dictionary<string, RuntimeRoute>>("_routes");
@@ -187,14 +189,18 @@ public sealed class OfflineFallbackTests
         public OperatorSettings Settings => Get<OperatorSettings>("_settings");
         public RuntimeRoute Route => Routes[Source.Value];
 
-        private RecoveryLab(IHttpClientFactory? http = null)
+        private RecoveryLab(IHttpClientFactory? http = null, bool captureTelemetry = false)
         {
             Directory.CreateDirectory(Root);
             Clock = new(Time);
+            if (captureTelemetry) Telemetry = new(Path.Combine(Root, "telemetry"), Clock, readVolumeSpace: TelemetryTestVolume.Read);
             Store = new(Path.Combine(Root, "test.db"));
             var executable = Path.Combine(Root, "BroadcastRouter.FakeFfmpeg.exe");
-            Supervisor = new(new FfmpegRouteOptions(executable), TimeSpan.FromSeconds(1), Clock);
-            Coordinator = new(Store, http!, null!, NullLogger<RouterCoordinator>.Instance, Clock);
+            Supervisor = new(new FfmpegRouteOptions(executable), TimeSpan.FromSeconds(1), Clock, Telemetry);
+            if (Telemetry is not null) _loggerFactory = new([new RouterFileLoggerProvider(Telemetry)]);
+            Microsoft.Extensions.Logging.ILogger<RouterCoordinator> logger = _loggerFactory is null
+                ? NullLogger<RouterCoordinator>.Instance : new Microsoft.Extensions.Logging.Logger<RouterCoordinator>(_loggerFactory);
+            Coordinator = new(Store, http!, null!, logger, Clock, Telemetry);
             Set("_supervisor", Supervisor);
             // Keep the existing supervisor; no real executable can ever be launched.
             Set("_supervisorPath", executable);
@@ -204,9 +210,9 @@ public sealed class OfflineFallbackTests
             Supervisor.LifecycleChanged += Events.Enqueue;
         }
 
-        public static async Task<RecoveryLab> Create(IHttpClientFactory? http = null)
+        public static async Task<RecoveryLab> Create(IHttpClientFactory? http = null, bool captureTelemetry = false)
         {
-            var lab = new RecoveryLab(http);
+            var lab = new RecoveryLab(http, captureTelemetry);
             try
             {
                 await lab.Store.InitializeAsync();
@@ -222,7 +228,7 @@ public sealed class OfflineFallbackTests
                     RetryAt: lab.Clock.Now, DesiredPortId: port.StableId);
                 lab.Get<PortReservationManager>("_reservations").TryReserve(port.StableId, lab.Source, true, lab.Clock.Now, out _);
                 var script = Path.Combine(lab.Root, "child.json");
-                await File.WriteAllTextAsync(script, JsonSerializer.Serialize(new { events = new[] {
+                await File.WriteAllTextAsync(script, JsonSerializer.Serialize(new { progressCommands = captureTelemetry, events = new[] {
                     new { atMilliseconds = 0, channel = "stdout", text = "frame=1\nout_time_us=40000\nprogress=continue" } } }));
                 var start = new ProcessStartInfo(Path.Combine(FaultHarnessTests.RepositoryRoot(), "tests", "BroadcastRouter.FakeFfmpeg",
                     "bin", "Release", "net8.0", "BroadcastRouter.FakeFfmpeg.exe"))
@@ -262,6 +268,8 @@ public sealed class OfflineFallbackTests
         {
             await Supervisor.DisposeAsync();
             Coordinator.Dispose();
+            _loggerFactory?.Dispose();
+            if (Telemetry is not null) await Telemetry.DisposeAsync();
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             Directory.Delete(Root, true);
         }
