@@ -49,11 +49,21 @@ public sealed class FfmpegProcessSupervisor(
 
     public event Action<RouteProcessLifecycleEvent>? LifecycleChanged;
 
-    public Task StartAsync(RouteRecord route, DiscoveredSource source, DeckLinkPort port, OutputPreset preset, CancellationToken cancellationToken)
+    public async Task StartAsync(RouteRecord route, DiscoveredSource source, DeckLinkPort port, OutputPreset preset, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var start = FfmpegCommandBuilder.Build(options, source, port, preset);
-        return StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken, port.StableId);
+        var media = options.UseIndependentMediaStats ? new FfmpegMediaSession(source.Media, preset.IncludeAudio, _clock) : null;
+        try
+        {
+            if (media is not null) await media.AttachToAsync(start).ConfigureAwait(false);
+            await StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken, port.StableId, media).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (media is not null) await media.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     public Task StartFallbackAsync(SourceIdentity source, DeckLinkPort port, OutputPreset preset, FallbackMode mode, string? value, CancellationToken cancellationToken)
@@ -164,7 +174,7 @@ public sealed class FfmpegProcessSupervisor(
         StartProcessAsync(source, purpose, start, cancellationToken);
 
     private async Task StartProcessAsync(SourceIdentity source, RouteProcessPurpose purpose, ProcessStartInfo start,
-        CancellationToken cancellationToken, string? outputId = null)
+        CancellationToken cancellationToken, string? outputId = null, FfmpegMediaSession? media = null)
     {
         var ownerGate = OwnerGate(source.Value);
         await ownerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -176,6 +186,7 @@ public sealed class FfmpegProcessSupervisor(
                 if (!HasExited(existing.Process))
                     throw new InvalidOperationException($"An FFmpeg process is already owned for {source}.");
 
+                if (existing.Media is not null) await existing.Media.DisposeAsync().ConfigureAwait(false);
                 RememberLast(CreateSnapshot(existing));
                 _running.TryRemove(new KeyValuePair<string, ManagedProcess>(source.Value, existing));
                 try { existing.Process.Dispose(); }
@@ -184,6 +195,7 @@ public sealed class FfmpegProcessSupervisor(
 
             var process = new Process { StartInfo = start, EnableRaisingEvents = true };
             var managed = new ManagedProcess(source, purpose, process, _clock.Now);
+            managed.Media = media;
             managed.OutputId = outputId;
             managed.StderrLog = telemetry?.StderrReference(managed.SessionId);
             try
@@ -273,7 +285,11 @@ public sealed class FfmpegProcessSupervisor(
             while (await managed.Process.StandardOutput.ReadLineAsync(managed.PumpCancellation.Token).ConfigureAwait(false) is { } line)
             {
                 var snapshot = managed.Parser.Accept(line, _clock.Now);
-                if (snapshot is not null) managed.Progress = snapshot;
+                if (snapshot is not null)
+                {
+                    managed.Progress = snapshot;
+                    managed.Media?.ObserveHeartbeat();
+                }
             }
         }
         catch (OperationCanceledException) when (managed.PumpCancellation.IsCancellationRequested) { }
@@ -410,6 +426,12 @@ public sealed class FfmpegProcessSupervisor(
             // but cannot prevent exit reporting and disposal of the dead owner.
             managed.AddError(TelemetryRedactor.Redact($"Media process stream reader failed: {ex.GetType().Name}: {ex.Message}"));
         }
+        finally
+        {
+            // This method only drains after OS exit. Close even pipes that the
+            // child never connected (e.g. an early native initialization failure).
+            if (managed.Media is not null) await managed.Media.DisposeAsync().ConfigureAwait(false);
+        }
         return false;
     }
 
@@ -466,7 +488,7 @@ public sealed class FfmpegProcessSupervisor(
         catch (InvalidOperationException) { running = false; }
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
             managed.Errors.ToArray(), exitCode, managed.InputFailure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
-            Volatile.Read(ref managed.StopRequested) != 0);
+            Volatile.Read(ref managed.StopRequested) != 0, managed.Media?.Snapshot(running));
     }
 
     private static RouteProcessSnapshot CreateRunningSnapshot(ManagedProcess managed)
@@ -476,7 +498,7 @@ public sealed class FfmpegProcessSupervisor(
         catch (InvalidOperationException) { running = false; }
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
             Array.Empty<string>(), null, managed.InputFailure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
-            Volatile.Read(ref managed.StopRequested) != 0);
+            Volatile.Read(ref managed.StopRequested) != 0, managed.Media?.Snapshot(running));
     }
 
     private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, Process process,
@@ -494,6 +516,7 @@ public sealed class FfmpegProcessSupervisor(
         public int ProcessId { get; set; }
         public DateTimeOffset StartedAt { get; } = startedAt;
         public FfmpegProgressParser Parser { get; } = new();
+        public FfmpegMediaSession? Media { get; set; }
         public FfmpegMediaStarvationDetector MediaStarvationDetector { get; } = new();
         public FfmpegAudioFailureDetector AudioFailureDetector { get; } = new();
         public FfmpegMediaHealthTracker MediaHealth { get; } = new();
