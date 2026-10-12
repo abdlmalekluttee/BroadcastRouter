@@ -121,6 +121,16 @@ public sealed class RecoveryReadinessTests
     }
 
     [Fact]
+    public void FirstPublisherObservationAfterProofInvalidatesUnknownGeneration()
+    {
+        dynamic gate = NewGate(new SupervisionClock(new ManualTimeProvider()));
+        Func<Task<StreamProbeResult>> probe = () => Task.FromResult(Av());
+        var proof = (StreamProbeResult)gate.Poll("synthetic", true, true, probe);
+        gate.ObservePublisher(false);
+        Assert.False((bool)gate.TryAuthorizeHandoff(proof));
+    }
+
+    [Fact]
     public void ConfigurationChangeInvalidatesCompletedProof()
     {
         dynamic gate = NewGate(new SupervisionClock(new ManualTimeProvider()));
