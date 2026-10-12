@@ -13,7 +13,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-11 | R02 | fix/P2-11-offline-fallback | [#67](https://github.com/abdlmalekluttee/BroadcastRouter/pull/67) | Independent review approved software scope; main 211/211; required hosted CI green; bench pending | [Recovery evidence](phase2/P2-11.md) |
 | P2-12 | R08 | fix/P2-12-publisher-epochs | [#68](https://github.com/abdlmalekluttee/BroadcastRouter/pull/68) | Independent software review approved; main 225/225; required hosted CI green; physical qualification pending | [Epoch evidence](phase2/P2-12.md) |
 | P2-10 | R01 | fix/P2-10-standby-lifecycle | [#69](https://github.com/abdlmalekluttee/BroadcastRouter/pull/69) | Review findings fixed test-first; main 246/246; physical qualification and total log-volume measurement pending | [Standby evidence](phase2/P2-10.md) |
-| P2-13 | ForcedTermination | fix/P2-13-graceful-stop | Pending | Review finding fixed test-first; normal suite 255/255; strict seven OPEN; physical 500-cycle acceptance OPEN | [Stop evidence](phase2/P2-13.md) |
+| P2-13 | ForcedTermination | fix/P2-13-graceful-stop | [#71](https://github.com/abdlmalekluttee/BroadcastRouter/pull/71) | Review finding fixed test-first; normal suite 255/255; strict seven OPEN; physical 500-cycle acceptance OPEN | [Stop evidence](phase2/P2-13.md) |
 
 ## Open KnownDefect register
 
