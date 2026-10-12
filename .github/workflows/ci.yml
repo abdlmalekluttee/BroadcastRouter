@@ -42,7 +42,9 @@ jobs:
   main-suite:
     name: Main suite
     runs-on: windows-2022
-    timeout-minutes: 10
+    # The real-child 24-hour fixture and concurrency matrix take ~8 minutes
+    # locally; hosted startup/CPU overhead must not truncate assertion results.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5

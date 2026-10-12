@@ -22,7 +22,7 @@ public sealed class PublisherDisconnectDetector(int requiredObservations = 2)
                 return false;
             }
 
-            var count = _missingCounts.GetValueOrDefault(sourceId) + 1;
+            var count = Math.Min(_missingCounts.GetValueOrDefault(sourceId) + 1, requiredObservations);
             _missingCounts[sourceId] = count;
             return count >= requiredObservations;
         }
@@ -48,5 +48,19 @@ public sealed class PublisherDisconnectDetector(int requiredObservations = 2)
     public void Forget(string sourceId)
     {
         lock (_gate) _missingCounts.Remove(sourceId);
+    }
+
+    public bool IsAbsenceConfirmed(string sourceId)
+    {
+        lock (_gate) return _missingCounts.GetValueOrDefault(sourceId) >= requiredObservations;
+    }
+
+    // Unknown breaks a pending consecutive sequence, but does not erase an
+    // already confirmed epoch needed by the one-shot reconnect accelerator.
+    public void ObserveUnknown(string sourceId)
+    {
+        lock (_gate)
+            if (_missingCounts.GetValueOrDefault(sourceId) < requiredObservations)
+                _missingCounts.Remove(sourceId);
     }
 }

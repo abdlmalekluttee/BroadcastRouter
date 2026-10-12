@@ -83,7 +83,7 @@ public sealed class OfflineFallbackTests
         await lab.InstallFakeMediaTools();
         lab.Routes[lab.Source.Value] = lab.Route with { AssignmentMode = AssignmentMode.Automatic, DesiredPortId = null };
         var observation = lab.Sources[lab.Source.Value] with { State = SourceState.PublisherActive };
-        var task = lab.Invoke("ProbeObservationAsync", observation, lab.Settings, CancellationToken.None);
+        var task = lab.Invoke("ProbeObservationAsync", observation, lab.Settings, CancellationToken.None, null);
         await task;
         var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
         var source = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
@@ -103,7 +103,7 @@ public sealed class OfflineFallbackTests
         var known = RecoveryReadinessTests.Av().Media;
         lab.Sources[lab.Source.Value] = lab.Sources[lab.Source.Value] with { Media = known };
         var observation = lab.Sources[lab.Source.Value] with { State = SourceState.PublisherActive, Media = null };
-        var task = lab.Invoke("ProbeObservationAsync", observation, lab.Settings, CancellationToken.None);
+        var task = lab.Invoke("ProbeObservationAsync", observation, lab.Settings, CancellationToken.None, null);
         await task;
         var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
         Assert.Null(result.GetType().GetProperty("Probe")!.GetValue(result));

@@ -8,6 +8,14 @@ namespace BroadcastRouter.Tests;
 
 public sealed class StrictWowzaTests
 {
+    [Fact, Trait("Finding", "R07")]
+    public void MissingIncomingStreamsIsUnknown()
+    {
+        using var document = JsonDocument.Parse("{\"unexpectedEnvelope\":true}");
+        var error = Record.Exception(() => WowzaIncomingStreamParser.Parse(document.RootElement));
+        Assert.True(error is JsonException, "R07: missing incomingStreams must reject unknown schema, not return an empty success");
+    }
+
     [Theory]
     [InlineData("{}")]
     [InlineData("[]")]
@@ -24,6 +32,7 @@ public sealed class StrictWowzaTests
     [InlineData("{\"incomingStreams\":[],\"incomingStreams\":[]}")]
     [InlineData("{\"incomingStreams\":[{\"name\":\"source-A\",\"isConnected\":true},{\"name\":\"source-A\",\"isConnected\":false}]}")]
     [InlineData("{\"incomingStreams\":[{\"name\":\"source-A\",\"streamName\":\"source-B\",\"isConnected\":true}]}")]
+    [InlineData("{\"incomingStreams\":[{\"name\":\"source-A\",\"isConnected\":true},{\"name\":\" source-A \",\"isConnected\":false}]}")]
     public void MalformedInventoryIsUnknownNotAnEmptyOrPartialSuccess(string json)
     {
         using var document = JsonDocument.Parse(json);
@@ -136,6 +145,93 @@ public sealed class StrictWowzaTests
         Assert.Equal(stops + 1, lab.Events.Count(e => e.State == RouteProcessLifecycleState.StopRequested));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OlderDiscoveryCannotOverwriteAConnectedPollWhileAnUnrelatedProbeWaits(bool omitted)
+    {
+        using var http = new InventoryHttp { Mode = "offline" };
+        await using var lab = await LiveLab(http);
+        lab.Sources[lab.Source.Value] = lab.Sources[lab.Source.Value] with
+        { Media = new(null, "aac", null, null, null, null, 48000, 2, false) };
+        var session = lab.Owner.SessionId;
+        var stopCount = lab.Events.Count(e => e.State == RouteProcessLifecycleState.StopRequested);
+        await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        var release = Path.Combine(lab.Root, "release-probe");
+        var scriptPath = Path.Combine(lab.Root, "probe.json");
+        var script = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(scriptPath))!;
+        script["continueFile"] = release;
+        await File.WriteAllTextAsync(scriptPath, script.ToJsonString());
+        var marker = Path.Combine(lab.Root, "probe-starts.log");
+        var probesBefore = File.ReadAllLines(marker).Length;
+        http.Mode = omitted ? "mixed-omitted" : "mixed";
+        var discovery = lab.Invoke("DiscoverAndProbeAsync", CancellationToken.None, true);
+        try
+        {
+            await FaultHarnessTests.Eventually(() => File.ReadAllLines(marker).Length > probesBefore);
+            http.Mode = "connected";
+            await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        }
+        finally { await File.WriteAllTextAsync(release, "continue"); }
+        await discovery;
+        await lab.Invoke("ReconcileRoutesAsync", CancellationToken.None);
+        Assert.Equal(session, lab.Owner.SessionId);
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live),
+            "R07: stale manual inventory must not replace an owner after a newer connected poll");
+        Assert.Equal(stopCount, lab.Events.Count(e => e.State == RouteProcessLifecycleState.StopRequested));
+        Assert.Equal(SourceState.Ready, lab.Sources[lab.Source.Value].State);
+    }
+
+    [Fact]
+    public async Task OlderHttpResponseCannotBridgeANewerConnectedObservation()
+    {
+        using var http = new InventoryHttp { Mode = "offline" };
+        await using var lab = await LiveLab(http);
+        var session = lab.Owner.SessionId;
+        await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        http.BlockNext = true;
+        var discovery = lab.Invoke("DiscoverAndProbeAsync", CancellationToken.None, true);
+        try
+        {
+            await http.Blocked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            http.Mode = "connected";
+            await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        }
+        finally { http.Release.TrySetResult(); }
+        await discovery;
+        http.Mode = "offline";
+        await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        Assert.Equal(session, lab.Owner.SessionId);
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live),
+            "R07: an older HTTP request must not count absence after a newer connected observation");
+    }
+
+    [Fact]
+    public async Task UnchangedFastPresenceDoesNotStarveASlowProbe()
+    {
+        using var http = new InventoryHttp { Mode = "connected-mixed" };
+        await using var lab = await LiveLab(http);
+        var release = Path.Combine(lab.Root, "release-probe");
+        var scriptPath = Path.Combine(lab.Root, "probe.json");
+        var script = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(scriptPath))!;
+        script["continueFile"] = release;
+        await File.WriteAllTextAsync(scriptPath, script.ToJsonString());
+        var marker = Path.Combine(lab.Root, "probe-starts.log");
+        var probesBefore = File.ReadAllLines(marker).Length;
+        var discovery = lab.Invoke("DiscoverAndProbeAsync", CancellationToken.None, true);
+        try
+        {
+            await FaultHarnessTests.Eventually(() => File.ReadAllLines(marker).Length > probesBefore);
+            for (var sample = 0; sample < 3; sample++)
+                await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        }
+        finally { await File.WriteAllTextAsync(release, "continue"); }
+        await discovery;
+        var incoming = Assert.Single(lab.Sources.Values, source => source.Identity.StreamName == "source-B");
+        Assert.Equal(SourceState.Ready, incoming.State);
+        Assert.True(incoming.Media?.HasUsableVideo);
+    }
+
     private static async Task<OfflineFallbackTests.RecoveryLab> LiveLab(InventoryHttp http)
     {
         var lab = await OfflineFallbackTests.RecoveryLab.Create(http);
@@ -163,10 +259,19 @@ public sealed class StrictWowzaTests
     private sealed class InventoryHttp : HttpMessageHandler, IHttpClientFactory
     {
         public string Mode { get; set; } = "offline";
+        public bool BlockNext { get; set; }
+        public TaskCompletionSource Blocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false);
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var mode = Mode == "partial" ? (request.RequestUri!.AbsolutePath.Contains("/second/") ? "missing" : "empty") : Mode;
+            if (BlockNext)
+            {
+                BlockNext = false;
+                Blocked.TrySetResult();
+                await Release.Task.WaitAsync(cancellationToken);
+            }
             if (mode == "timeout") await Task.Delay(Timeout.Infinite, cancellationToken);
             var code = mode is "403" or "secret-error" ? HttpStatusCode.Forbidden : mode == "500" ? HttpStatusCode.InternalServerError : HttpStatusCode.OK;
             return new(code) { Content = new StringContent(mode switch
@@ -176,6 +281,10 @@ public sealed class StrictWowzaTests
                 "truncated" => "{\"incomingStreams\":[",
                 "unknown-state" => "{\"incomingStreams\":[{\"name\":\"source-A\",\"state\":\"new-state\"}]}",
                 "empty" => "{\"incomingStreams\":[]}",
+                "connected" => "{\"incomingStreams\":[{\"name\":\"source-A\",\"isConnected\":true}]}",
+                "mixed" => "{\"incomingStreams\":[{\"name\":\"source-A\",\"isConnected\":false},{\"name\":\"source-B\",\"isConnected\":true}]}",
+                "mixed-omitted" => "{\"incomingStreams\":[{\"name\":\"source-B\",\"isConnected\":true}]}",
+                "connected-mixed" => "{\"incomingStreams\":[{\"name\":\"source-A\",\"isConnected\":true},{\"name\":\"source-B\",\"isConnected\":true}]}",
                 _ => "{\"incomingStreams\":[{\"name\":\"source-A\",\"isConnected\":false}]}"
             }) };
         }
