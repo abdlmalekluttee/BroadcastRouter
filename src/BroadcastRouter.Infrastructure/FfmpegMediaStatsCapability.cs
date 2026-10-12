@@ -2,6 +2,8 @@ namespace BroadcastRouter.Infrastructure;
 
 internal static class FfmpegMediaStatsCapability
 {
+    internal static bool SupportsAudioMetadata(ExternalCommandResult astats, ExternalCommandResult metadata) => false;
+
     internal static bool SupportsRequiredOptions(ExternalCommandResult result)
     {
         if (!result.Started || result.ExitCode != 0 || result.TimedOut || result.StartError is not null) return false;
