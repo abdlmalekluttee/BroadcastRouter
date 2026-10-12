@@ -251,13 +251,7 @@ public sealed class TelemetryStorageTests
         Directory.CreateDirectory(target);
         try
         {
-            var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true };
-            start.ArgumentList.Add("-NoProfile");
-            start.ArgumentList.Add("-Command");
-            start.ArgumentList.Add($"New-Item -ItemType Junction -Path '{link.Replace("'", "''")}' -Target '{target.Replace("'", "''")}' -ErrorAction Stop | Out-Null");
-            using var process = Process.Start(start)!;
-            Assert.True(process.WaitForExit(10000));
-            Assert.Equal(0, process.ExitCode);
+            JunctionFixture.Create(link, target);
             Assert.Throws<IOException>(() => new SupervisionTelemetry(Path.Combine(link, "must-not-exist")));
             Assert.Empty(Directory.GetFileSystemEntries(target));
         }
