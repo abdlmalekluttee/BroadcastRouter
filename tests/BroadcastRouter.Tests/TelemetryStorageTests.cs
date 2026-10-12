@@ -40,8 +40,25 @@ public sealed class TelemetryStorageTests
                 Assert.False(first.Status.RetentionComplete);
             }
             await using var next = new SupervisionTelemetry(root, maxFileBytes: 16384, maxFiles: 2);
-            await next.FlushAsync();
-            Assert.False(next.Status.RetentionComplete, "Restart must not hide the existing retention gap.");
+            Assert.False(next.Status.RetentionComplete, "An idle restart must not report healthy before loading the existing retention gap.");
+            await FaultHarnessTests.Eventually(() => next.Status.CapacityEvictions > 0);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task InvalidRetentionMarkerIsUnhealthyWithoutAnyNewRecordOrFlush()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "router-invalid-loss-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var marker = Path.Combine(root, "retention-loss.json");
+            await File.WriteAllTextAsync(marker, "not valid state");
+            await using var telemetry = new SupervisionTelemetry(root);
+            Assert.False(telemetry.Status.IsHealthy, "Unread retention state must not be reported healthy.");
+            await FaultHarnessTests.Eventually(() => telemetry.Status.WriteFailures > 0);
+            Assert.Equal("not valid state", await File.ReadAllTextAsync(marker));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
