@@ -29,6 +29,53 @@ public sealed class PublisherEpochRecoveryTests
     }
 
     [Fact]
+    public async Task Connected404HourUsesBoundedRealFakeProbesAndOneReconnectAcceleration()
+    {
+        using var http = new PublisherHttp();
+        await using var lab = await OfflineFallbackTests.RecoveryLab.Create(http);
+        Configure(lab);
+        await lab.InstallFakeMediaTools();
+        await File.WriteAllTextAsync(Path.Combine(lab.Root, "probe.json"), JsonSerializer.Serialize(new
+        {
+            events = new[] { new { atMilliseconds = 0, channel = "stderr", text = "RTSP input returned 404 Not Found" } },
+            exitAfterMilliseconds = 20, exitCode = -875574520
+        }));
+        async Task ProbeDue()
+        {
+            await lab.RestartDue();
+            var readiness = lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value];
+            var pending = (Task?)typeof(RecoveryReadinessGate).GetField("_pending", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(readiness);
+            if (pending is not null) await pending.WaitAsync(TimeSpan.FromSeconds(10));
+            await lab.RestartDue();
+        }
+        for (var second = 0; second < 3600; second++)
+        {
+            await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+            await ProbeDue();
+            lab.Time.Advance(TimeSpan.FromSeconds(1));
+        }
+        var marker = Path.Combine(lab.Root, "probe-starts.log");
+        Assert.Equal(124, File.ReadAllLines(marker).Length);
+        http.Connected = false;
+        await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        http.Connected = true;
+        await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        await ProbeDue();
+        Assert.Equal(125, File.ReadAllLines(marker).Length);
+        for (var second = 0; second < 29; second++)
+        {
+            lab.Time.Advance(TimeSpan.FromSeconds(1));
+            await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+            await ProbeDue();
+        }
+        Assert.Equal(125, File.ReadAllLines(marker).Length);
+        Assert.Single(lab.Events, e => e.State == RouteProcessLifecycleState.Started);
+        Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
+        Assert.Equal(3, lab.Route.RestartCount);
+    }
+
+    [Fact]
     public async Task ConfirmedReconnectAcceleratesOnceEvenIfRouteGateWasBusy()
     {
         using var http = new PublisherHttp { Connected = false };
@@ -54,6 +101,23 @@ public sealed class PublisherEpochRecoveryTests
         await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
         Assert.Equal(deadline, lab.Route.RetryAt);
         Assert.Equal(3, lab.Route.RestartCount);
+    }
+
+    [Fact]
+    public async Task ReconnectedWaitingRouteDoesNotTreatCachedMetadataAsMediaProof()
+    {
+        using var http = new PublisherHttp { Connected = false };
+        await using var lab = await OfflineFallbackTests.RecoveryLab.Create(http);
+        Configure(lab);
+        await lab.InstallFakeMediaTools();
+        lab.Routes[lab.Source.Value] = lab.Route with { State = RouteState.WaitingForStream };
+        lab.Sources[lab.Source.Value] = lab.Sources[lab.Source.Value] with { Media = RecoveryReadinessTests.Av().Media };
+        await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        http.Connected = true;
+        await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
+        Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
     }
 
     [Fact]
