@@ -21,7 +21,10 @@ public sealed class PublisherLiveHoldPolicy(SupervisionClock? clock = null)
         lock (_gate) _connected[sourceId] = (connected, _clock.Now);
     }
 
-    public bool ShouldHold(RuntimeRoute route, bool wowzaEnabled, bool ownedLiveProcessRunning)
+    public MediaSignalState Presence(string sourceId) => MediaSignalState.Unknown;
+
+    public bool ShouldHold(RuntimeRoute route, bool wowzaEnabled, bool ownedLiveProcessRunning,
+        MediaEvidenceSnapshot? media = null)
     {
         lock (_gate) return route.HoldOutputWhilePublisherLive && wowzaEnabled
             && ownedLiveProcessRunning && _connected.TryGetValue(route.SourceId, out var observation)
