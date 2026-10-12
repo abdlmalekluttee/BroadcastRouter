@@ -92,6 +92,48 @@ public sealed class FfmpegMediaSessionTests
         await session.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
     }
 
+    [Fact]
+    public async Task RejectedSecondAttachDoesNotCloseTheFirstSessionsPipes()
+    {
+        var time = new ManualTimeProvider();
+        var clock = new SupervisionClock(time);
+        await using var session = new FfmpegMediaSession(Av, true, clock);
+        var start = Command();
+        await session.AttachToAsync(start);
+        var writers = await Connect(PipeNames(start));
+        try
+        {
+            await Qualify(session, time, clock, writers);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => session.AttachToAsync(Command()));
+            time.Advance(TimeSpan.FromMilliseconds(500));
+            var error = await Record.ExceptionAsync(() => writers[0].WriteLineAsync("brmedia|pre|v|99|99|1/25|99"));
+            Assert.Null(error);
+            await FaultHarnessTests.Eventually(() => session.Snapshot(true).Signals
+                .Single(signal => signal.Kind == MediaSignalKind.InputVideo).LastAdvancedAt == clock.Now);
+        }
+        finally { foreach (var writer in writers) { try { await writer.DisposeAsync(); } catch (IOException) { } } }
+    }
+
+    [Fact]
+    public async Task DisposingInstrumentationCannotCreateAFailedMediaVerdict()
+    {
+        var time = new ManualTimeProvider();
+        var clock = new SupervisionClock(time);
+        await using var session = new FfmpegMediaSession(Av, true, clock);
+        var start = Command();
+        await session.AttachToAsync(start);
+        var writers = await Connect(PipeNames(start));
+        try
+        {
+            await Qualify(session, time, clock, writers);
+            await session.DisposeAsync();
+            time.Advance(TimeSpan.FromMinutes(1));
+            Assert.All(session.Snapshot(true).Signals, signal => Assert.Equal(MediaSignalState.Unknown, signal.State));
+            Assert.False(session.Snapshot(true).MayRecover);
+        }
+        finally { foreach (var writer in writers) await writer.DisposeAsync(); }
+    }
+
     private static ProcessStartInfo Command()
     {
         var start = new ProcessStartInfo("synthetic.exe");
