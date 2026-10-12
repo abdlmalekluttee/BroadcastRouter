@@ -187,14 +187,14 @@ public sealed class OfflineFallbackTests
         public OperatorSettings Settings => Get<OperatorSettings>("_settings");
         public RuntimeRoute Route => Routes[Source.Value];
 
-        private RecoveryLab()
+        private RecoveryLab(IHttpClientFactory? http = null)
         {
             Directory.CreateDirectory(Root);
             Clock = new(Time);
             Store = new(Path.Combine(Root, "test.db"));
             var executable = Path.Combine(Root, "BroadcastRouter.FakeFfmpeg.exe");
             Supervisor = new(new FfmpegRouteOptions(executable), TimeSpan.FromSeconds(1), Clock);
-            Coordinator = new(Store, null!, null!, NullLogger<RouterCoordinator>.Instance, Clock);
+            Coordinator = new(Store, http!, null!, NullLogger<RouterCoordinator>.Instance, Clock);
             Set("_supervisor", Supervisor);
             // Keep the existing supervisor; no real executable can ever be launched.
             Set("_supervisorPath", executable);
@@ -204,9 +204,9 @@ public sealed class OfflineFallbackTests
             Supervisor.LifecycleChanged += Events.Enqueue;
         }
 
-        public static async Task<RecoveryLab> Create()
+        public static async Task<RecoveryLab> Create(IHttpClientFactory? http = null)
         {
-            var lab = new RecoveryLab();
+            var lab = new RecoveryLab(http);
             try
             {
                 await lab.Store.InitializeAsync();
