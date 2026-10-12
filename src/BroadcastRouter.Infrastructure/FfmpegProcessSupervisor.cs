@@ -396,6 +396,12 @@ public sealed class FfmpegProcessSupervisor(
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         }
         catch (OperationCanceledException) when (managed.PumpCancellation.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            // This runs only after OS exit. A failed reader must remain visible,
+            // but cannot prevent exit reporting and disposal of the dead owner.
+            managed.AddError(TelemetryRedactor.Redact($"Media process stream reader failed: {ex.GetType().Name}: {ex.Message}"));
+        }
         return false;
     }
 
