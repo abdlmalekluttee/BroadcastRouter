@@ -17,7 +17,8 @@ public sealed record RouteProcessSnapshot(
     FfmpegInputFailure? InputFailure,
     FfmpegMediaHealthSnapshot MediaHealth,
     Guid SessionId = default, DateTimeOffset? ProcessStartUtc = null, string? StderrLog = null,
-    bool StopRequested = false);
+    bool StopRequested = false,
+    MediaEvidenceSnapshot? IndependentMedia = null);
 
 public enum RouteProcessPurpose { Live, Fallback, PortStandby }
 
