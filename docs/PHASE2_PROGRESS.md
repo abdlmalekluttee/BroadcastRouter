@@ -1,5 +1,9 @@
 # Phase 2 progress
 
+Gate A follow-up: [isolated direct/force-push rejection proof](phase2/P2-01-protection-proof.md)
+records both actual GH013 rejections, verified cleanup and unchanged main protection.
+No runtime changes or production access were needed for that proof.
+
 Production is read-only. No hardware tests in Phase A. Only the repository owner
 merges PRs; the agent never merges, force-pushes, or pushes directly to main.
 Deployment requires separate explicit approval and a maintenance window.
