@@ -10,11 +10,15 @@ public sealed record FfmpegProgressSnapshot(
     long DuplicatedFrames,
     double Speed,
     DateTimeOffset LastProgressAt,
-    bool Completed);
+    bool Completed,
+    DateTimeOffset? LastOutputAdvanceAt = null);
 
 public sealed class FfmpegProgressParser
 {
     private readonly Dictionary<string, string> _values = new(StringComparer.OrdinalIgnoreCase);
+    private long _maxFrame;
+    private TimeSpan _maxOutputTime;
+    private DateTimeOffset? _lastOutputAdvanceAt;
 
     public FfmpegProgressSnapshot? Accept(string line, DateTimeOffset observedAt)
     {
@@ -29,15 +33,24 @@ public sealed class FfmpegProgressParser
         if (TryLong("out_time_us", out var microseconds)) outputTime = TimeSpan.FromTicks(microseconds * 10);
         else if (_values.TryGetValue("out_time", out var formatted)) TimeSpan.TryParse(formatted, CultureInfo.InvariantCulture, out outputTime);
 
+        var frame = Long("frame");
+        // Heartbeat arrival is not media advancement. Keep high-water marks so
+        // repeated/regressing counters cannot refresh the output observation.
+        if (frame > _maxFrame || outputTime > _maxOutputTime)
+            _lastOutputAdvanceAt = observedAt;
+        _lastOutputAdvanceAt ??= observedAt; // qualification baseline, not proof of a first frame
+        _maxFrame = Math.Max(_maxFrame, frame);
+        _maxOutputTime = outputTime > _maxOutputTime ? outputTime : _maxOutputTime;
         var snapshot = new FfmpegProgressSnapshot(
-            Long("frame"),
+            frame,
             Double("fps"),
             outputTime,
             Long("drop_frames"),
             Long("dup_frames"),
             Speed("speed"),
             observedAt,
-            value.Equals("end", StringComparison.OrdinalIgnoreCase));
+            value.Equals("end", StringComparison.OrdinalIgnoreCase),
+            _lastOutputAdvanceAt);
         _values.Clear();
         return snapshot;
     }
@@ -55,7 +68,8 @@ public sealed class FfmpegProgressParser
 public static class FfmpegStallDetector
 {
     public static bool IsStalled(bool processRunning, FfmpegProgressSnapshot? progress, DateTimeOffset now, TimeSpan timeout) =>
-        processRunning && progress is not null && !progress.Completed && now - progress.LastProgressAt > timeout;
+        processRunning && progress is not null && !progress.Completed
+        && now - (progress.LastOutputAdvanceAt ?? progress.LastProgressAt) > timeout;
 
     public static bool IsFirstProgressTimedOut(bool processRunning, FfmpegProgressSnapshot? progress, DateTimeOffset startedAt,
         DateTimeOffset now, TimeSpan timeout) =>

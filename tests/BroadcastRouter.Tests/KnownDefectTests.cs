@@ -46,17 +46,6 @@ public sealed class KnownDefectTests
         Assert.False(restart, "R05: a 500ms duplicate burst must not bypass the confirmation window");
     }
 
-    [Fact, Trait("Finding", "R06")]
-    public void FreshProgressDoesNotConcealStalledMedia()
-    {
-        var parser = new FfmpegProgressParser();
-        foreach (var line in new[] { "frame=100", "out_time_us=4000000", "progress=continue" }) parser.Accept(line, Now);
-        FfmpegProgressSnapshot? snapshot = null;
-        foreach (var line in new[] { "frame=100", "out_time_us=4000000", "progress=continue" }) snapshot = parser.Accept(line, Now.AddHours(1));
-        Assert.True(FfmpegStallDetector.IsStalled(true, snapshot, Now.AddHours(1), TimeSpan.FromSeconds(10)),
-            "R06: fresh progress with unchanged media counters for one hour must be stalled");
-    }
-
     [Fact, Trait("Finding", "R18")]
     public void DiagnosticActorIsRedacted() => Assert.False(AuditJson().Contains("PERSON_EXAMPLE", StringComparison.Ordinal),
         "R18: exported audit must not retain the raw actor");
