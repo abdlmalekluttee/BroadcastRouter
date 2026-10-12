@@ -57,15 +57,16 @@ sessions. All 103,000 records must be accepted and written with no loss.
 |---|---:|---:|---:|
 | Per-session, 1 MiB segments | 81,841,731 | 1,940 | 202.53 s |
 | Shared, 1 MiB segments | 81,842,370 | 80 | 73.95 s |
-| Shared, 16 MiB segments | 81,841,613 | 7 | 57.72 s |
+| Shared, 16 MiB segments (before initialization field) | 81,841,613 | 7 | 57.72 s |
+| Shared, 16 MiB segments (final reviewed code) | 83,797,462 | 7 | 106.68 s |
 
 No drops, write failures, or early evictions in these measurements. Local runs
 are not controlled benchmarks: background load and storage cache differ.
 
 Using the larger observed aggregate churn (624,413 starts in 30 days), the
-defined fixture requires **102,205,934,197 bytes** for 30 days × 2; the chosen
+defined fixture requires **104,648,449,280 bytes** for 30 days × 2; the chosen
 137,438,953,472-byte capacity exceeds it. The single storm-owner rate requires
-71,908,496,431 bytes. Compute capacity from bytes, not `7 files / 1000 sessions`:
+73,626,964,038 bytes. Compute capacity from bytes, not `7 files / 1000 sessions`:
 the final partly filled segments do not repeat for every batch in one run.
 
 **Limit:** this is a complete sink measurement of a stated synthetic workload,
@@ -113,8 +114,13 @@ do not publish raw shared segments as if they contained only one session.
 Fresh independent review found one Important startup-alarm defect, reproduced
 in `2f16723` by two exact assertion failures, then corrected in one fix pass;
 focused storage/alarm tests pass 23/23. No second review is implied. Final full
-suite and strict KnownDefect verification are pending. Seven KnownDefects remain
-OPEN; this is not Gate B acceptance.
+normal suite: **262 passed, 0 failed, 0 skipped** (2m51s); seven added by this
+follow-up. Strict KnownDefect verification accepted all seven exact failures;
+all seven remain OPEN. Python provenance12/12 and CI-contract12/12 passed.
+Clean-source package and privacy check passed for code commit `5ee5b14`;
+local candidate SHA256 `B2ED9920CC72D23192A3BFDC1DB207A81791F5B5CF96646BE80D599470912885`.
+Candidate remains private, not deployed/released. PR #72 is stacked after #71;
+hosted checks pending at this documentation checkpoint. This is not Gate B acceptance.
 
 ## Review exclusions and rulings
 
