@@ -1,6 +1,5 @@
 using BroadcastRouter.Domain;
 using System.IO.Pipes;
-using System.Text;
 
 namespace BroadcastRouter.Infrastructure;
 
@@ -30,41 +29,12 @@ internal sealed class FfmpegMediaChannel : IAsyncDisposable
         // Isolated channels avoid FFmpeg's independently buffered writers
         // concatenating audio/video records. A hostile/invalid line cannot grow
         // the buffer: discard it through the next LF, then resume framing.
-        var chunk = new byte[512];
-        var record = new byte[256];
-        var length = 0;
-        var discard = false;
         try
         {
             await _pipe.WaitForConnectionAsync(_stop.Token).ConfigureAwait(false);
-            while (true)
-            {
-                var count = await _pipe.ReadAsync(chunk, _stop.Token).ConfigureAwait(false);
-                if (count == 0) break;
-                for (var i = 0; i < count; i++)
-                {
-                    var value = chunk[i];
-                    if (value == (byte)'\n')
-                    {
-                        if (!discard)
-                        {
-                            var text = Encoding.ASCII.GetString(record, 0, length).TrimEnd('\r');
-                            observe(FfmpegMediaStats.TryParse(kind, text, out var observation) ? observation : null);
-                        }
-                        length = 0;
-                        discard = false;
-                    }
-                    else if (!discard)
-                    {
-                        if (length == record.Length || value > 127)
-                        {
-                            discard = true;
-                            observe(null);
-                        }
-                        else record[length++] = value;
-                    }
-                }
-            }
+            await MediaObservationPipe.ReadLinesAsync(_pipe, text =>
+                observe(text is not null && FfmpegMediaStats.TryParse(kind, text, out var observation) ? observation : null),
+                _stop.Token).ConfigureAwait(false);
             // EOF or a transport fault invalidates instrumentation. It is not
             // failed-media evidence, even after valid observations earlier.
             if (!_stop.IsCancellationRequested) observe(null);
