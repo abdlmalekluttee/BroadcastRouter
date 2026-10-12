@@ -36,7 +36,6 @@ public sealed class FfmpegProcessSupervisor(
     SupervisionClock? clock = null, SupervisionTelemetry? telemetry = null) : IRouteProcessSupervisor, IAsyncDisposable
 {
     private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
-    private static readonly TimeSpan OutputHandoffStopTimeout = TimeSpan.FromMilliseconds(750);
     private static readonly TimeSpan ProcessReapTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan StreamDrainTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan QuitSignalTimeout = TimeSpan.FromMilliseconds(250);
@@ -83,7 +82,9 @@ public sealed class FfmpegProcessSupervisor(
         StopOwnedAsync(source, gracefulStopTimeout, cancellationToken);
 
     public Task StopForOutputHandoffAsync(SourceIdentity source, CancellationToken cancellationToken) =>
-        StopOwnedAsync(source, OutputHandoffStopTimeout, cancellationToken);
+        // Handoffs must allow the same qualified shutdown budget as normal stops.
+        // An optimistic short deadline cannot make a device release gracefully.
+        StopOwnedAsync(source, gracefulStopTimeout, cancellationToken);
 
     private async Task StopOwnedAsync(SourceIdentity source, TimeSpan stopTimeout, CancellationToken cancellationToken)
     {
@@ -355,11 +356,13 @@ public sealed class FfmpegProcessSupervisor(
 
     private static async Task DrainPumpsAsync(ManagedProcess managed)
     {
-        managed.PumpCancellation.Cancel();
         var pumps = Task.WhenAll(managed.ProgressTask ?? Task.CompletedTask, managed.ErrorTask ?? Task.CompletedTask);
         try { await pumps.WaitAsync(StreamDrainTimeout).ConfigureAwait(false); }
         catch (TimeoutException)
         {
+            // After OS exit, readers normally finish at EOF, including buffered
+            // trailer diagnostics. Cancel only a stuck reader, not every drain.
+            managed.PumpCancellation.Cancel();
             managed.AddError($"Media process stream draining exceeded {StreamDrainTimeout.TotalSeconds:0} seconds.");
             _ = pumps.ContinueWith(static task => _ = task.Exception,
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
