@@ -35,7 +35,7 @@ public sealed class RouterCoordinator(
     private readonly SemaphoreSlim _settingsMutationGate = new(1, 1);
     private readonly SemaphoreSlim _discoveryGate = new(1, 1);
     private readonly SemaphoreSlim _routePersistenceGate = new(1, 1);
-    private readonly PublisherLiveHoldPolicy _publisherLiveHold = new();
+    private readonly PublisherLiveHoldPolicy _publisherLiveHold = new(clock);
     private readonly Dictionary<string, int> _heldRecoveryLoggedPid = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PortStandbyStatus> _standbys = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, StandbyRetryBudget> _standbyBudgets = new(StringComparer.OrdinalIgnoreCase);
