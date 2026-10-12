@@ -21,7 +21,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-03 retention follow-up | R10, R11; Gate A capacity gap | fix/P2-03-shared-retention | [#72](https://github.com/abdlmalekluttee/BroadcastRouter/pull/72) | Fresh review startup finding fixed test-first; normal262/262, strict seven OPEN; measured capacity and visible alarm; hosted checks pending | [Retention evidence](phase2/P2-03-retention.md) |
 | P2-03 disk budget | R10,R11; owner Gate B ruling | fix/P2-03-disk-budget | [#73](https://github.com/abdlmalekluttee/BroadcastRouter/pull/73) | Review findings fixed test-first; normal273/273, strict seven OPEN, build and all hosted checks green; awaiting owner | [Disk budget](phase2/P2-03-disk-budget.md) |
 | P2-23 | R07 | fix/P2-23-strict-wowza | [#74](https://github.com/abdlmalekluttee/BroadcastRouter/pull/74) | Fixture corrections reviewed/test-first; Release315/315, strict six OPEN; Build/Main suite/KnownDefect hosted rerun38314054985 all green | [Strict inventory](phase2/P2-23.md) |
-| P2-22 | R06 | fix/P2-22-media-health | Not opened | WIP components42/42, Release357/357, strict five OPEN; independent signals and bounded channels not yet integrated; not merge/deploy ready | [Media evidence checkpoint](phase2/P2-22.md) |
+| P2-22 | R06 | fix/P2-22-media-health | Not opened | WIP source-scoped sessions47/47, Release367/367, strict five OPEN; supervisor/policy integration incomplete; not merge/deploy ready | [Media evidence checkpoint](phase2/P2-22.md) |
 
 ## Open KnownDefect register
 
@@ -123,8 +123,8 @@ silent standby captures. Six representative captures were independently checked
 for stereo tone/silence, image and interlaced mode. This does not qualify the
 other physical connectors. The 2,272 monitor samples recorded maximum host CPU
 37%, no reported driver errors, unchanged production service PID and no protected
-output owners. No bench media owners remained at session end. The data volume
-had 641.05 GiB free (68.86%) at the final batch check.
+output owners. No bench media owners remained at session end. The actual
+production data-volume free space is recorded only in the private gate report.
 
 Earlier failed experiments remain disclosed: a monitor file-sharing abort and a
 publisher reader sharing failure were corrected in private bench tooling. One
