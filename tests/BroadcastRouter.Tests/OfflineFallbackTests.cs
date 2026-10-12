@@ -130,8 +130,12 @@ public sealed class OfflineFallbackTests
         Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
     }
 
-    [Fact]
-    public async Task FlapWhileWaitingForPortGateKeepsFallbackUntouched()
+    [Theory]
+    [InlineData("publisher")]
+    [InlineData("settings-revision")]
+    [InlineData("simulation-mode")]
+    [InlineData("device-rediscovery")]
+    public async Task ChangeWhileWaitingForPortGateKeepsFallbackUntouched(string change)
     {
         await using var lab = await RecoveryLab.Create();
         await lab.InstallFakeMediaTools();
@@ -150,7 +154,16 @@ public sealed class OfflineFallbackTests
             // The proof has been consumed; the handoff must wait for the port
             // semaphore without stopping the current writer.
             Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
-            lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value].Invalidate();
+            switch (change)
+            {
+                case "publisher": lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value].Invalidate(); break;
+                case "settings-revision": lab.Settings.ConfigurationRevision++; break;
+                case "simulation-mode": lab.Settings.SimulationMode = true; break;
+                case "device-rediscovery":
+                    var ports = lab.Get<Dictionary<string, DeckLinkPort>>("_ports");
+                    ports["TEST-OUTPUT"] = ports["TEST-OUTPUT"] with { FfmpegName = "Remapped output" };
+                    break;
+            }
         }
         finally { portGate.Release(); await attempt; }
         Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
