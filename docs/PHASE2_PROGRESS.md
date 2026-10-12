@@ -14,6 +14,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-12 | R08 | fix/P2-12-publisher-epochs | [#68](https://github.com/abdlmalekluttee/BroadcastRouter/pull/68) | Independent software review approved; main 225/225; required hosted CI green; physical qualification pending | [Epoch evidence](phase2/P2-12.md) |
 | P2-10 | R01 | fix/P2-10-standby-lifecycle | [#69](https://github.com/abdlmalekluttee/BroadcastRouter/pull/69) | Review findings fixed test-first; main 246/246; physical qualification and total log-volume measurement pending | [Standby evidence](phase2/P2-10.md) |
 | P2-13 | ForcedTermination | fix/P2-13-graceful-stop | [#71](https://github.com/abdlmalekluttee/BroadcastRouter/pull/71) | Review finding fixed test-first; normal suite 255/255; strict seven OPEN; physical 500-cycle acceptance OPEN | [Stop evidence](phase2/P2-13.md) |
+| P2-03 retention follow-up | R10, R11; Gate A capacity gap | fix/P2-03-shared-retention | Pending | Shared-segment layout approved; red/green storage and UI tests; measurement complete; full verification/review pending | [Retention evidence](phase2/P2-03-retention.md) |
 
 ## Open KnownDefect register
 

@@ -24,8 +24,8 @@ public sealed record SupervisionDecisionRecord(DateTimeOffset Utc, long Monotoni
 public sealed record TelemetryStatus(long Accepted, long Written, long Dropped, long WriteFailures,
     long AbandonedAtShutdown, long CapacityEvictions, long ExpiredFiles, DateTimeOffset? OldestRetainedSegmentWriteUtc)
 {
-    public bool IsHealthy => Dropped == 0 && WriteFailures == 0 && AbandonedAtShutdown == 0;
-    public bool RetentionComplete => IsHealthy && CapacityEvictions == 0;
+    public bool IsHealthy => Dropped == 0 && WriteFailures == 0 && AbandonedAtShutdown == 0 && CapacityEvictions == 0;
+    public bool RetentionComplete => IsHealthy;
 }
 
 /// <summary>
@@ -36,6 +36,10 @@ public sealed record TelemetryStatus(long Accepted, long Written, long Dropped, 
 /// </summary>
 public sealed class SupervisionTelemetry : IAsyncDisposable
 {
+    // 128 GiB maximum occupied segment capacity; not preallocated. Sized from
+    // tools/TelemetryLoad's full synthetic churn fixture (see P2-03 retention evidence).
+    public const int DefaultSegmentBytes = 16 * 1024 * 1024;
+    public const int DefaultMaxSegments = 8192;
     private readonly string _root;
     private readonly SupervisionClock _clock;
     private readonly int _maxFileBytes;
@@ -62,7 +66,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
         Interlocked.Read(ref _oldestRetainedTicks) is var ticks && ticks > 0 ? new DateTimeOffset(ticks, TimeSpan.Zero) : null);
 
     public SupervisionTelemetry(string root, SupervisionClock? clock = null,
-        int maxFileBytes = 1024 * 1024, int maxFiles = 512, int queueCapacity = 4096)
+        int maxFileBytes = DefaultSegmentBytes, int maxFiles = DefaultMaxSegments, int queueCapacity = 4096)
     {
         if (maxFileBytes < 16384 || maxFiles < 2 || queueCapacity < 1) throw new ArgumentOutOfRangeException(nameof(maxFileBytes));
         _root = Path.GetFullPath(root);

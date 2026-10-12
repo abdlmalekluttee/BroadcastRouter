@@ -194,7 +194,8 @@ public sealed class TelemetryStorageTests
             await telemetry.FlushAsync().WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Empty(Directory.GetFiles(directory, "*.stderr.*.jsonl"));
             Assert.Equal("must survive", await File.ReadAllTextAsync(foreign));
-            Assert.True(telemetry.Status.IsHealthy);
+            Assert.Equal(0, telemetry.Status.WriteFailures);
+            Assert.False(telemetry.Status.IsHealthy); // Successful age pruning cannot repair earlier evidence loss.
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     }
