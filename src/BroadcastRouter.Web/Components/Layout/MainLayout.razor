@@ -2,6 +2,7 @@
 @inject RouterCoordinator Coordinator
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@inject SupervisionTelemetry Telemetry
 @implements IAsyncDisposable
 
 <div class="shell br-shell page">
@@ -46,7 +47,24 @@
             </div>
         </header>
         <main class="br-page-wrapper page-wrapper">
-            <section class="content br-content container-xl">@Body</section>
+            <section class="content br-content container-xl">
+                @if (!Telemetry.Status.RetentionComplete)
+                {
+                    <div class="notice danger" role="alert" data-telemetry-alarm>
+                        <strong>Diagnostic history is incomplete.</strong>
+                        @if (Telemetry.Status.CapacityEvictions > 0)
+                        {
+                            <span>Log capacity was reached before the 30-day retention period. This warning persists after restart.</span>
+                        }
+                        else
+                        {
+                            <span>Some diagnostic records could not be retained.</span>
+                        }
+                        <span>Ask the administrator to check disk access, free space, and telemetry capacity. This alarm does not stop outputs.</span>
+                    </div>
+                }
+                @Body
+            </section>
         </main>
     </div>
 </div>
