@@ -7,6 +7,17 @@ public sealed class MediaEvidenceTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2025-01-01T00:00:00Z");
 
+    [Fact, Trait("Finding", "R06")]
+    public void FreshProgressDoesNotConcealStalledMedia()
+    {
+        var parser = new FfmpegProgressParser();
+        foreach (var line in new[] { "frame=100", "out_time_us=4000000", "progress=continue" }) parser.Accept(line, Now);
+        FfmpegProgressSnapshot? snapshot = null;
+        foreach (var line in new[] { "frame=100", "out_time_us=4000000", "progress=continue" }) snapshot = parser.Accept(line, Now.AddHours(1));
+        Assert.True(FfmpegStallDetector.IsStalled(true, snapshot, Now.AddHours(1), TimeSpan.FromSeconds(10)),
+            "R06: fresh progress with unchanged media counters for one hour must be stalled");
+    }
+
     [Fact]
     public void HeartbeatWithoutMediaAdvancementRemainsStalled()
     {
