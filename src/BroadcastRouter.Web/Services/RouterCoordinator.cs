@@ -336,7 +336,12 @@ public sealed class RouterCoordinator(
                     await StopOwnedForDecisionAsync(SourceIdentityFromValue(sourceId), route.PortId, "OperatorStandby",
                         "Explicit operator standby request", false, cancellationToken);
                     var fallback = route with { State = RouteState.Fallback, RetryAt = null, UpdatedAt = _clock.Now, FailureCategory = "OperatorStandby", FailureMessage = "Standby selected by operator." };
-                    if (!_settings.SimulationMode) await StartFallbackAsync(fallback, cancellationToken);
+                    if (!_settings.SimulationMode)
+                    {
+                        await StartFallbackAsync(fallback, cancellationToken);
+                        if (OwnedSnapshot(sourceId) is not { Running: true, Purpose: RouteProcessPurpose.Fallback, Progress.Frame: > 0 })
+                            fallback = fallback with { State = RouteState.Reconnecting };
+                    }
                     await ReplaceRouteAsync(fallback, route.State, cancellationToken);
                 }
                 break;
@@ -2373,7 +2378,8 @@ public sealed class RouterCoordinator(
             try
             {
                 await StartFallbackAsync(retry, cancellationToken);
-                retry = retry with { State = RouteState.Fallback };
+                if (OwnedSnapshot(route.SourceId) is { Running: true, Purpose: RouteProcessPurpose.Fallback, Progress.Frame: > 0 })
+                    retry = retry with { State = RouteState.Fallback };
             }
             catch (Exception ex)
             {
@@ -2492,47 +2498,47 @@ public sealed class RouterCoordinator(
         await portGate.WaitAsync(cancellationToken);
         try
         {
-        lock (_gate)
-        {
-            if (_emergencyStopped || !_ports.TryGetValue(route.PortId, out var currentPort) || !currentPort.IsOutputPort
-                || !_routes.TryGetValue(route.SourceId, out var currentRoute) || currentRoute.PortId != route.PortId
-                || !_reservations.Snapshot().Any(lease => lease.PortId == route.PortId && lease.Source.Value == route.SourceId)) return;
-        }
-        var existing = OwnedSnapshot(route.SourceId);
-        if (existing is { Running: true, Purpose: RouteProcessPurpose.Live }) return;
-        var budget = _standbyBudgets.GetOrAdd(route.PortId, static _ => new());
-        if (existing?.Purpose == RouteProcessPurpose.Fallback
-            && await KeepStandbyOwnerAsync(route.PortId, existing, budget, cancellationToken)) return;
-        if (!budget.CanAttempt(_clock.Now)) { ShowStandbyFailure(route.PortId, budget); return; }
-        await StopPortStandbyAsync(route.PortId, cancellationToken);
-        EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
-        using var fallbackDecision = telemetry?.BeginDecision(route.SourceId, route.PortId, OwnedSnapshot(route.SourceId),
-            route.FailureCategory ?? "FallbackRequested", "Reserved output; configured fallback or recovery standby",
-            null, ["Keep live owner", "Leave output idle"], "StartFallback", route.State.ToString());
-        try
-        {
-        if (portConfiguration?.StandbyEnabled == true)
-        {
-            await _supervisor!.StartRecoveryStandbyAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(),
-                new PortStandbyConfiguration(portConfiguration.StandbyPattern,
-                    EmptyToNull(portConfiguration.StandbyLogoPath), portConfiguration.StandbyLabel,
-                    portConfiguration.StandbyShowClock), cancellationToken);
-        }
-        else
-        {
-            await _supervisor!.StartFallbackAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(),
-                preset.StandbyMode, preset.StandbyValue, cancellationToken);
-        }
-        fallbackDecision?.Complete(OwnedSnapshot(route.SourceId), "ProcessStartedNotMediaQualified", RouteState.Fallback.ToString());
-        SetStandbyStatus(route.PortId, PortStandbyState.Starting, OwnedSnapshot(route.SourceId)?.ProcessId,
-            "Standby process started; awaiting first frame", budget.LastError);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception ex)
-        {
-            await RecordStandbyFailureAsync(route.PortId, budget, null, ex.Message, cancellationToken);
-            fallbackDecision?.Complete(OwnedSnapshot(route.SourceId), "StartFailedBoundedRetry");
-        }
+            lock (_gate)
+            {
+                if (_emergencyStopped || !_ports.TryGetValue(route.PortId, out var currentPort) || !currentPort.IsOutputPort
+                    || !_routes.TryGetValue(route.SourceId, out var currentRoute) || currentRoute.PortId != route.PortId
+                    || !_reservations.Snapshot().Any(lease => lease.PortId == route.PortId && lease.Source.Value == route.SourceId)) return;
+            }
+            var existing = OwnedSnapshot(route.SourceId);
+            if (existing is { Running: true, Purpose: RouteProcessPurpose.Live }) return;
+            var budget = _standbyBudgets.GetOrAdd(route.PortId, static _ => new());
+            if (existing?.Purpose == RouteProcessPurpose.Fallback
+                && await KeepStandbyOwnerAsync(route.PortId, existing, budget, cancellationToken)) return;
+            if (!budget.CanAttempt(_clock.Now)) { ShowStandbyFailure(route.PortId, budget); return; }
+            await StopPortStandbyAsync(route.PortId, cancellationToken);
+            EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
+            using var fallbackDecision = telemetry?.BeginDecision(route.SourceId, route.PortId, OwnedSnapshot(route.SourceId),
+                route.FailureCategory ?? "FallbackRequested", "Reserved output; configured fallback or recovery standby",
+                null, ["Keep live owner", "Leave output idle"], "StartFallback", route.State.ToString());
+            try
+            {
+                if (portConfiguration?.StandbyEnabled == true)
+                {
+                    await _supervisor!.StartRecoveryStandbyAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(),
+                        new PortStandbyConfiguration(portConfiguration.StandbyPattern,
+                            EmptyToNull(portConfiguration.StandbyLogoPath), portConfiguration.StandbyLabel,
+                            portConfiguration.StandbyShowClock), cancellationToken);
+                }
+                else
+                {
+                    await _supervisor!.StartFallbackAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(),
+                        preset.StandbyMode, preset.StandbyValue, cancellationToken);
+                }
+                fallbackDecision?.Complete(OwnedSnapshot(route.SourceId), "ProcessStartedNotMediaQualified", RouteState.Reconnecting.ToString());
+                SetStandbyStatus(route.PortId, PortStandbyState.Starting, OwnedSnapshot(route.SourceId)?.ProcessId,
+                    "Standby process started; awaiting first frame", budget.LastError);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                await RecordStandbyFailureAsync(route.PortId, budget, null, ex.Message, cancellationToken);
+                fallbackDecision?.Complete(OwnedSnapshot(route.SourceId), "StartFailedBoundedRetry");
+            }
         }
         finally { portGate.Release(); }
     }
