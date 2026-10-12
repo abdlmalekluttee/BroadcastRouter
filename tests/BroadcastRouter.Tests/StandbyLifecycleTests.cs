@@ -60,6 +60,7 @@ public sealed class StandbyLifecycleTests
     [Theory]
     [InlineData("simulation")]
     [InlineData("validation")]
+    [InlineData("standby-filters")]
     public async Task PendingFallbackRechecksExecutionEligibilityAfterPortGate(string change)
     {
         await using var lab = await Create(true, exits: false);
@@ -72,6 +73,7 @@ public sealed class StandbyLifecycleTests
             retry = lab.Invoke("StartFallbackAsync", lab.Route, CancellationToken.None);
             Assert.False(retry.IsCompleted);
             if (change == "simulation") lab.Settings.SimulationMode = true;
+            else if (change == "standby-filters") lab.Set("_validation", new MediaToolValidation(ToolValidationState.Valid, "fake", "fake", true, true, 1, [], lab.Clock.Now, PortStandbySupported: false));
             else lab.Set("_validation", new MediaToolValidation(ToolValidationState.Invalid, "fake", "fake", false, false, 0, [], lab.Clock.Now));
         }
         finally { portGate.Release(); }
