@@ -9,7 +9,8 @@ public sealed record FfmpegRouteOptions(
     bool UseTcpTransport = true,
     TimeSpan? ReadTimeout = null,
     string LogLevel = "warning",
-    bool UseWindowsDeckLinkSafeTerminate = false);
+    bool UseWindowsDeckLinkSafeTerminate = false,
+    bool UseIndependentMediaStats = false);
 
 public static class FfmpegCommandBuilder
 {
