@@ -3,7 +3,7 @@ using BroadcastRouter.Domain;
 namespace BroadcastRouter.Application;
 
 /// <summary>Only authoritative observations change presence; API failures are not offline evidence.</summary>
-public sealed class PublisherLiveHoldPolicy
+public sealed class PublisherLiveHoldPolicy(SupervisionClock? clock = null)
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, bool> _connected = new(StringComparer.Ordinal);
