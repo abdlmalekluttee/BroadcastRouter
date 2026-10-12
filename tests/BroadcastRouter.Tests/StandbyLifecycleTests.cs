@@ -9,6 +9,15 @@ namespace BroadcastRouter.Tests;
 public sealed class StandbyLifecycleTests
 {
     [Fact]
+    public async Task ScheduledFallbackDoesNotClaimGenerationBeforeFirstFrame()
+    {
+        await using var lab = await Create(true, exits: false);
+        await lab.Invoke("ScheduleRetryAsync", lab.Route, "SyntheticInputFailure", "synthetic fault", CancellationToken.None);
+        Assert.Equal(RouteState.Reconnecting, lab.Route.State);
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
+    }
+
+    [Fact]
     public async Task HalfOpenCircuitKeepsVisibleAlarmAfterFirstFrame()
     {
         await using var lab = await Create(false, exits: false);
