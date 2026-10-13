@@ -21,7 +21,8 @@ public sealed record StreamProbeResult(
     bool AudioReceived = false,
     bool DecodedAudioReceived = false,
     double AdvancingVideoSeconds = 0,
-    double AdvancingAudioSeconds = 0);
+    double AdvancingAudioSeconds = 0,
+    double? MaximumVideoGapSeconds = null);
 
 public interface IDeckLinkEnumerator
 {

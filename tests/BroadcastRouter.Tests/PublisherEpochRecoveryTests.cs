@@ -125,8 +125,7 @@ public sealed class PublisherEpochRecoveryTests
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
         await lab.InstallFakeMediaTools();
-        for (var i = 0; i < 100 && !lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live); i++)
-        { await lab.RestartDue(); await Task.Delay(20); }
+        await AutomaticMediaCoordinatorTests.Poll(lab);
         await FaultHarnessTests.Eventually(() => lab.Owner.Progress?.Frame > 0);
         lab.Set("_nextDeckLinkReferenceStatusCheck", DateTimeOffset.MaxValue);
         await lab.Invoke("MonitorProcessesAsync", CancellationToken.None);

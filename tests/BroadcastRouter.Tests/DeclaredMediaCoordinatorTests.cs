@@ -19,7 +19,7 @@ public sealed class DeclaredMediaCoordinatorTests
         if (path == "initial") await PrepareInitialStart(lab);
         else await lab.InstallFakeMediaTools();
         lab.Settings.Presets[0].IncludeAudio = false;
-        await WriteProbe(lab, MediaQualificationDurationTests.Json(MediaQualificationDurationTests.Video(), []));
+        await WriteProbe(lab, AutomaticMediaCoordinatorTests.Json(true, false));
         if (path == "discovery")
         {
             lab.Routes.Remove(lab.Source.Value);
@@ -28,7 +28,7 @@ public sealed class DeclaredMediaCoordinatorTests
             var task = (Task)typeof(BroadcastRouter.Web.Services.RouterCoordinator)
                 .GetMethod("ProbeObservationAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .Invoke(lab.Coordinator, [observation, lab.Settings, CancellationToken.None, null])!;
-            await task;
+            await AutomaticMediaCoordinatorTests.Drive(lab, task);
             var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
             var source = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
             Assert.Equal(SourceState.Ready, source.State);
@@ -65,7 +65,7 @@ public sealed class DeclaredMediaCoordinatorTests
         {
             changed = true;
             if (change == "publisher") lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value].Invalidate();
-            else if (change == "settings") lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.AudioOnly;
+            else if (change == "settings") lab.Settings.SourceMediaProfiles[0].Override = SourceMediaOverride.ForceAudioOnly;
             else lab.Sources[lab.Source.Value] = lab.Sources[lab.Source.Value] with { State = SourceState.Disabled };
         }
         var persistence = lab.Get<SemaphoreSlim>("_routePersistenceGate");
@@ -110,8 +110,10 @@ public sealed class DeclaredMediaCoordinatorTests
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
         var standby = await PrepareInitialStart(lab);
-        lab.Settings.SourceMediaProfiles[0].RequireAudio = true;
+        lab.Settings.SourceMediaProfiles[0].Override = SourceMediaOverride.ForceAudioOnly;
         lab.Settings.Presets[0].IncludeAudio = false;
+        await StartInitial(lab);
+        await AwaitPending(lab);
         await StartInitial(lab);
         Assert.True(lab.Supervisor.IsRunning(standby, RouteProcessPurpose.Fallback));
         Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
@@ -134,7 +136,7 @@ public sealed class DeclaredMediaCoordinatorTests
         try
         {
             Assert.False(attempt.IsCompleted);
-            lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.AudioOnly;
+            lab.Settings.SourceMediaProfiles[0].Override = SourceMediaOverride.ForceAudioOnly;
         }
         finally { gate.Release(); await attempt; }
         Assert.True(lab.Supervisor.IsRunning(standby, RouteProcessPurpose.Fallback));
@@ -173,7 +175,7 @@ public sealed class DeclaredMediaCoordinatorTests
         lab.Get<Dictionary<string, DateTimeOffset>>("_sourceMissingSince")[lab.Source.Value] = lab.Clock.Now.AddHours(-1);
         await WriteProbe(lab, probe);
         var owner = lab.Owner.SessionId;
-        await lab.Invoke("DiscoverAndProbeAsync", CancellationToken.None, true);
+        await AutomaticMediaCoordinatorTests.Drive(lab, lab.Invoke("DiscoverAndProbeAsync", CancellationToken.None, true));
         Assert.Contains(lab.Sources[lab.Source.Value].State, new[] { SourceState.Unknown, SourceState.WaitingForKeyframe });
         Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
         Assert.Equal(owner, lab.Owner.SessionId);
@@ -209,11 +211,11 @@ public sealed class DeclaredMediaCoordinatorTests
         lab.Sources[lab.Source.Value], lab.Get<Dictionary<string, DeckLinkPort>>("_ports")["TEST-OUTPUT"],
         lab.Settings.Presets[0], CancellationToken.None, null);
 
-    private static async Task AwaitPending(OfflineFallbackTests.RecoveryLab lab)
+    internal static async Task AwaitPending(OfflineFallbackTests.RecoveryLab lab)
     {
         var gate = lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value];
         var pending = (Task?)typeof(RecoveryReadinessGate).GetField("_pending", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(gate);
-        if (pending is not null) await pending.WaitAsync(TimeSpan.FromSeconds(10));
+        if (pending is not null) await AutomaticMediaCoordinatorTests.Drive(lab, pending);
     }
 
     [Theory]
@@ -223,7 +225,7 @@ public sealed class DeclaredMediaCoordinatorTests
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
         await lab.InstallFakeMediaTools();
-        lab.Settings.SourceMediaProfiles[0].Expectation = packetOnlyAudio ? SourceMediaExpectation.AudioOnly : SourceMediaExpectation.ContinuousVideo;
+        lab.Settings.SourceMediaProfiles[0].Override = packetOnlyAudio ? SourceMediaOverride.ForceAudioOnly : SourceMediaOverride.ForceVideoOnly;
         var json = packetOnlyAudio
             ? """{"streams":[{"codec_type":"video","codec_name":"h264","nb_read_frames":"50"},{"codec_type":"audio","codec_name":"aac","nb_read_packets":"50","nb_read_frames":"0"}]}"""
             : """{"streams":[{"codec_type":"audio","codec_name":"aac","nb_read_frames":"50"}]}""";
@@ -239,7 +241,7 @@ public sealed class DeclaredMediaCoordinatorTests
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
         await lab.InstallFakeMediaTools();
-        lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.AudioOnly;
+        lab.Settings.SourceMediaProfiles[0].Override = SourceMediaOverride.ForceAudioOnly;
         await File.WriteAllTextAsync(Path.Combine(lab.Root, "live.json"), JsonSerializer.Serialize(new { captureArguments = true, events = Array.Empty<object>() }));
         await Poll(lab);
         Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live));
@@ -253,13 +255,13 @@ public sealed class DeclaredMediaCoordinatorTests
         Assert.Equal(SourceMediaExpectation.AudioOnly, lab.Owner.SelectedMedia.Expectation);
         var owner = lab.Owner.SessionId;
         var stops = lab.Events.Count(e => e.State == RouteProcessLifecycleState.StopRequested);
-        lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.ContinuousVideo;
+        lab.Settings.SourceMediaProfiles[0].Override = SourceMediaOverride.ForceVideoOnly;
         lab.Settings.SimulationMode = true; // Only the probe is simulated; the existing child is still real/owned.
         var observation = lab.Sources[lab.Source.Value] with { State = SourceState.PublisherActive, Media = null };
         var task = (Task)typeof(BroadcastRouter.Web.Services.RouterCoordinator)
             .GetMethod("ProbeObservationAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(lab.Coordinator, [observation, lab.Settings, CancellationToken.None, null])!;
-        await task;
+        await AutomaticMediaCoordinatorTests.Drive(lab, task);
         var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
         var observed = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
         Assert.True(observed.Media!.HasUsableVideo);
@@ -278,7 +280,7 @@ public sealed class DeclaredMediaCoordinatorTests
         await lab.RestartDue();
         var gate = lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value];
         var pending = (Task?)typeof(RecoveryReadinessGate).GetField("_pending", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(gate);
-        if (pending is not null) await pending.WaitAsync(TimeSpan.FromSeconds(10));
+        if (pending is not null) await AutomaticMediaCoordinatorTests.Drive(lab, pending);
         await lab.RestartDue();
     }
 }

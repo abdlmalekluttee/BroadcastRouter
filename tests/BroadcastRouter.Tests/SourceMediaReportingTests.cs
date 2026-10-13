@@ -15,6 +15,64 @@ namespace BroadcastRouter.Tests;
 public sealed class SourceMediaReportingTests
 {
     [Fact]
+    public async Task HandoffDecisionRetainsDecodedQualificationIntervals()
+    {
+        await using var lab = await OfflineFallbackTests.RecoveryLab.Create(captureTelemetry: true);
+        await lab.InstallFakeMediaTools();
+        await AutomaticMediaCoordinatorTests.Poll(lab);
+        await lab.Telemetry!.FlushAsync();
+        var records = Directory.GetFiles(Path.Combine(lab.Root, "telemetry"), "*.decisions.*.jsonl")
+            .SelectMany(File.ReadLines).Select(line => JsonSerializer.Deserialize<JsonElement>(line)).ToArray();
+        var decision = Assert.Single(records.Select(e => e.GetProperty("Event")), e => e.GetProperty("Trigger").GetString() == "MediaQualificationAccepted");
+        var qualification = decision.GetProperty("After").GetProperty("Qualification");
+        Assert.Equal("AudioVideo", qualification.GetProperty("DetectedProfile").GetString());
+        Assert.True(qualification.GetProperty("AdvancingVideoSeconds").GetDouble() >= 1);
+        Assert.True(qualification.GetProperty("AdvancingAudioSeconds").GetDouble() >= 1);
+        Assert.Equal(5000, decision.GetProperty("WindowMilliseconds").GetDouble());
+    }
+
+    [Fact]
+    public async Task MutedGraphReportsDetectedTracksAndAuthoritativePresetMute()
+    {
+        var media = RecoveryReadinessTests.Av().Media! with {
+            DetectedProfile = DetectedMediaProfile.AudioVideo, AudioDisabledByPreset = true };
+        var source = new DiscoveredSource(new("TEST", "fixture", "default", "muted"), "Muted",
+            new Uri("rtsp://example.invalid/test"), SourceState.Ready, 0, media);
+        var html = await Render(source, new(Guid.NewGuid(), false, media));
+        Assert.Contains("Detected profile: video + audio", html);
+        Assert.Contains("audio disabled by preset", html);
+    }
+
+    [Theory]
+    [InlineData(false, true, "generated black + source audio")]
+    [InlineData(true, false, "source video + generated silence")]
+    [InlineData(true, true, "source video + source audio")]
+    public async Task SelectedGraphIsExplicit(bool video, bool audio, string expected)
+    {
+        var media = RecoveryReadinessTests.Av().Media! with { HasUsableVideo = video,
+            AudioCodec = audio ? "aac" : null, Expectation = video ? SourceMediaExpectation.ContinuousVideo : SourceMediaExpectation.AudioOnly };
+        var source = new DiscoveredSource(new("TEST", "fixture", "default", "synthetic"), "Synthetic",
+            new Uri("rtsp://example.invalid/test"), SourceState.Ready, 0, media);
+        Assert.Contains(expected, await Render(source, new(Guid.NewGuid(), false, media)));
+    }
+
+    [Fact]
+    public async Task DecisionRecordIncludesDetectedProfileOverrideAndMute()
+    {
+        await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
+        await lab.InstallFakeMediaTools();
+        lab.Settings.Presets[0].IncludeAudio = false;
+        await AutomaticMediaCoordinatorTests.Poll(lab);
+        var json = JsonSerializer.SerializeToElement(SupervisionTelemetry.Evidence(lab.Owner, lab.Clock));
+        var media = json.GetProperty("SelectedMedia");
+        Assert.True(media.TryGetProperty("DetectedProfile", out var profile), "Decision evidence must carry the detected profile.");
+        Assert.Equal("AudioVideo", profile.GetString());
+        Assert.Equal("Auto", media.GetProperty("Override").GetString());
+        Assert.True(media.GetProperty("AudioDisabledByPreset").GetBoolean());
+        Assert.False(media.GetProperty("SourceAudioSelected").GetBoolean());
+    }
+
+    [Fact]
     public async Task QualificationFailureShowsOperatorReasonAsAnAlarm()
     {
         var source = new DiscoveredSource(new("TEST", "fixture", "default", "unknown"), "Unknown",
@@ -45,7 +103,7 @@ public sealed class SourceMediaReportingTests
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
         await lab.InstallFakeMediaTools();
-        lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.AudioOnly;
+        lab.Settings.SourceMediaProfiles[0].Override = SourceMediaOverride.ForceAudioOnly;
         await DeclaredMediaCoordinatorTests.Poll(lab);
         var session = lab.Owner.SessionId;
         // A newer observation qualifies video; it cannot change the running graph.
@@ -60,7 +118,7 @@ public sealed class SourceMediaReportingTests
         Assert.Equal(SourceMediaExpectation.AudioOnly, selected.Media!.Expectation);
         var html = await Render(Assert.Single(snapshot.Sources), selected);
         Assert.Contains("Observed: video qualified", html);
-        Assert.Contains("Output graph: generated black (declared audio-only)", html);
+        Assert.Contains("Output graph: generated black + source audio", html);
         Assert.Contains(session.ToString("N"), html);
         var evidence = JsonSerializer.SerializeToElement(SupervisionTelemetry.Evidence(lab.Owner, lab.Clock));
         Assert.True(evidence.TryGetProperty("SelectedMedia", out var media), "Selected graph is missing from decision evidence.");
@@ -84,8 +142,8 @@ public sealed class SourceMediaReportingTests
     {
         await using var provider = new ServiceCollection().AddLogging().BuildServiceProvider();
         await using var renderer = new HtmlRenderer(provider, provider.GetRequiredService<ILoggerFactory>());
-        return await renderer.Dispatcher.InvokeAsync(async () =>
+        return System.Net.WebUtility.HtmlDecode(await renderer.Dispatcher.InvokeAsync(async () =>
             (await renderer.RenderComponentAsync<SourceMediaStatus>(ParameterView.FromDictionary(new Dictionary<string, object?>
-            { ["Source"] = source, ["Output"] = selected }))).ToHtmlString());
+            { ["Source"] = source, ["Output"] = selected }))).ToHtmlString()));
     }
 }

@@ -70,11 +70,11 @@ public sealed class MediaQualificationDurationTests
     }
 
     [Fact]
-    public void UndeclaredSourceNeverSilentlyDefaultsToContinuous()
+    public void NewSourceAutomaticallyQualifiesObservedTracks()
     {
         var result = SourceMediaPolicy.Apply(Probe(Video(), Audio()), SourceMediaPolicy.Get(new(), "TEST/live/default/new-source"));
-        Assert.Equal(SourceState.Unknown, SourceProbeReadinessPolicy.Resolve(result));
-        Assert.Contains("declaration", result.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(result));
+        Assert.Equal(SourceMediaOverride.Auto, SourceMediaPolicy.Get(new(), "TEST/live/default/new-source").Override);
     }
 
     [Fact]

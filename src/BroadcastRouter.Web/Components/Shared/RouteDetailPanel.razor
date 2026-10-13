@@ -10,6 +10,11 @@
 
     <NoticeBoard Severity="danger" @bind-Message="error" />
     <NoticeBoard Severity="success" @bind-Message="confirmation" />
+    @if (CompatibilityWarning is { } warning)
+    {
+        <div class="notice warning" role="alert">@warning. You can save this assignment, but standby will remain on air.</div>
+    }
+    <NoticeBoard Severity="warning" @bind-Message="savedWarning" />
     <UndoBar Message="The saved assignment was removed." ActionLabel="Restore assignment" ExpiresAt="@assignmentUndoExpiresAt" Busy="@busy" UndoRequested="UndoAssignmentRemoval" />
 
     @if (SelectedSourceId is not null)
@@ -89,6 +94,9 @@
     private bool busy;
     private string error = "";
     private string confirmation = "";
+    private string savedWarning = "";
+    private string? CompatibilityWarning => Presets.FirstOrDefault(p => p.Id == selectedPresetId) is { } preset
+        ? SourcePresetCompatibility.Warning(Source?.Media, preset.IncludeAudio) : null;
     private DateTimeOffset? assignmentUndoExpiresAt;
     private RemovedAssignment? removedAssignment;
     private ConfirmDialog confirmDialog = null!;
@@ -137,7 +145,7 @@
     private async Task SaveAssignment()
     {
         if (busy || SelectedSourceId is null) return;
-        try { busy = true; error = ""; await Commands.ExecuteAsync("save-assignment", SelectedSourceId, selectedPortId, selectedPresetId, selectedMode, reserveWhileOffline, allowTemporaryUse); confirmation = "Assignment saved and applied."; await Refreshed.InvokeAsync(); }
+        try { busy = true; error = ""; savedWarning = ""; var warnings = await Commands.SaveAssignmentAsync(SelectedSourceId, selectedPortId, selectedPresetId, selectedMode, reserveWhileOffline, allowTemporaryUse); confirmation = "Assignment saved and applied."; savedWarning = string.Join(" ", warnings); await Refreshed.InvokeAsync(); }
         catch(Exception ex) { error = OperatorErrors.Describe(ex, "saving the route assignment"); }
         finally { busy = false; }
     }

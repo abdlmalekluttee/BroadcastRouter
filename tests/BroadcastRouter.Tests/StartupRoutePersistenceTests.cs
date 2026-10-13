@@ -12,6 +12,23 @@ namespace BroadcastRouter.Tests;
 public sealed class StartupRoutePersistenceTests
 {
     [Fact]
+    public async Task AutomaticDetectionUpgradeDoesNotWriteStaticDeclarations()
+    {
+        await WithStore(async (store, connection) =>
+        {
+            await store.SaveSettingsAsync(new());
+            await store.UpsertSourceAsync(new(new("TEST", "fixture", "default", "synthetic"), "Synthetic",
+                new Uri("rtsp://example.invalid/test"), SourceState.Ready, 0, RecoveryReadinessTests.Av().Media));
+            await using var trigger = connection.CreateCommand();
+            trigger.CommandText = "CREATE TABLE settings_writes(n INTEGER); CREATE TRIGGER count_settings AFTER UPDATE ON settings BEGIN INSERT INTO settings_writes VALUES(1); END;";
+            await trigger.ExecuteNonQueryAsync();
+            await RunStartupOnly(store, new(new ManualTimeProvider()));
+            Assert.Equal(0, await Scalar(connection, "SELECT COUNT(*) FROM settings_writes"));
+            Assert.Empty((await store.LoadSettingsAsync()).SourceMediaProfiles);
+        });
+    }
+
+    [Fact]
     public async Task UpgradePreservesExistingMutedVideoAssignment()
     {
         await WithStore(async (store, connection) =>
@@ -26,14 +43,14 @@ public sealed class StartupRoutePersistenceTests
             await RunStartupOnly(store, new(new ManualTimeProvider()));
             var migrated = await store.LoadSettingsAsync();
             var declaration = SourceMediaPolicy.Get(migrated, route.SourceId);
-            Assert.Equal(SourceMediaExpectation.ContinuousVideo, declaration.Expectation);
+            Assert.Equal(SourceMediaOverride.Auto, declaration.Override);
             Assert.False(declaration.RequireAudio);
             Assert.False(migrated.Presets[0].IncludeAudio);
         });
     }
 
     [Fact]
-    public async Task UpgradeDeclaresPersistedBehaviourOnceWithoutOverridingExplicitProfiles()
+    public async Task UpgradeIgnoresLegacyDeclarationsAndKeepsAutoWithoutSettingsWrites()
     {
         await WithStore(async (store, connection) =>
         {
@@ -48,13 +65,10 @@ public sealed class StartupRoutePersistenceTests
             }
             await RunStartupOnly(store, new(new ManualTimeProvider()));
             var migrated = await store.LoadSettingsAsync();
-            Assert.Equal(4, migrated.SourceMediaProfiles.Count);
-            Assert.Equal(SourceMediaExpectation.AudioOnly, SourceMediaPolicy.Get(migrated, "TEST/fixture/default/audio-led").Expectation);
-            Assert.True(SourceMediaPolicy.Get(migrated, "TEST/fixture/default/audio-led").RequireAudio);
-            Assert.Equal(SourceMediaExpectation.ContinuousVideo, SourceMediaPolicy.Get(migrated, "TEST/fixture/default/video").Expectation);
-            Assert.Equal(SourceMediaExpectation.Undeclared, SourceMediaPolicy.Get(migrated, "TEST/fixture/default/unknown").Expectation);
-            Assert.Equal(SourceMediaExpectation.SparseVideo, SourceMediaPolicy.Get(migrated, "TEST/fixture/default/explicit").Expectation);
-            // After upgrade, a later discovery must not silently declare itself.
+            Assert.Single(migrated.SourceMediaProfiles);
+            foreach (var name in new[] { "audio-led", "video", "unknown", "explicit" })
+                Assert.Equal(SourceMediaOverride.Auto, SourceMediaPolicy.Get(migrated, "TEST/fixture/default/" + name).Override);
+            // Later discoveries are also automatic and cause no declaration writes.
             await store.UpsertSourceAsync(new(new("TEST", "fixture", "default", "later"), "Later",
                 new Uri("rtsp://example.invalid/later"), SourceState.Ready, 0, RecoveryReadinessTests.Av().Media));
             await using var trigger = connection.CreateCommand();
@@ -62,7 +76,7 @@ public sealed class StartupRoutePersistenceTests
             await trigger.ExecuteNonQueryAsync();
             await RunStartupOnly(store, new(new ManualTimeProvider()));
             Assert.Equal(0, await Scalar(connection, "SELECT COUNT(*) FROM settings_writes"));
-            Assert.Equal(SourceMediaExpectation.Undeclared, SourceMediaPolicy.Get(await store.LoadSettingsAsync(), "TEST/fixture/default/later").Expectation);
+            Assert.Equal(SourceMediaOverride.Auto, SourceMediaPolicy.Get(await store.LoadSettingsAsync(), "TEST/fixture/default/later").Override);
         });
     }
 

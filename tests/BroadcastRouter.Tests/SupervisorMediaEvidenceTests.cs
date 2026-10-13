@@ -29,8 +29,7 @@ public sealed class SupervisorMediaEvidenceTests
         await lab.InstallFakeMediaTools();
         lab.Set("_validation",new MediaToolValidation(ToolValidationState.Valid,"fake","fake",true,true,1,[],lab.Clock.Now,
             IndependentMediaStatsSupported:true));
-        for(var i=0;i<100&&!lab.Supervisor.IsRunning(lab.Source,RouteProcessPurpose.Live);i++)
-        { await lab.RestartDue(); await Task.Delay(20); }
+        await AutomaticMediaCoordinatorTests.Poll(lab);
         Assert.True(lab.Supervisor.IsRunning(lab.Source,RouteProcessPurpose.Live));
         Assert.NotNull(lab.Owner.IndependentMedia);
     }

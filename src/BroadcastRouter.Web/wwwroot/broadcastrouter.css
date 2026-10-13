@@ -948,6 +948,11 @@ kbd { min-width: 28px; padding: 3px 6px; border: 1px solid #526984; border-radiu
 .route-detail-facts dt { color: var(--muted); font-size: 11px; }
 .route-detail-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .detail-save { width: 100%; }
+.source-media-advanced { margin-top: .5rem; width: 20rem; max-width: 100%; white-space: normal; }
+.source-media-advanced summary { cursor: pointer; }
+.source-media-advanced p { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.5; margin: .75rem 0; }
+.source-media-advanced .actions { flex-wrap: wrap; }
+.source-media-advanced .notice { white-space: normal; }
 .route-detail-actions { display: flex; flex-wrap: wrap; gap: 9px; padding-top: 12px; border-top: 1px solid var(--line); }
 .routing-workspace.compact .routing-matrix th, .routing-workspace.compact .routing-matrix td { padding: 2px; }
 .routing-workspace.compact .matrix-cell { width: 52px; height: 32px; }
