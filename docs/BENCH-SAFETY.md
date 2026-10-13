@@ -41,6 +41,14 @@ At startup, before opening the candidate database or starting routing:
 4. Re-read the production state; any conflicting selection/route or settings change
    rejects startup. Missing, corrupt, locked or incomplete evidence rejects startup.
 
+Persisted route states use the application's numeric enum representation; defined
+string values are also recognized. Undefined, fractional, null or missing states
+remain failures. A retired name-hash row is not a second physical connector only
+when the persistent row explicitly links that exact generated hash and every
+physical identity field agrees. Extra, unlinked, enabled or contradictory alias
+rows are refused. Current and legacy output selections must both be disabled.
+This normalization is a read-only view; it never cleans up or rewrites production.
+
 Every candidate supervisor launch (live, fallback, recovery standby and idle standby)
 checks the immutable allowlist and actual tokenized command. A settings edit or
 supervisor configuration change cannot widen it. There must be exactly one DeckLink

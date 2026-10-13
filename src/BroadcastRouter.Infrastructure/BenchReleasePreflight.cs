@@ -73,8 +73,8 @@ public static class BenchReleasePreflight
             if (matches.Length != 1 || !matches[0].TryGetProperty("isOutputPort", out var enabled) || enabled.ValueKind != JsonValueKind.False)
                 throw Refused("all five output selections must be explicitly disabled");
         }
-        var ports = (await Rows("SELECT json FROM ports", 256)).Select(row =>
-            JsonSerializer.Deserialize<DeckLinkPort>(row, Json) ?? throw Refused("device identity missing")).ToArray();
+        var ports = CanonicalInventory((await Rows("SELECT json FROM ports", 256)).Select(row =>
+            JsonSerializer.Deserialize<DeckLinkPort>(row, Json) ?? throw Refused("device identity missing")).ToArray());
         foreach (var binding in guard.Bindings)
         {
             var matches = ports.Where(p => p.StableId == binding.StableId).ToArray();
@@ -84,6 +84,13 @@ public static class BenchReleasePreflight
             catch (BenchSafetyException) { throw Refused("physical identity no longer matches the approved allowlist"); }
             ids.UnionWith(matches[0].PreviousStableIds ?? []);
         }
+        foreach (var mapping in overrides.EnumerateArray())
+        {
+            if (mapping.TryGetProperty("stableId", out var id) && id.ValueKind == JsonValueKind.String
+                && ids.Contains(id.GetString()!)
+                && (!mapping.TryGetProperty("isOutputPort", out var enabled) || enabled.ValueKind != JsonValueKind.False))
+                throw Refused("a current or legacy output selection is still enabled");
+        }
         foreach (var row in await Rows("SELECT json FROM routes", 512))
         {
             using var route = JsonDocument.Parse(row);
@@ -92,8 +99,7 @@ public static class BenchReleasePreflight
                 || root.EnumerateObject().GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() != 1)
                 || !root.TryGetProperty("sourceId", out var sourceId) || sourceId.ValueKind != JsonValueKind.String
                 || string.IsNullOrWhiteSpace(sourceId.GetString())
-                || !root.TryGetProperty("state", out var state) || state.ValueKind != JsonValueKind.String
-                || !Enum.TryParse<RouteState>(state.GetString(), true, out var parsedState) || !Enum.IsDefined(parsedState))
+                || !root.TryGetProperty("state", out var state) || !IsDefinedRouteState(state))
                 throw Refused("route evidence is incomplete or noncanonical");
             foreach (var property in new[] { "portId", "desiredPortId" })
             {
@@ -128,6 +134,46 @@ public static class BenchReleasePreflight
             }
             return rows;
         }
+    }
+
+    private static bool IsDefinedRouteState(JsonElement state) => state.ValueKind switch
+    {
+        // SqliteDataStore writes numeric enums. Also accept the older explicit
+        // string representation, but never unknown values or missing fields.
+        JsonValueKind.Number => state.TryGetInt32(out var number) && Enum.IsDefined((RouteState)number),
+        JsonValueKind.String => Enum.TryParse<RouteState>(state.GetString(), true, out var value) && Enum.IsDefined(value),
+        _ => false
+    };
+
+    private static DeckLinkPort[] CanonicalInventory(DeckLinkPort[] stored)
+    {
+        if (stored.Any(p => string.IsNullOrWhiteSpace(p.StableId))
+            || stored.Select(p => p.StableId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != stored.Length)
+            throw Refused("device identifiers are missing or duplicated");
+        return stored.GroupBy(p => p.DeviceHandle, StringComparer.OrdinalIgnoreCase).Select(group =>
+        {
+            if (group.Count() == 1) return group.Single();
+            // Old versions retained their pre-migration discovery rows. Recognize
+            // ONLY the exact generated name hash explicitly linked by a current
+            // persistent record, with all physical identity fields agreeing.
+            // This is a read-only view: no deletion or migration of production data.
+            var canonical = group.Where(p => p.PersistentId is { Length: > 2 }
+                && p.PersistentId.StartsWith("0x", StringComparison.Ordinal)
+                && p.StableId == "DECKLINK-PERSISTENT-" + p.PersistentId[2..]).ToArray();
+            if (group.Count() != 2 || canonical.Length != 1 || string.IsNullOrWhiteSpace(group.Key))
+                throw Refused("device inventory is missing or ambiguous");
+            var current = canonical[0];
+            var retired = group.Single(p => p.StableId != current.StableId);
+            if (retired.StableId != DeckLinkIdentityResolver.LegacyStableId(current.DeviceHandle!)
+                || !(current.PreviousStableIds?.Contains(retired.StableId, StringComparer.Ordinal) ?? false)
+                || retired.IsOutputPort || retired.Reserved
+                || retired.DeviceHandle != current.DeviceHandle || retired.FfmpegName != current.FfmpegName
+                || current.FfmpegName != current.DeviceHandle || retired.PersistentId != current.PersistentId
+                || retired.DeviceGroupId != current.DeviceGroupId || retired.SubdeviceIndex != current.SubdeviceIndex
+                || retired.ModelName != current.ModelName || retired.TopologicalId != current.TopologicalId)
+                throw Refused("device inventory is missing or ambiguous");
+            return current;
+        }).ToArray();
     }
 
     private static void CheckOwners(BenchOutputGuard guard, DeckLinkPort[] ports, IReadOnlyList<BenchProcessEvidence> processes)

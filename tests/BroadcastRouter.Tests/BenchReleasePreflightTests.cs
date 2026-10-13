@@ -10,6 +10,99 @@ namespace BroadcastRouter.Tests;
 
 public sealed class BenchReleasePreflightTests
 {
+    [Fact]
+    public async Task EnabledLegacySelectionCannotHideBehindDisabledCanonicalSelection()
+    {
+        await using var fixture = await Fixture.Create();
+        var canonical = BenchOutputGuardTests.Port(5) with
+        { IsOutputPort = false, PreviousStableIds = [DeckLinkIdentityResolver.LegacyStableId("TEST-HANDLE-5")] };
+        await fixture.Store.UpsertPortAsync(canonical);
+        await fixture.Store.UpsertPortAsync(canonical with { StableId = canonical.PreviousStableIds[0], PreviousStableIds = [] });
+        fixture.Settings.DeckLinkPortOverrides.Add(new() { StableId = canonical.PreviousStableIds[0], IsOutputPort = true,
+            StandbyPresetId = fixture.Settings.Presets[0].Id });
+        await fixture.Store.SaveSettingsAsync(fixture.Settings);
+        await Assert.ThrowsAsync<BenchSafetyException>(() => BenchReleasePreflight.EnsureReleasedAsync(fixture.Database,
+            new(BenchOutputGuardTests.Bindings()), _ => Task.FromResult<IReadOnlyList<BenchProcessEvidence>>([])));
+    }
+
+    [Fact]
+    public async Task ActualStoredReleasedRouteAndProtectedRoutePermitReleasedBench()
+    {
+        await using var fixture = await Fixture.Create();
+        await fixture.Store.UpsertPortAsync(BenchOutputGuardTests.Port(6));
+        var now = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        // Use the application's serializer, including its numeric enums. A
+        // handwritten string-state fixture does not represent the production DB.
+        await fixture.Store.SaveRouteAsync(new("TEST/fixture/default/removed", "Synthetic removed", null, null,
+            "1080i50", RouteState.Released, AssignmentMode.Manual, false, 0, 0, null, null, null, 0, 0, null, now, null, null));
+        await fixture.Store.SaveRouteAsync(new("TEST/fixture/default/protected", "Synthetic protected", BenchOutputGuardTests.Port(6).StableId, null,
+            "1080i50", RouteState.Running, AssignmentMode.Manual, false, 0, 0, null, null, null, 0, 0, null, now, null, null));
+        await BenchReleasePreflight.EnsureReleasedAsync(fixture.Database, new(BenchOutputGuardTests.Bindings()),
+            _ => Task.FromResult<IReadOnlyList<BenchProcessEvidence>>([]));
+        Assert.Equal(2, (await fixture.Store.LoadRoutesAsync()).Count);
+    }
+
+    [Fact]
+    public async Task ProvenRetiredNameAliasesDoNotDuplicatePhysicalConnectorOrChangeDatabase()
+    {
+        await using var fixture = await Fixture.Create();
+        foreach (var n in Enumerable.Range(1, 6))
+        {
+            var canonical = BenchOutputGuardTests.Port(n) with
+            { IsOutputPort = n == 6, PreviousStableIds = [DeckLinkIdentityResolver.LegacyStableId($"TEST-HANDLE-{n}")] };
+            await fixture.Store.UpsertPortAsync(canonical);
+            await fixture.Store.UpsertPortAsync(canonical with
+            { StableId = canonical.PreviousStableIds[0], PreviousStableIds = [], IsOutputPort = false });
+        }
+        await fixture.Sql("PRAGMA wal_checkpoint(TRUNCATE)");
+        var before = HashDatabase(fixture.Database);
+        await BenchReleasePreflight.EnsureReleasedAsync(fixture.Database, new(BenchOutputGuardTests.Bindings()),
+            _ => Task.FromResult<IReadOnlyList<BenchProcessEvidence>>([]));
+        Assert.Equal(before, HashDatabase(fixture.Database));
+    }
+
+    [Theory]
+    [InlineData("unlinked")]
+    [InlineData("wrong-hash")]
+    [InlineData("other-group")]
+    [InlineData("other-subdevice")]
+    [InlineData("other-persistent-id")]
+    [InlineData("other-ffmpeg-target")]
+    [InlineData("enabled-alias")]
+    [InlineData("extra-alias")]
+    public async Task UnprovenOrContradictoryDuplicateHandlesStillRefuseBench(string defect)
+    {
+        await using var fixture = await Fixture.Create();
+        var original = BenchOutputGuardTests.Port(5) with
+        { IsOutputPort = false, PreviousStableIds = [DeckLinkIdentityResolver.LegacyStableId("TEST-HANDLE-5")] };
+        var retired = original with { StableId = original.PreviousStableIds[0], PreviousStableIds = [] };
+        if (defect == "unlinked") original = original with { PreviousStableIds = [] };
+        if (defect == "wrong-hash") { retired = retired with { StableId = "FFMPEG-NAME-NOT-THE-HASH" }; original = original with { PreviousStableIds = [retired.StableId] }; }
+        if (defect == "other-group") retired = retired with { DeviceGroupId = "OTHER-CARD" };
+        if (defect == "other-subdevice") retired = retired with { SubdeviceIndex = 5 };
+        if (defect == "other-persistent-id") retired = retired with { PersistentId = "0x00000106" };
+        if (defect == "other-ffmpeg-target") retired = retired with { FfmpegName = "TEST-HANDLE-6" };
+        if (defect == "enabled-alias") retired = retired with { IsOutputPort = true };
+        await fixture.Store.UpsertPortAsync(original);
+        await fixture.Store.UpsertPortAsync(retired);
+        if (defect == "extra-alias") await fixture.Store.UpsertPortAsync(retired with { StableId = "ANOTHER-ALIAS" });
+        await Assert.ThrowsAsync<BenchSafetyException>(() => BenchReleasePreflight.EnsureReleasedAsync(fixture.Database,
+            new(BenchOutputGuardTests.Bindings()), _ => Task.FromResult<IReadOnlyList<BenchProcessEvidence>>([])));
+    }
+
+    [Theory]
+    [InlineData("42")]
+    [InlineData("7.5")]
+    [InlineData("null")]
+    public async Task InvalidNumericRouteStateCannotCertifyRelease(string state)
+    {
+        await using var fixture = await Fixture.Create();
+        await fixture.Sql("INSERT INTO routes(source_id,state,locked,json,updated_utc) VALUES('synthetic','Released',0,'"
+            + "{\"sourceId\":\"TEST/fixture/default/source\",\"portId\":null,\"desiredPortId\":null,\"state\":" + state + "}', '2026-01-01')");
+        await Assert.ThrowsAsync<BenchSafetyException>(() => BenchReleasePreflight.EnsureReleasedAsync(fixture.Database,
+            new(BenchOutputGuardTests.Bindings()), _ => Task.FromResult<IReadOnlyList<BenchProcessEvidence>>([])));
+    }
+
     [Theory]
     [InlineData("lowercase-id")]
     [InlineData("case-varied-property")]
