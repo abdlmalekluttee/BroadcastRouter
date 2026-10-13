@@ -61,7 +61,7 @@
     <tr><td><span class="primary-text">@source.FriendlyName</span><span class="secondary-text">@source.Identity.Value</span></td>
         <td>@source.Identity.ServerId<span class="secondary-text">@source.Identity.Application / @source.Identity.ApplicationInstance</span></td>
         <td class="mono" title="@Sanitize(source.RtspUri)">@Sanitize(source.RtspUri)</td>
-        <td>@FormatVideo(source.Media)</td>
+        <td><BroadcastRouter.Web.Components.Shared.SourceMediaStatus Source="source" Output="snapshot.OutputSelections?.GetValueOrDefault(source.Identity.Value)" /></td>
         <td>@(source.Media?.AudioCodec is null ? "None" : $"{source.Media.AudioCodec} · {source.Media.AudioSampleRate} Hz · {source.Media.AudioChannels} ch")</td>
         <td><div class="source-status-stack"><BroadcastRouter.Web.Components.Shared.StateBadge Value="SourceAvailability(source)" />@if (route?.State == RouteState.WaitingForStream) { <span class="badge warning">Waiting for stream</span> }<span class="badge @AssignmentBadgeClass(route)">@SourceAssignment(route)</span></div></td><td>@source.Priority</td><td title="@source.LastObservedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")">@OperatorTime.Relative(source.LastObservedAt)</td>
         <td><AuthorizeView Roles="Administrator"><Authorized><div class="actions">
@@ -170,15 +170,6 @@
     private static string FormatDuration(TimeSpan value) => value.TotalHours >= 1 ? $"{(int)value.TotalHours:00}:{value.Minutes:00}:{value.Seconds:00}" : $"{value.Minutes:00}:{value.Seconds:00}";
     public void Dispose() { Coordinator.Changed -= Changed; PreviewSupervisor.Changed -= PreviewChanged; }
     private static string Sanitize(Uri value) => LogRedactor.RedactForDiagnostics(value.AbsoluteUri);
-    private static string FormatRate(MediaProperties media) => media.Interlaced is null
-        ? $"{media.FramesPerSecond:0.##} fps"
-        : $"{media.FramesPerSecond:0.##}{(media.Interlaced.Value ? "i" : "p")}";
-    private static string FormatVideo(MediaProperties? media) => media switch
-    {
-        null => "—",
-        { HasUsableVideo: false, AudioCodec: not null } => "Generated black · audio-led input",
-        _ => $"{media.VideoCodec} · {media.Width}×{media.Height} · {FormatRate(media)}"
-    };
     private static string SourceAvailability(DiscoveredSource source) => source.State switch
     {
         SourceState.Ready or SourceState.Running or SourceState.PublisherActive => "Active",

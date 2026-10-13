@@ -1,0 +1,61 @@
+# Gate C — software checkpoint, qualification OPEN
+
+This is not a gate pass or deployment approval. Local P2-24 verification is green;
+hosted checks and the unresolved hardware/full-matrix requirements remain open.
+Only the owner merges. No production changes were made for Phase C software.
+
+## PRs and findings
+
+P2-23#74, P2-22#75, P2-20#76, P2-21#77 await owner review/merge. P2-24 publication
+pending. Prior Phase B stack#66–72 was not amended. Account remains the owner's
+GitHub account; separate bot/code-owner review configuration remains pending.
+
+R04/R05/R07 targeted software defects have regression coverage and their exact
+correctness assertions moved to the normal suite. R06 is partial pending complete
+runtime/bench qualification. R13 is deliberately bounded: declared expectations,
+fresh required-track proof and observation-only reclassification; seamless true
+late-track insertion remains open. Two R18 actor/reason tests remain strict OPEN
+known defects. A green KnownDefect job means those exact defects still reproduce.
+
+## P2-02 acceptance rows — nothing silently dropped
+
+| Row | Software evidence | Still open |
+|---|---|---|
+| Continuous AV, still/black+audio, audio-only, silence | Independent PCM/video observations; healthy-warning/duplicate fixtures retain owners; declared sparse/AudioOnly selection | Full representative decoder/SDI fixture matrix and duration |
+|0.5/1/3-second interruptions, publisher epoch | Complete publisher observations, evidence expiry, epoch acceleration and cached-state preservation | Real RTSP interruption and physical cutover timing |
+| Long GOP, late audio/video | Missing/metadata-only/packet-only qualification; one valid picture retained; healthy graph not restarted | Seamless new-track insertion; historical cause discrimination; complete timestamp reset pipeline |
+| Corrupt packets then recovery | Failed matching-media and elapsed-window classification; qualified recovery clears only observed failure | Exact runtime/network corruption and physical AV recovery timing |
+| REST403/500/timeout/invalid200/partial app | Strict provider and healthy-owned-route retention tests | Production/load qualification, not additional schema inference |
+| RTSP404, child exit | One-hour bounded real fake-probe test; offline fallback retention; OS exit remains definitive | Busy/unavailable native matrix and on-air timing |
+| Stale progress/nonadvancing media | Heartbeat is not media; early-stalled and corroborated failure recovery, bounded hold | Overhead and timing on representative hardware/load |
+| DeckLink busy/reference loss | Classifier and existing retry tests | BLOCKED-ON-BENCH; historical native failure cause unresolved |
+| Slow DB/concurrent settings,reassign,stop | Existing atomic settings/leases and stale-proof veto | P2-30/31 combined stress and bounded persistence |
+| Preview+host crash/service restart | Existing containment/persistence foundation | P2-32 complete preview/probe containment and reboot |
+|48–72h soak | Monotonic fake-time foundation | No soak claimed; release gate remains open |
+
+## Metrics and residual failures
+
+P2-21 local530/5308.2222min; final hosted Main job13m08s, exceeding10min target.
+Earlier local529/530 failed `TelemetryStorageTests.RotationAndAgeRetentionAreBoundedAndIgnoreForeignFiles`
+at its first5s Flush. Four isolated repeats, class20/20 and unchanged full530/530
+passed; cause remains unestablished. No test/timeout was weakened.
+
+P2-24 local/reviewer/hosted outcomes are recorded in [P2-24](P2-24.md), including
+all failures, intentional legacy changes and limitations. No production incident
+rate, recovery latency, CPU benefit or universal zero-cut claim follows from fakes.
+Final local normal suite569/569,0 failed/skipped,8m41s;39 new cases vs P2-21.
+All136 original case identities retained,2 strict R18 defects OPEN, clean Release
+0 warnings/errors, Python provenance12/12+CI12/12. First full558/560 failed stale
+test reflection (corrected) and an unchanged slow-probe test (cause unresolved;
+isolated/related/final-full reruns passed). No timing assertion was weakened.
+
+Previously completed bench cohort was500 controlled stops,0 forced exits,
+p99~1199ms/max~1266ms; one loopback had100 tones/100 silent standby captures.
+That does not certify other connectors, live-source failures, Session0 or72h.
+
+## Next phase (not started)
+
+Stop for owner gate review. Close remaining bench/full matrix items before Gate C
+can pass. Only after authorization proceed with P2-30 per-output controllers,
+bounded persistence P2-31, process containment P2-32 and clock-step P2-33. No new
+production test window or deployment authority is inferred from this checkpoint.

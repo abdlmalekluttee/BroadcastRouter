@@ -37,11 +37,14 @@ public static class SourceProbeReadinessPolicy
         requiredProbes > 0 && consecutiveSustainedVideoProbes >= requiredProbes;
 
     public static SourceState Resolve(StreamProbeResult probe) =>
-        probe.FramesReceived || probe.AudioReceived
-            ? SourceState.Ready
-            : probe.Opened
-                ? SourceState.UnsupportedMedia
-                : SourceState.RtspUnavailable;
+        probe.FailureCategory is "InvalidOutput" or "NoStreams" or "Unknown" ? SourceState.Unknown
+            : !probe.Opened ? SourceState.RtspUnavailable
+            : probe.FailureCategory == "WaitingForKeyframe" ? SourceState.WaitingForKeyframe
+            : probe.Media?.Expectation == SourceMediaExpectation.AudioOnly
+                ? probe.DecodedAudioReceived && probe.Media.AudioCodec is not null ? SourceState.Ready : SourceState.Unknown
+            : probe.FramesReceived && probe.Media is { HasUsableVideo: true } ? SourceState.Ready
+            : probe.Media?.VideoCodec is not null ? SourceState.WaitingForKeyframe
+            : SourceState.Unknown;
 
     public static StreamProbeResult RetainAudioLedMode(StreamProbeResult current, bool previouslyAudioLed)
     {

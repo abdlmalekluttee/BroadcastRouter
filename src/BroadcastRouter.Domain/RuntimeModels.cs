@@ -107,6 +107,9 @@ public sealed record RouterSnapshot(
     bool EmergencyStopped,
     string StatusMessage,
     IReadOnlyList<PortStandbyStatus>? Standbys = null,
-    IReadOnlyDictionary<string, MediaSignalState>? PublisherPresence = null);
+    IReadOnlyDictionary<string, MediaSignalState>? PublisherPresence = null,
+    IReadOnlyDictionary<string, OutputMediaSelection>? OutputSelections = null);
+
+public sealed record OutputMediaSelection(Guid SessionId, bool IsFallback, MediaProperties? Media);
 
 public sealed record QueueItemSnapshot(string SourceId, int Priority, string Reason, long Sequence);

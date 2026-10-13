@@ -70,8 +70,8 @@ public sealed class OfflineFallbackTests
     {
         await using var lab = await RecoveryLab.Create();
         lab.Sources[lab.Source.Value] = lab.Sources[lab.Source.Value] with { State = SourceState.Ready, Media = RecoveryReadinessTests.Av().Media };
-        lab.Get<HashSet<string>>("_pendingMediaModeRestarts").Add(lab.Source.Value);
-        await lab.Invoke("RestartRoutesForMediaModeChangesAsync", CancellationToken.None);
+        lab.Get<HashSet<string>>("_pendingMediaModeObservations").Add(lab.Source.Value);
+        await lab.Invoke("RecordMediaModeChangesAsync", CancellationToken.None);
         Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
         Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
     }
@@ -135,6 +135,7 @@ public sealed class OfflineFallbackTests
     [InlineData("settings-revision")]
     [InlineData("simulation-mode")]
     [InlineData("device-rediscovery")]
+    [InlineData("media-declaration")]
     public async Task ChangeWhileWaitingForPortGateKeepsFallbackUntouched(string change)
     {
         await using var lab = await RecoveryLab.Create();
@@ -159,6 +160,8 @@ public sealed class OfflineFallbackTests
                 case "publisher": lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value].Invalidate(); break;
                 case "settings-revision": lab.Settings.ConfigurationRevision++; break;
                 case "simulation-mode": lab.Settings.SimulationMode = true; break;
+                case "media-declaration": lab.Settings.SourceMediaProfiles.Add(new() {
+                    SourceId = lab.Source.Value, Expectation = SourceMediaExpectation.AudioOnly }); break;
                 case "device-rediscovery":
                     var ports = lab.Get<Dictionary<string, DeckLinkPort>>("_ports");
                     ports["TEST-OUTPUT"] = ports["TEST-OUTPUT"] with { FfmpegName = "Remapped output" };

@@ -4,7 +4,7 @@ public enum SourceState
 {
     Known, Discovered, PublisherActive, Probing, Ready, WaitingForPort, Starting,
     Running, Reconnecting, PublisherDisconnected, RtspUnavailable, VideoStalled,
-    AudioOnly, UnsupportedMedia, Failed, Disabled, Ignored
+    AudioOnly, UnsupportedMedia, Failed, Disabled, Ignored, WaitingForKeyframe, Unknown
 }
 
 public enum RouteState
@@ -16,6 +16,7 @@ public enum RouteState
 public enum AssignmentMode { None, Automatic, Rule, Fixed, Manual, Preconfigured }
 public enum FallbackMode { Black, TestPattern, FreezeLastFrame, StandbySource, File }
 public enum StandbyPattern { Black, SmpteBars, SmpteHdBars, TestSource }
+public enum SourceMediaExpectation { ContinuousVideo, SparseVideo, AudioOnly }
 
 public sealed record WowzaServerConfiguration(
     string FriendlyName,
@@ -44,7 +45,8 @@ public sealed record MediaProperties(
     int? AudioSampleRate,
     int? AudioChannels,
     bool HasUsableVideo,
-    bool? Interlaced = null);
+    bool? Interlaced = null,
+    SourceMediaExpectation Expectation = SourceMediaExpectation.ContinuousVideo);
 
 public sealed record DiscoveredSource(
     SourceIdentity Identity,

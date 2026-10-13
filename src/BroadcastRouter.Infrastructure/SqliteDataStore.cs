@@ -417,6 +417,7 @@ public sealed class SqliteDataStore
 
     private static void ValidateSettings(OperatorSettings settings)
     {
+        SourceMediaPolicy.Validate(settings);
         if (settings.SchemaVersion < 1) throw new InvalidOperationException("Settings schema version is invalid.");
         if (settings.ConfigurationRevision < 0) throw new InvalidOperationException("Configuration revision is invalid.");
         ValidateOptionalPath(settings.MediaTools.FfmpegPath, "FFmpeg executable");

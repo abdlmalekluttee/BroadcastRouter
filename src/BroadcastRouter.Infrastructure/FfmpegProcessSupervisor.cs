@@ -18,7 +18,8 @@ public sealed record RouteProcessSnapshot(
     FfmpegMediaHealthSnapshot MediaHealth,
     Guid SessionId = default, DateTimeOffset? ProcessStartUtc = null, string? StderrLog = null,
     bool StopRequested = false,
-    MediaEvidenceSnapshot? IndependentMedia = null);
+    MediaEvidenceSnapshot? IndependentMedia = null,
+    MediaProperties? SelectedMedia = null);
 
 public enum RouteProcessPurpose { Live, Fallback, PortStandby }
 
@@ -61,7 +62,7 @@ public sealed class FfmpegProcessSupervisor(
         try
         {
             if (media is not null) await media.AttachToAsync(start).ConfigureAwait(false);
-            await StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken, port.StableId, media).ConfigureAwait(false);
+            await StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken, port.StableId, media, source.Media).ConfigureAwait(false);
         }
         catch
         {
@@ -178,7 +179,7 @@ public sealed class FfmpegProcessSupervisor(
         StartProcessAsync(source, purpose, start, cancellationToken);
 
     private async Task StartProcessAsync(SourceIdentity source, RouteProcessPurpose purpose, ProcessStartInfo start,
-        CancellationToken cancellationToken, string? outputId = null, FfmpegMediaSession? media = null)
+        CancellationToken cancellationToken, string? outputId = null, FfmpegMediaSession? media = null, MediaProperties? selectedMedia = null)
     {
         var ownerGate = OwnerGate(source.Value);
         await ownerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -200,6 +201,7 @@ public sealed class FfmpegProcessSupervisor(
             var process = new Process { StartInfo = start, EnableRaisingEvents = true };
             var managed = new ManagedProcess(source, purpose, process, _clock.Now);
             managed.Media = media;
+            managed.SelectedMedia = selectedMedia;
             managed.OutputId = outputId;
             managed.StderrLog = telemetry?.StderrReference(managed.SessionId);
             try
@@ -496,7 +498,7 @@ public sealed class FfmpegProcessSupervisor(
         var failure = managed.RefreshInputFailure(observedFailure, media);
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
             managed.Errors.ToArray(), exitCode, failure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
-            Volatile.Read(ref managed.StopRequested) != 0, media);
+            Volatile.Read(ref managed.StopRequested) != 0, media, managed.SelectedMedia);
     }
 
     private static RouteProcessSnapshot CreateRunningSnapshot(ManagedProcess managed)
@@ -509,7 +511,7 @@ public sealed class FfmpegProcessSupervisor(
         var failure = managed.RefreshInputFailure(observedFailure, media);
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
             Array.Empty<string>(), null, failure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
-            Volatile.Read(ref managed.StopRequested) != 0, media);
+            Volatile.Read(ref managed.StopRequested) != 0, media, managed.SelectedMedia);
     }
 
     private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, Process process,
@@ -528,6 +530,7 @@ public sealed class FfmpegProcessSupervisor(
         public DateTimeOffset StartedAt { get; } = startedAt;
         public FfmpegProgressParser Parser { get; } = new();
         public FfmpegMediaSession? Media { get; set; }
+        public MediaProperties? SelectedMedia { get; set; }
         public FfmpegMediaStarvationDetector MediaStarvationDetector { get; } = new();
         public FfmpegAudioFailureDetector AudioFailureDetector { get; } = new();
         public FfmpegMediaHealthTracker MediaHealth { get; } = new();

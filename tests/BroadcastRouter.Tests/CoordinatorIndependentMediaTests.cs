@@ -154,8 +154,9 @@ public sealed class CoordinatorIndependentMediaTests
         Exception? error;
         if (path == "media-mode")
         {
-            lab.Get<HashSet<string>>("_pendingMediaModeRestarts").Add(sourceId);
-            error = await Record.ExceptionAsync(() => lab.Invoke("RestartRoutesForMediaModeChangesAsync", CancellationToken.None));
+            lab.Get<HashSet<string>>("_pendingMediaModeObservations").Add(sourceId);
+            error = await Record.ExceptionAsync(() => lab.Invoke("RecordMediaModeChangesAsync", CancellationToken.None));
+            Assert.Empty(lab.Get<HashSet<string>>("_pendingMediaModeObservations"));
         }
         else
         {
