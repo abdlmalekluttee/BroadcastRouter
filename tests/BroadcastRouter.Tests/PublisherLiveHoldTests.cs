@@ -95,9 +95,12 @@ internal static class PublisherLiveHoldTests
         Check(lab.Process.Running && lab.Process.ProcessId == pid);
         Check(lab.Store.ReadLogsAsync("RecoveryHold").Result.Count == 1);
         lab.Command("disable-live-hold");
-        lab.RunFastInput(() => !lab.Process.Running && lab.Current.State == RouteState.Reconnecting);
-        Check(!lab.Process.Running);
-        Check(lab.Current.State == RouteState.Reconnecting);
+        lab.RunFastInput();
+        // Disabling the optional hold is not consent to kill on stderr alone.
+        // This fixture has no independent PCM/video observations. The dedicated
+        // coordinator fixtures separately prove recovery with corroboration.
+        Check(lab.Process.Running && lab.Process.ProcessId == pid);
+        Check(lab.Current.RestartCount == 0);
     }
 
     public static void DisconnectAndExit()

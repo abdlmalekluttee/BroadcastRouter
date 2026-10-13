@@ -26,12 +26,13 @@ public sealed class FfmpegMediaSessionTests
         var start = Command();
         await session.AttachToAsync(start);
         var args = start.ArgumentList.ToArray();
-        var destinations = args.Where(arg => arg.StartsWith(@"\\.\pipe\broadcast-router-media-", StringComparison.Ordinal)).ToArray();
+        var destinations = FfmpegAudioSessionIntegrationTests.Endpoints(args);
         Assert.Equal(expectedChannels, destinations.Length);
         Assert.Equal(expectedChannels, destinations.Distinct().Count());
         Assert.Equal("NUL", args[^1]);
         Assert.Equal(video, args.Contains("-stats_enc_pre:v:0"));
-        Assert.Equal(audio && includeAudio, args.Contains("-stats_enc_pre:a:0"));
+        Assert.DoesNotContain("-stats_enc_pre:a:0", args);
+        Assert.Equal(audio && includeAudio, args.Any(arg => arg.StartsWith("astats=", StringComparison.Ordinal)));
         Assert.Equal(video, args.Contains("-stats_mux_pre:v:0"));
         Assert.Equal(audio && includeAudio, args.Contains("-stats_mux_pre:a:0"));
         Assert.Equal(expectedChannels, session.Snapshot(true).Signals.Count);
@@ -137,12 +138,11 @@ public sealed class FfmpegMediaSessionTests
     private static ProcessStartInfo Command()
     {
         var start = new ProcessStartInfo("synthetic.exe");
-        foreach (var arg in new[] { "-f", "null", "NUL" }) start.ArgumentList.Add(arg);
+        foreach (var arg in new[] { "-af", "aresample=48000:async=1:first_pts=0", "-f", "null", "NUL" }) start.ArgumentList.Add(arg);
         return start;
     }
 
-    private static string[] PipeNames(ProcessStartInfo start) => start.ArgumentList
-        .Where(arg => arg.StartsWith(@"\\.\pipe\broadcast-router-media-", StringComparison.Ordinal))
+    private static string[] PipeNames(ProcessStartInfo start) => FfmpegAudioSessionIntegrationTests.Endpoints(start.ArgumentList)
         .Select(arg => arg[9..]).ToArray();
 
     private static async Task<StreamWriter[]> Connect(string[] names)
@@ -168,8 +168,9 @@ public sealed class FfmpegMediaSessionTests
         {
             if (i > 0) time.Advance(TimeSpan.FromMilliseconds(500));
             var at = clock.Now;
-            var records = new[] { $"brmedia|pre|v|{i}|{i}|1/25|{i}", $"brmedia|pre|a|{i}|{i * 1024}|1/48000|{i}",
-                $"brmedia|mux|v|{i}", $"brmedia|mux|a|{i}" };
+            var records = new[] { $"brmedia|pre|v|{i}|{i}|1/25|{i}",
+                $"brmedia|mux|v|{i}", $"brmedia|mux|a|{i}",
+                $"frame:{i} pts:{i * 1024} pts_time:0\nlavfi.astats.Overall.Number_of_samples={(i + 1) * 1024}.000000" };
             for (var index = 0; index < writers.Length; index++) await writers[index].WriteLineAsync(records[index]);
             await FaultHarnessTests.Eventually(() => session.Snapshot(true).Signals.All(signal => signal.LastAdvancedAt == at));
         }

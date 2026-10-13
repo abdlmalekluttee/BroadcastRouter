@@ -43,7 +43,7 @@ public sealed class StandbyLifecycleTests
         Task stop, retry;
         try
         {
-            stop = lab.Invoke("StopRouteAsync", lab.Source.Value, true, CancellationToken.None, true);
+            stop = lab.Invoke("StopRouteAsync", lab.Source.Value, true, CancellationToken.None, true, false);
             retry = lab.Invoke("StartFallbackAsync", staleRoute, CancellationToken.None);
             Assert.False(stop.IsCompleted);
             Assert.False(retry.IsCompleted);

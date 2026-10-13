@@ -40,6 +40,8 @@ public static class MediaToolValidator
         var rtspOptions = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-h", "demuxer=rtsp"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         reportProgress?.Invoke("DeckLink termination capability inspection");
         var deckLinkOptions = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-h", "muxer=decklink"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("Independent media-observation capability inspection");
+        var independentMedia = await FfmpegMediaStatsCapability.InspectAsync(paths.FfmpegPath, cancellationToken).ConfigureAwait(false);
         reportProgress?.Invoke("Windows media environment inspection");
         var environment = await SystemEnvironmentScanner.ScanAsync(paths, cancellationToken).ConfigureAwait(false);
 
@@ -71,6 +73,9 @@ public static class MediaToolValidator
         findings.Add(hasWindowsDeckLinkSafeTerminate
             ? "PASS: Windows DeckLink safe-termination support is available and will be enabled for route outputs."
             : "WARN: This FFmpeg build does not expose the optional Windows DeckLink safe-termination workaround.");
+        findings.Add(independentMedia
+            ? "PASS: Decoder provenance, decoded PCM metadata, and mux-submission observations are supported."
+            : "WARN: Independent media observations are unavailable. Missing measurements must remain Unknown, not authorize recovery.");
         findings.Add(missingPreviewFilters.Length == 0 && hasH264Encoder && hasAacEncoder && hasMp4Muxer
             ? "PASS: Embedded preview filters, H.264/AAC encoders, and MP4 output are available."
             : $"WARN: Embedded preview is unavailable or incomplete. Missing: {string.Join(", ", missingPreviewFilters
@@ -86,7 +91,7 @@ public static class MediaToolValidator
             && ffmpeg.OutputDevices.Count > 0 && missingFilters.Length == 0 && hasPixelFormat && hasRawVideo && hasRtspTimeout && driver;
         return new(new(valid ? ToolValidationState.Valid : ToolValidationState.Invalid, ffmpeg.VersionLine, ffprobeVersion,
                 ffmpeg.HasDeckLinkOutput, driver, ffmpeg.OutputDevices.Count, findings, (clock ?? SupervisionClock.System).UtcNow,
-                hasWindowsDeckLinkSafeTerminate, missingStandbyFilters.Length == 0),
+                hasWindowsDeckLinkSafeTerminate, missingStandbyFilters.Length == 0, independentMedia),
             ffmpeg.OutputDevices);
     }
 

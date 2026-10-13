@@ -9,6 +9,32 @@ namespace BroadcastRouter.Tests;
 
 public sealed class SupervisorMediaEvidenceTests
 {
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task ExplicitStartCapabilityAppliesOnlyToTheNewSession(bool constructorDefault, bool qualified)
+    {
+        await using var fixture = new MediaChildFixture();
+        await using var supervisor = new FfmpegProcessSupervisor(new(fixture.Executable,UseIndependentMediaStats:constructorDefault),TimeSpan.FromSeconds(1));
+        await supervisor.StartAsync(new(fixture.Source.Identity,"TEST-OUTPUT","test-mode",RouteState.Starting,AssignmentMode.Manual,false),
+            fixture.Source,new("TEST-OUTPUT","TEST-DEVICE","Synthetic",0,0,null,[]),
+            new("test-mode","Test mode",new(1920,1080,25,1,"uyvy422"),false,0),CancellationToken.None,qualified);
+        Assert.Equal(qualified,Assert.Single(supervisor.RunningSnapshot()).IndependentMedia is not null);
+    }
+
+    [Fact]
+    public async Task CoordinatorUsesQualifiedMediaCapabilityWhenItStartsANewLiveOwner()
+    {
+        await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
+        await lab.InstallFakeMediaTools();
+        lab.Set("_validation",new MediaToolValidation(ToolValidationState.Valid,"fake","fake",true,true,1,[],lab.Clock.Now,
+            IndependentMediaStatsSupported:true));
+        for(var i=0;i<100&&!lab.Supervisor.IsRunning(lab.Source,RouteProcessPurpose.Live);i++)
+        { await lab.RestartDue(); await Task.Delay(20); }
+        Assert.True(lab.Supervisor.IsRunning(lab.Source,RouteProcessPurpose.Live));
+        Assert.NotNull(lab.Owner.IndependentMedia);
+    }
+
     [Fact]
     public async Task LiveOwnerReportsIndependentEvidenceAndClosesItsPipesOnStop()
     {
@@ -70,7 +96,7 @@ public sealed class SupervisorMediaEvidenceTests
     private static async Task AssertPipesClosed(MediaChildFixture fixture)
     {
         var arguments = JsonSerializer.Deserialize<string[]>(await File.ReadAllTextAsync(Path.Combine(fixture.Root, "arguments.json")))!;
-        var pipes = arguments.Where(arg => arg.StartsWith(@"\\.\pipe\broadcast-router-media-", StringComparison.Ordinal)).ToArray();
+        var pipes = FfmpegAudioSessionIntegrationTests.Endpoints(arguments);
         Assert.Equal(4, pipes.Length);
         foreach (var endpoint in pipes)
         {
@@ -80,26 +106,28 @@ public sealed class SupervisorMediaEvidenceTests
         }
     }
 
-    private sealed class MediaChildFixture : IAsyncDisposable
+    internal sealed class MediaChildFixture : IAsyncDisposable
     {
         internal string Root { get; } = Path.Combine(Path.GetTempPath(), "router-recovery-media-" + Guid.NewGuid().ToString("N"));
         internal string Executable => Path.Combine(Root, "BroadcastRouter.FakeFfmpeg.exe");
         internal DiscoveredSource Source { get; } = new(new("TEST", "fixture", "_default_", "synthetic-media"), "Synthetic",
             new Uri("rtsp://example.invalid/fixture"), SourceState.Ready, 0,
             new("h264", "aac", 1920, 1080, 25, null, 48000, 2, true));
-        internal MediaChildFixture(bool exitImmediately = false)
+        internal MediaChildFixture(bool exitImmediately = false, string? stderr = null)
         {
             Directory.CreateDirectory(Root);
             var child = Path.Combine(FaultHarnessTests.RepositoryRoot(), "tests", "BroadcastRouter.FakeFfmpeg", "bin", "Release", "net8.0");
             foreach (var file in Directory.GetFiles(child, "BroadcastRouter.FakeFfmpeg.*")) File.Copy(file, Path.Combine(Root, Path.GetFileName(file)));
             var events = new List<object>();
+            if (stderr is not null) events.Add(new { atMilliseconds=0, channel="stderr", text=stderr });
             for (var i = 0; i < (exitImmediately ? 0 : 150); i++)
             {
                 events.Add(new { atMilliseconds=i*20, channel="-stats_enc_pre:v:0", text=$"brmedia|pre|v|{i}|{i}|1/25|{i}" });
-                events.Add(new { atMilliseconds=i*20, channel="-stats_enc_pre:a:0", text=$"brmedia|pre|a|{i}|{i*1024}|1/48000|{i}" });
+                events.Add(new { atMilliseconds=i*20, channel="pcm", text=$"frame:{i} pts:{i*1024} pts_time:0\nlavfi.astats.Overall.Number_of_samples={(i+1)*1024}.000000" });
                 events.Add(new { atMilliseconds=i*20, channel="-stats_mux_pre:v:0", text=$"brmedia|mux|v|{i}" });
                 events.Add(new { atMilliseconds=i*20, channel="-stats_mux_pre:a:0", text=$"brmedia|mux|a|{i}" });
             }
+            if (!exitImmediately) events.Add(new { atMilliseconds=3020, channel="stderr", text="Synthetic observation batch complete" });
             File.WriteAllText(Path.Combine(Root, "live.json"), JsonSerializer.Serialize(new { events, captureArguments=true,
                 exitAfterMilliseconds=exitImmediately ? (int?)0 : null }));
         }
