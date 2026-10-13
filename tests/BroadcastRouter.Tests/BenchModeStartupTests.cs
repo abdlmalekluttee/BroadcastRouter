@@ -11,6 +11,47 @@ namespace BroadcastRouter.Tests;
 
 public sealed class BenchModeStartupTests
 {
+    [Theory]
+    [InlineData("broadcast-router.db")]
+    [InlineData("telemetry/segment.jsonl")]
+    [InlineData("telemetry-directory")]
+    public async Task LinkedWritableDataCannotPassIsolationPreflight(string descendant)
+    {
+        await using var fixture = await BenchReleasePreflightTests.Fixture.Create();
+        var app = Path.Combine(Path.GetTempPath(), "bench-candidate-" + Guid.NewGuid().ToString("N"));
+        var data = Path.Combine(app, "data");
+        Directory.CreateDirectory(data);
+        try
+        {
+            string link;
+            if (descendant == "telemetry-directory")
+            {
+                link = Path.Combine(data, "telemetry");
+                Directory.CreateDirectory(link);
+            }
+            else
+            {
+                link = Path.Combine(data, descendant);
+                Directory.CreateDirectory(Path.GetDirectoryName(link)!);
+                await File.WriteAllTextAsync(link, "Synthetic linked-file metadata fixture; not a real database.");
+            }
+            var file = Path.Combine(app, "bench-policy.json");
+            await File.WriteAllTextAsync(file, JsonSerializer.Serialize(new BenchStartupPolicy(fixture.Root, fixture.Database,
+                BenchOutputGuardTests.Bindings().ToArray())));
+            var error = await Assert.ThrowsAsync<BenchSafetyException>(() => BenchModeStartup.LoadAndVerifyAsync(file, app, data,
+                _ => Task.FromResult<IReadOnlyList<BenchProcessEvidence>>([]),
+                // Simulate the OS metadata boundary; no symlink privilege or
+                // production link is needed to prove the refusal path.
+                path => File.GetAttributes(path) | (Path.GetFullPath(path).Equals(Path.GetFullPath(link), StringComparison.OrdinalIgnoreCase)
+                    ? FileAttributes.ReparsePoint : 0)));
+            Assert.Contains("reparse-point", error.Message);
+        }
+        finally
+        {
+            Directory.Delete(app, true);
+        }
+    }
+
     [Fact]
     public async Task IsolatedReleasedCandidateReceivesItsImmutableGuardWithoutCreatingData()
     {

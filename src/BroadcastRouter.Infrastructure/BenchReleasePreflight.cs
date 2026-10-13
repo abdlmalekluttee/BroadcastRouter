@@ -65,7 +65,7 @@ public static class BenchReleasePreflight
         using var settings = JsonDocument.Parse(settingsRows[0]);
         if (!settings.RootElement.TryGetProperty("deckLinkPortOverrides", out var overrides) || overrides.ValueKind != JsonValueKind.Array)
             throw Refused("explicit output selections are missing");
-        var ids = guard.Bindings.Select(b => b.StableId).ToHashSet(StringComparer.Ordinal);
+        var ids = guard.Bindings.Select(b => b.StableId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var binding in guard.Bindings)
         {
             var matches = overrides.EnumerateArray().Where(row => row.TryGetProperty("stableId", out var id)
@@ -82,15 +82,34 @@ public static class BenchReleasePreflight
                 throw Refused("device inventory is missing or ambiguous");
             try { guard.ValidateIdentity(matches[0]); }
             catch (BenchSafetyException) { throw Refused("physical identity no longer matches the approved allowlist"); }
+            ids.UnionWith(matches[0].PreviousStableIds ?? []);
         }
         foreach (var row in await Rows("SELECT json FROM routes", 512))
         {
             using var route = JsonDocument.Parse(row);
-            if (!route.RootElement.TryGetProperty("sourceId", out var sourceId) || string.IsNullOrWhiteSpace(sourceId.GetString())
-                || !route.RootElement.TryGetProperty("state", out _)) throw Refused("route evidence is incomplete");
+            var root = route.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || root.EnumerateObject().GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() != 1)
+                || !root.TryGetProperty("sourceId", out var sourceId) || sourceId.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(sourceId.GetString())
+                || !root.TryGetProperty("state", out var state) || state.ValueKind != JsonValueKind.String
+                || !Enum.TryParse<RouteState>(state.GetString(), true, out var parsedState) || !Enum.IsDefined(parsedState))
+                throw Refused("route evidence is incomplete or noncanonical");
             foreach (var property in new[] { "portId", "desiredPortId" })
-                if (route.RootElement.TryGetProperty(property, out var portId) && portId.ValueKind == JsonValueKind.String
-                    && ids.Contains(portId.GetString()!)) throw Refused("a test connector still carries a current or saved route");
+            {
+                // Persisted runtime routes contain both fields, including explicit
+                // nulls. Never interpret missing or corrupt evidence as released.
+                if (!root.TryGetProperty(property, out var portId)
+                    || portId.ValueKind is not (JsonValueKind.Null or JsonValueKind.String))
+                    throw Refused("route port evidence is incomplete or noncanonical");
+                if (portId.ValueKind == JsonValueKind.Null) continue;
+                var id = portId.GetString();
+                if (string.IsNullOrWhiteSpace(id)) throw Refused("route port identity is empty");
+                if (ids.Contains(id)) throw Refused("a test connector still carries a current or saved route");
+                if (ports.Count(p => p.StableId.Equals(id, StringComparison.OrdinalIgnoreCase)
+                    || (p.PreviousStableIds?.Contains(id, StringComparer.OrdinalIgnoreCase) ?? false)) != 1)
+                    throw Refused("route port identity cannot be resolved unambiguously");
+            }
         }
         return new(settingsRows[0], ports);
 
@@ -125,6 +144,14 @@ public static class BenchReleasePreflight
                 continue;
             }
             var args = SplitCommandLine(process.CommandLine);
+            // Nested muxers embed destinations inside a token (and may select a
+            // device by display name). They cannot prove a connector is free.
+            if (Enumerable.Range(0, Math.Max(0, args.Length - 1)).Any(i => args[i] == "-f"
+                && (args[i + 1].Equals("tee", StringComparison.OrdinalIgnoreCase)
+                    || args[i + 1].Equals("fifo", StringComparison.OrdinalIgnoreCase)))
+                || args.Any(arg => arg.Contains("decklink", StringComparison.OrdinalIgnoreCase)
+                    && arg.Contains('[') && arg.Contains(']')))
+                throw Refused("nested or ambiguous media destinations cannot certify release");
             if (args.Any(handles.Contains)) throw Refused("a process still targets a test connector");
             var outputs = Enumerable.Range(0, Math.Max(0, args.Length - 1)).Count(i => args[i] == "-f" && args[i + 1] == "decklink");
             if (outputs > 0 && (outputs != 1 || args.Length == 0 || !protectedHandles.Contains(args[^1])))

@@ -21,7 +21,8 @@ Populate these from fresh, verified hardware identity evidence, never a model na
 or a computed handle based on display order. Do not publish the operational policy.
 
 Candidate application and data must be separate from production. Data and policy
-must be inside the candidate folder; reparse points are rejected. The candidate
+must be inside the candidate folder; reparse points, including existing writable
+database/telemetry descendants, are rejected before any writable store opens. The candidate
 listener must use a literal loopback address and a separate unused HTTP port. Start
 with a clean candidate database containing only the dedicated approved test source.
 No production source inventory, credentials or database copy belongs in that runtime.
@@ -31,10 +32,12 @@ At startup, before opening the candidate database or starting routing:
 1. Read production's valid active settings, port inventory and routes through a
    read-only SQLite connection. No initialization, migrations or fallback defaults.
 2. Require explicit disabled output selections for all five matching identities and
-   no current or saved assignment on those connectors.
+   no current or saved assignment on those connectors, including legacy IDs and
+   case-insensitive identity matches. Missing or noncanonical route fields refuse startup.
 3. Collect current Windows process command lines using a hidden, contained, bounded
    read-only helper. Refuse matching handles, unreadable FFmpeg owners, or ambiguous
-   DeckLink name-based output owners. Protected outputs must use their known handles.
+   DeckLink name-based output owners. Nested tee/fifo destinations cannot certify
+   release and are refused. Protected outputs must use their known direct handles.
 4. Re-read the production state; any conflicting selection/route or settings change
    rejects startup. Missing, corrupt, locked or incomplete evidence rejects startup.
 

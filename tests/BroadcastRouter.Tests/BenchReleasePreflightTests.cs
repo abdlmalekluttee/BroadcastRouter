@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using BroadcastRouter.Domain;
 using BroadcastRouter.Infrastructure;
 using Microsoft.Data.Sqlite;
@@ -9,6 +10,51 @@ namespace BroadcastRouter.Tests;
 
 public sealed class BenchReleasePreflightTests
 {
+    [Theory]
+    [InlineData("lowercase-id")]
+    [InlineData("case-varied-property")]
+    [InlineData("legacy-id")]
+    [InlineData("missing-port")]
+    [InlineData("missing-desired-port")]
+    [InlineData("numeric-port")]
+    [InlineData("invalid-state")]
+    [InlineData("duplicate-property")]
+    public async Task IncompleteOrNoncanonicalRouteEvidenceCannotCertifyRelease(string defect)
+    {
+        await using var fixture = await Fixture.Create();
+        var row = new JsonObject { ["sourceId"] = "TEST/fixture/default/source", ["state"] = "WaitingForStream",
+            ["portId"] = null, ["desiredPortId"] = null };
+        if (defect == "lowercase-id") row["desiredPortId"] = BenchOutputGuardTests.Port(5).StableId.ToLowerInvariant();
+        if (defect == "case-varied-property") { row.Remove("portId"); row["PortId"] = BenchOutputGuardTests.Port(5).StableId; }
+        if (defect == "legacy-id")
+        {
+            await fixture.Store.UpsertPortAsync(BenchOutputGuardTests.Port(5) with { PreviousStableIds = ["LEGACY-FIFTH"] });
+            row["desiredPortId"] = "LEGACY-FIFTH";
+        }
+        if (defect == "missing-port") row.Remove("portId");
+        if (defect == "missing-desired-port") row.Remove("desiredPortId");
+        if (defect == "numeric-port") row["portId"] = 123;
+        if (defect == "invalid-state") row["state"] = "not-a-state";
+        if (defect == "duplicate-property") row["PortId"] = BenchOutputGuardTests.Port(5).StableId;
+        await fixture.Sql("INSERT INTO routes(source_id,state,locked,json,updated_utc) VALUES('synthetic','WaitingForStream',0,'" + row.ToJsonString() + "','2026-01-01')");
+        var error = await Assert.ThrowsAsync<BenchSafetyException>(() => BenchReleasePreflight.EnsureReleasedAsync(
+            fixture.Database, new(BenchOutputGuardTests.Bindings()), _ => Task.FromResult<IReadOnlyList<BenchProcessEvidence>>([])));
+        Assert.Contains("Bench preflight refused", error.Message);
+    }
+
+    [Theory]
+    [InlineData("ffmpeg.exe -i synthetic -f tee \"[f=decklink]TEST-HANDLE-5\"")]
+    [InlineData("renamed.exe -i synthetic -f tee \"[f=decklink]Synthetic model (5)\"")]
+    [InlineData("ffmpeg.exe -i synthetic -f fifo -fifo_format decklink TEST-HANDLE-5")]
+    public async Task NestedDeckLinkOwnersCannotBeCertifiedAsReleased(string command)
+    {
+        await using var fixture = await Fixture.Create();
+        var error = await Assert.ThrowsAsync<BenchSafetyException>(() => BenchReleasePreflight.EnsureReleasedAsync(
+            fixture.Database, new(BenchOutputGuardTests.Bindings()),
+            _ => Task.FromResult<IReadOnlyList<BenchProcessEvidence>>([new(123, "renamed.exe", command)])));
+        Assert.Contains("Bench preflight refused", error.Message);
+    }
+
     [Theory]
     [InlineData("enabled")]
     [InlineData("missing-selection")]
