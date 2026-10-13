@@ -21,7 +21,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-03 retention follow-up | R10, R11; Gate A capacity gap | fix/P2-03-shared-retention | [#72](https://github.com/abdlmalekluttee/BroadcastRouter/pull/72) | Fresh review startup finding fixed test-first; normal262/262, strict seven OPEN; measured capacity and visible alarm; hosted checks pending | [Retention evidence](phase2/P2-03-retention.md) |
 | P2-03 disk budget | R10,R11; owner Gate B ruling | fix/P2-03-disk-budget | [#73](https://github.com/abdlmalekluttee/BroadcastRouter/pull/73) | Review findings fixed test-first; normal273/273, strict seven OPEN, build and all hosted checks green; awaiting owner | [Disk budget](phase2/P2-03-disk-budget.md) |
 | P2-23 | R07 | fix/P2-23-strict-wowza | [#74](https://github.com/abdlmalekluttee/BroadcastRouter/pull/74) | Fixture corrections reviewed/test-first; Release315/315, strict six OPEN; Build/Main suite/KnownDefect hosted rerun38314054985 all green | [Strict inventory](phase2/P2-23.md) |
-| P2-22 | R06 | fix/P2-22-media-health | Not opened | WIP integrated capability/PCM/corroboration/UI; earlier Release408/408, later438/439 with audit-test failure retained; final serial suite/review/bench open; not merge/deploy ready | [Media evidence checkpoint](phase2/P2-22.md) |
+| P2-22 | R06 | fix/P2-22-media-health | Draft publication pending | Independent review findings fixed test-first; Release466/466, strict five OPEN, rebuild0 warnings/errors, provenance/CI12 each; earlier failures retained; hosted/bench pending; not deployment-ready | [Media evidence checkpoint](phase2/P2-22.md) |
 
 ## Open KnownDefect register
 
@@ -36,7 +36,7 @@ to the normal suite in the same PR.
 | SamePacketAudioBurstDoesNotAuthorizeRecovery | R04 | Open; exact assertion failure required by CI |
 | MillisecondQueueWarningsDoNotAuthorizeRecovery | R04 | Open; exact assertion failure required by CI |
 | DuplicateBurstRespectsConfirmationWindow | R05 | Open; exact assertion failure required by CI |
-| FreshProgressDoesNotConcealStalledMedia | R06 | Identical probe promoted on P2-22 WIP branch; coordinator/hold/UI integrated locally; final verification/review and bench qualification still OPEN |
+| FreshProgressDoesNotConcealStalledMedia | R06 | Identical probe promoted on P2-22 branch; coordinator/hold/UI and review fixes pass local466/466; hosted and broader bench/Phase C qualification still OPEN |
 | MissingIncomingStreamsIsUnknown | R07 | Fixed on P2-23 branch; identical assertion promoted to normal suite; not merged/deployed |
 | DiagnosticActorIsRedacted | R18 | Open; exact assertion failure required by CI |
 | DiagnosticReasonIsRedacted | R18 | Open; exact assertion failure required by CI |

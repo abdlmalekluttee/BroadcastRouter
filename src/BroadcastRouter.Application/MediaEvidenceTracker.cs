@@ -65,10 +65,17 @@ public sealed class MediaEvidenceTracker(IEnumerable<MediaSignalKind> required, 
 
     private MediaSignalState State(Counter signal, DateTimeOffset now)
     {
-        if (!signal.EverQualified || signal.LastAdvance is null) return MediaSignalState.Unknown;
+        if (signal.LastAdvance is null) return MediaSignalState.Unknown;
         var ageState = AgeState(now - signal.LastAdvance.Value);
-        if (ageState == MediaSignalState.Failed && now - startedAt < StartupQualification)
-            return MediaSignalState.Suspect;
+        if (ageState == MediaSignalState.Failed)
+        {
+            // Valid instrumentation can prove an early stall even when the
+            // decoder never completed sustained Healthy qualification. Absent
+            // or invalidated instrumentation still has no LastAdvance.
+            if (now - startedAt >= StartupQualification) return MediaSignalState.Failed;
+            return signal.EverQualified ? MediaSignalState.Suspect : MediaSignalState.Unknown;
+        }
+        if (!signal.EverQualified) return MediaSignalState.Unknown;
         if (ageState == MediaSignalState.Healthy && signal.LastAdvance - signal.RecoverySince < RecoveryWindow)
             return MediaSignalState.Suspect;
         return ageState;

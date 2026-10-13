@@ -62,10 +62,10 @@ public sealed class CoordinatorIndependentMediaTests
         Assert.Equal(session, lab.Owner.SessionId);
         Assert.Equal(0, lab.Route.RestartCount);
         await lab.Telemetry!.FlushAsync();
-        var decision = Assert.Single(lab.Decisions().Where(value => value.GetProperty("Action").GetString() == "KeepOwner"
-            && value.GetProperty("Result").GetString() == "InsufficientMediaEvidence"));
+        var decision = Assert.Single(lab.Decisions(), value => value.GetProperty("Action").GetString() == "KeepOwner"
+            && value.GetProperty("Result").GetString() == "InsufficientMediaEvidence");
         Assert.Single(decision.GetProperty("Before").GetProperty("IndependentMedia").GetProperty("Signals")
-            .EnumerateArray().Where(s => s.GetProperty("State").GetString() == "Failed"));
+            .EnumerateArray(), s => s.GetProperty("State").GetString() == "Failed");
     }
 
     [Theory]
@@ -173,8 +173,8 @@ public sealed class CoordinatorIndependentMediaTests
         await lab.Monitor(); // Repeated observations are not new decisions or a log flood.
         await lab.Telemetry!.FlushAsync();
         var decisions = lab.Decisions();
-        Assert.Single(decisions.Where(value => value.GetProperty("Action").GetString() == "KeepOwner"
-            && value.GetProperty("Result").GetString() == "InsufficientMediaEvidence"));
+        Assert.Single(decisions, value => value.GetProperty("Action").GetString() == "KeepOwner"
+            && value.GetProperty("Result").GetString() == "InsufficientMediaEvidence");
         Assert.DoesNotContain(decisions, value => value.GetProperty("Action").GetString() is "StopOwnedProcess" or "StopForOutputHandoff");
     }
 
@@ -197,9 +197,9 @@ public sealed class CoordinatorIndependentMediaTests
         Assert.Equal("MediaAdvancementLost",lab.Route.FailureCategory);
         Assert.Equal(1,lab.Route.RestartCount);
         await lab.Telemetry!.FlushAsync();
-        var stop = Assert.Single(lab.Decisions().Where(value => value.GetProperty("Trigger").GetString() == "MediaAdvancementLost"
+        var stop = Assert.Single(lab.Decisions(), value => value.GetProperty("Trigger").GetString() == "MediaAdvancementLost"
             && value.GetProperty("Action").GetString() == "StopForOutputHandoff"
-            && value.GetProperty("Result").GetString() == "Requested"));
+            && value.GetProperty("Result").GetString() == "Requested");
         var evidence = stop.GetProperty("Before").GetProperty("IndependentMedia");
         Assert.True(evidence.GetProperty("ConfirmedMediaFailure").GetBoolean());
         Assert.Equal(4, evidence.GetProperty("Signals").GetArrayLength());
