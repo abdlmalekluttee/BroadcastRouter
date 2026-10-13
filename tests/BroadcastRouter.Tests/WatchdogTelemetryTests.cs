@@ -16,7 +16,7 @@ public sealed class WatchdogTelemetryTests
     [InlineData("healthy-slow-disk")]
     [InlineData("async-stall")]
     [InlineData("synchronous-stall")]
-    public async Task TerminationEvidenceIsDrainedBeforeFakeTerminationAndSlowDatabaseIsBounded(string databaseMode)
+    public async Task StallAlarmPreservesHostAndSlowDatabaseIsBounded(string databaseMode)
     {
         var root = Path.Combine(Path.GetTempPath(), "router-watchdog-log-" + Guid.NewGuid().ToString("N"));
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -42,14 +42,14 @@ public sealed class WatchdogTelemetryTests
             };
             await Task.Run(() => watchdog.TerminateForStallAsync("synthetic stall", "CoordinatorStall", new(ProgressAgeMilliseconds: 121000),
                 TimeSpan.FromMinutes(2), CancellationToken.None)).WaitAsync(TimeSpan.FromSeconds(7));
-            Assert.Equal(1, calls);
+            Assert.Equal(0, calls);
             // The queue is flushed before the database wait, so a hung DB cannot consume the evidence budget first.
             var entries = Directory.GetFiles(root, "*.decisions.*.jsonl").SelectMany(File.ReadAllLines).ToArray();
             Assert.Single(entries);
             using var document = JsonDocument.Parse(entries[0]);
             var value = document.RootElement.GetProperty("Event");
-            Assert.Equal("HostFailFast", value.GetProperty("Action").GetString());
-            Assert.Equal("TerminationRequestedNotConfirmed", value.GetProperty("Result").GetString());
+            Assert.Equal("ControllerStallAlarm", value.GetProperty("Action").GetString());
+            Assert.Equal("OwnershipNotProvenSafeHostPreserved", value.GetProperty("Result").GetString());
             Assert.Equal(120000, value.GetProperty("WindowMilliseconds").GetDouble());
         }
         finally { release.TrySetResult(); if (Directory.Exists(root)) Directory.Delete(root, true); }
@@ -78,9 +78,9 @@ public sealed class WatchdogTelemetryTests
             {
                 await watchdog.TerminateForStallAsync("synthetic stall", "CoordinatorStall", new(),
                     TimeSpan.FromMinutes(2), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
-                Assert.Equal(1, calls);
+                Assert.Equal(0, calls);
                 Assert.Equal(0, telemetry.Status.Written);
-                Assert.Contains(logger.Messages, message => message.Contains("termination evidence may be incomplete", StringComparison.Ordinal));
+                Assert.Contains(logger.Messages, message => message.Contains("stall evidence may be incomplete", StringComparison.Ordinal));
             }
             finally { release.TrySetResult(); }
             await telemetry.FlushAsync().WaitAsync(TimeSpan.FromSeconds(5));
