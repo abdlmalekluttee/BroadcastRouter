@@ -28,6 +28,22 @@ var script = JsonSerializer.Deserialize<Script>(await File.ReadAllTextAsync(scri
 if (script.Events.Any(e => e.AtMilliseconds is < 0 or > 60000)
     || script.ExitAfterMilliseconds is < 0 or > 60000
     || script.QuitDelayMilliseconds is < 0 or > 60000) return 65;
+if (script.StartMarker is { } startMarker)
+{
+    using var self = Process.GetCurrentProcess();
+    var pending = startMarker + ".pending";
+    await File.WriteAllTextAsync(pending, JsonSerializer.Serialize(new
+        { id = Environment.ProcessId, startedUtc = self.StartTime.ToUniversalTime() }));
+    File.Move(pending, startMarker);
+}
+// Test-only descendant deliberately survives normal parent exit unless the real
+// OS job contains it. The owning test retains its exact handle for RED cleanup.
+using var descendant = script.SpawnChildScript is { } childScript
+    ? Process.Start(new ProcessStartInfo(Environment.ProcessPath!)
+    {
+        UseShellExecute = false, CreateNoWindow = true,
+        ArgumentList = { childScript }
+    }) : null;
 using var complete = new CancellationTokenSource();
 var mediaWriters = new Dictionary<string, StreamWriter>(StringComparer.Ordinal);
 if (script.CaptureArguments)
@@ -125,7 +141,7 @@ return 0;
 
 internal sealed record Script(Event[] Events, int? ExitAfterMilliseconds, int ExitCode, bool IgnoreQuit, bool Crash,
     int QuitDelayMilliseconds = 0, string[]? QuitStderr = null, bool ProgressCommands = false, string? ContinueFile = null,
-    bool CaptureArguments = false);
+    bool CaptureArguments = false, string? StartMarker = null, string? SpawnChildScript = null);
 internal sealed record Event(int AtMilliseconds, string Channel, string Text);
 internal static class Native
 {
