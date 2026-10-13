@@ -34,15 +34,31 @@ public sealed class SupervisorAudioRecoveryTests
         Assert.False(lab.Owner.IndependentMedia!.ConfirmedMediaFailure);
     }
 
-    [Fact]
-    public async Task HealthyPcmWarningBurstRetainsOwnerWithoutInventingFailure()
+    [Theory]
+    [InlineData(1, "[aac @ 0x1] Error submitting packet to decoder")]
+    [InlineData(2, "[aac @ 0x1] Error submitting packet to decoder")]
+    [InlineData(32, "[aac @ 0x1] Error submitting packet to decoder")]
+    [InlineData(1, "[aist#0:0/aac] PTS 999, next:1 invalid dropping")]
+    [InlineData(2, "[aist#0:0/aac] PTS 999, next:1 invalid dropping")]
+    [InlineData(32, "[aist#0:0/aac] PTS 999, next:1 invalid dropping")]
+    [InlineData(1, "No buffered audio")]
+    [InlineData(2, "No buffered audio")]
+    [InlineData(32, "No buffered audio")]
+    public async Task HealthyPcmWarningBurstRetainsOwnerWithoutInventingFailure(int burstSize, string warning)
     {
         await using var lab = await Lab.Create();
+        // Classifiers ignore the first five seconds. Requalify after that grace
+        // with current PCM, then inspect raw classification before any status
+        // snapshot can clear a wrongly classified Healthy-audio failure.
+        lab.Time.Advance(TimeSpan.FromSeconds(6));
         await lab.Qualify();
         var session = lab.Owner.SessionId;
-        foreach (var warning in new[] { "[aac @ 0x1] channel element 1.0 is not allocated",
-                     "[aac @ 0x1] Error submitting packet to decoder", "No buffered audio" })
+        for (var i = 0; i < burstSize; i++)
+        {
+            await lab.Warning("Synthetic unrelated diagnostic");
             await lab.Warning(warning);
+            Assert.Null(lab.ClassifiedFailure);
+        }
         Assert.Null(lab.Owner.InputFailure);
         Assert.Equal(session, lab.Owner.SessionId);
         Assert.True(lab.Owner.Running);
@@ -75,6 +91,36 @@ public sealed class SupervisorAudioRecoveryTests
         Assert.Null(lab.Owner.InputFailure);
     }
 
+    [Fact]
+    public async Task StaleHealthySnapshotCannotClearANewerDiagnostic()
+    {
+        await using var lab = await Lab.Create();
+        await lab.Qualify();
+        var measured = lab.Owner.IndependentMedia!;
+        lab.Time.Advance(TimeSpan.FromSeconds(23));
+        await lab.Warning("[in#0/rtsp] CSeq 96 expected, 0 received.");
+        var oldFailure = lab.Owner.InputFailure!;
+        await lab.Warning("[in#0/rtsp] CSeq 97 expected, 0 received.");
+        // Deterministic interleaving: snapshot read old failure and Healthy
+        // media, stderr then published a newer failure before the clear.
+        var retained = lab.RefreshObservedFailure(oldFailure, measured);
+        Assert.Contains("CSeq 97", retained!.Detail);
+        Assert.Contains("CSeq 97", lab.Owner.InputFailure!.Detail);
+    }
+
+    [Fact]
+    public async Task LostInstrumentationDoesNotPretendClassifiedFailureRecovered()
+    {
+        await using var lab = await Lab.Create();
+        await lab.Qualify();
+        lab.Time.Advance(TimeSpan.FromSeconds(23));
+        await lab.Warning("[in#0/rtsp] CSeq 96 expected, 0 received.");
+        await lab.CloseMeasurements();
+        await FaultHarnessTests.Eventually(() => lab.Owner.IndependentMedia!.Signals.All(signal => signal.State == MediaSignalState.Unknown));
+        Assert.NotNull(lab.Owner.InputFailure);
+        Assert.False(lab.Owner.IndependentMedia!.ConfirmedMediaFailure);
+    }
+
     private sealed class Lab : IAsyncDisposable
     {
         private readonly SupervisorMediaEvidenceTests.MediaChildFixture _fixture = new();
@@ -83,8 +129,11 @@ public sealed class SupervisorAudioRecoveryTests
         private readonly FfmpegProcessSupervisor _supervisor;
         private readonly Dictionary<string, StreamWriter> _writers = new();
         private Process _process = null!;
+        private object _managed = null!;
         private int _sequence;
         internal RouteProcessSnapshot Owner => Assert.Single(_supervisor.RunningSnapshot());
+        internal FfmpegInputFailure? ClassifiedFailure =>
+            (FfmpegInputFailure?)_managed.GetType().GetProperty("InputFailure")!.GetValue(_managed);
         private Lab()
         {
             _clock = new(Time);
@@ -116,6 +165,7 @@ public sealed class SupervisorAudioRecoveryTests
                 }
                 var owners = typeof(FfmpegProcessSupervisor).GetField("_running", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(lab._supervisor)!;
                 var managed = owners.GetType().GetProperty("Item")!.GetValue(owners, [lab._fixture.Source.Identity.Value])!;
+                lab._managed = managed;
                 lab._process = (Process)managed.GetType().GetProperty("Process")!.GetValue(managed)!;
                 return lab;
             }
@@ -129,7 +179,17 @@ public sealed class SupervisorAudioRecoveryTests
             await _process.StandardInput.FlushAsync();
             // One stderr reader consumes in order. Seeing the next record means
             // classification of the previous warning has completed.
-            await FaultHarnessTests.Eventually(() => _supervisor.Snapshot().Single().RecentErrors.Contains(barrier));
+            // Reading Errors has no recovery side effect. Snapshot() does, and
+            // would mask the exact spurious-classification regression we test.
+            var errors = (IEnumerable<string>)_managed.GetType().GetProperty("Errors")!.GetValue(_managed)!;
+            await FaultHarnessTests.Eventually(() => errors.Contains(barrier));
+        }
+        internal FfmpegInputFailure? RefreshObservedFailure(FfmpegInputFailure failure, MediaEvidenceSnapshot media) =>
+            (FfmpegInputFailure?)_managed.GetType().GetMethod("RefreshInputFailure")!.Invoke(_managed, [failure, media]);
+        internal async Task CloseMeasurements()
+        {
+            foreach (var writer in _writers.Values) await writer.DisposeAsync();
+            _writers.Clear();
         }
         internal async Task Qualify()
         {
@@ -150,7 +210,7 @@ public sealed class SupervisorAudioRecoveryTests
         }
         public async ValueTask DisposeAsync()
         {
-            foreach (var writer in _writers.Values) await writer.DisposeAsync();
+            await CloseMeasurements();
             await _supervisor.DisposeAsync();
             await _fixture.DisposeAsync();
         }

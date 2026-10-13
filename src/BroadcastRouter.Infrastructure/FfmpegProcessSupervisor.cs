@@ -310,14 +310,15 @@ public sealed class FfmpegProcessSupervisor(
                 var safe = LogRedactor.Redact(line);
                 managed.AddError(safe);
                 managed.MediaHealth.Observe(safe, observedAt);
+                var media = managed.Media?.Snapshot(processAlive: true);
                 if (FfmpegInputFailureDetector.TryClassify(safe, out var category))
-                    managed.InputFailure ??= new(category, safe, observedAt);
+                    managed.InputFailure = new(category, safe, observedAt);
                 else if (managed.AudioFailureDetector.Observe(safe, observedAt, managed.StartedAt,
-                             MediaStarvationStartupGrace, out var audioCategory, out var audioDetail))
-                    managed.InputFailure ??= new(audioCategory, audioDetail, observedAt);
+                             MediaStarvationStartupGrace, out var audioCategory, out var audioDetail, media))
+                    managed.InputFailure = new(audioCategory, audioDetail, observedAt);
                 else if (managed.MediaStarvationDetector.Observe(safe, observedAt, managed.StartedAt,
-                             MediaStarvationStartupGrace, out var starvationCategory, out var starvationDetail))
-                    managed.InputFailure ??= new(starvationCategory, starvationDetail, observedAt);
+                             MediaStarvationStartupGrace, out var starvationCategory, out var starvationDetail, media))
+                    managed.InputFailure = new(starvationCategory, starvationDetail, observedAt);
             }
         }
         catch (OperationCanceledException) when (managed.PumpCancellation.IsCancellationRequested) { }
@@ -490,9 +491,12 @@ public sealed class FfmpegProcessSupervisor(
             if (!running) exitCode = managed.Process.ExitCode;
         }
         catch (InvalidOperationException) { running = false; }
+        var observedFailure = managed.InputFailure;
+        var media = managed.Media?.Snapshot(running);
+        var failure = managed.RefreshInputFailure(observedFailure, media);
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
-            managed.Errors.ToArray(), exitCode, managed.InputFailure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
-            Volatile.Read(ref managed.StopRequested) != 0, managed.Media?.Snapshot(running));
+            managed.Errors.ToArray(), exitCode, failure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
+            Volatile.Read(ref managed.StopRequested) != 0, media);
     }
 
     private static RouteProcessSnapshot CreateRunningSnapshot(ManagedProcess managed)
@@ -500,9 +504,12 @@ public sealed class FfmpegProcessSupervisor(
         bool running;
         try { running = !managed.Process.HasExited; }
         catch (InvalidOperationException) { running = false; }
+        var observedFailure = managed.InputFailure;
+        var media = managed.Media?.Snapshot(running);
+        var failure = managed.RefreshInputFailure(observedFailure, media);
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
-            Array.Empty<string>(), null, managed.InputFailure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
-            Volatile.Read(ref managed.StopRequested) != 0, managed.Media?.Snapshot(running));
+            Array.Empty<string>(), null, failure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
+            Volatile.Read(ref managed.StopRequested) != 0, media);
     }
 
     private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, Process process,
@@ -526,7 +533,35 @@ public sealed class FfmpegProcessSupervisor(
         public FfmpegMediaHealthTracker MediaHealth { get; } = new();
         public ConcurrentQueue<string> Errors { get; } = new();
         public FfmpegProgressSnapshot? Progress { get; set; }
-        public FfmpegInputFailure? InputFailure { get; set; }
+        private FfmpegInputFailure? _inputFailure;
+        public FfmpegInputFailure? InputFailure
+        {
+            get => Volatile.Read(ref _inputFailure);
+            set => Interlocked.Exchange(ref _inputFailure, value);
+        }
+        public FfmpegInputFailure? RefreshInputFailure(FfmpegInputFailure? observed, MediaEvidenceSnapshot? media)
+        {
+            if (observed is not null && media is { Process: MediaSignalState.Healthy })
+            {
+                // Healthy already requires two seconds of valid advancement.
+                // Missing/Unknown instrumentation cannot prove recovery. Keep
+                // historical stderr, but do not retain an obsolete current fault.
+                var recovered = observed.Category switch
+                {
+                    "AudioDecoderCorrupt" or "AudioTimestampDiscontinuous" or "DeckLinkAudioStarved" =>
+                        media.Signals.Any(signal => signal.Kind == MediaSignalKind.InputAudio && signal.State == MediaSignalState.Healthy),
+                    "DeckLinkVideoStarved" =>
+                        media.Signals.Any(signal => signal.Kind == MediaSignalKind.InputVideo && signal.State == MediaSignalState.Healthy),
+                    "RtspProtocolDesynchronized" => media.Signals.Count > 0
+                        && media.Signals.All(signal => signal.State == MediaSignalState.Healthy),
+                    _ => false
+                };
+                // A newer stderr observation must survive a snapshot that read
+                // the previous fault before measuring media health.
+                if (recovered) Interlocked.CompareExchange(ref _inputFailure, null, observed);
+            }
+            return InputFailure;
+        }
         public Task? ProgressTask { get; set; }
         public Task? ErrorTask { get; set; }
         public Task? ExitTask { get; set; }
