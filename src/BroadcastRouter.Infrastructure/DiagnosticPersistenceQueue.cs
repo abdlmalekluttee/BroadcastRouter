@@ -25,22 +25,27 @@ public sealed class DiagnosticPersistenceQueue : IAsyncDisposable
     private readonly Func<IReadOnlyList<DiagnosticLogRecord>, CancellationToken, Task> _write;
     private readonly SupervisionClock _clock;
     private readonly int _capacity, _batchSize;
+    private readonly TimeSpan _coalescingInterval;
     private readonly LinkedList<Pending> _pending = [];
     private readonly Dictionary<(string Key, string Level, string Category, string? Source), LinkedListNode<Pending>> _byKey = [];
     private readonly List<Barrier> _barriers = [];
     private readonly CancellationTokenSource _shutdown = new();
     private Pending[] _inFlight = [];
     private Task _worker = Task.CompletedTask;
+    private TaskCompletionSource? _batchWake;
     private bool _active, _closed;
     private long _sequence, _accepted, _written, _coalesced, _dropped, _failed, _abandoned;
     private int _peak;
     private TimeSpan _lastTransaction, _maxTransaction;
 
     public DiagnosticPersistenceQueue(Func<IReadOnlyList<DiagnosticLogRecord>, CancellationToken, Task> write,
-        SupervisionClock? clock = null, int capacity = 2048, int batchSize = 32)
+        SupervisionClock? clock = null, int capacity = 2048, int batchSize = 32, TimeSpan? coalescingInterval = null)
     {
         ArgumentNullException.ThrowIfNull(write);
         if (capacity < 1 || batchSize < 1 || batchSize > capacity) throw new ArgumentOutOfRangeException(nameof(capacity));
+        _coalescingInterval = coalescingInterval ?? TimeSpan.Zero;
+        if (_coalescingInterval < TimeSpan.Zero || _coalescingInterval > TimeSpan.FromSeconds(1))
+            throw new ArgumentOutOfRangeException(nameof(coalescingInterval));
         _write = write; _clock = clock ?? SupervisionClock.System; _capacity = capacity; _batchSize = batchSize;
     }
 
@@ -83,6 +88,7 @@ public sealed class DiagnosticPersistenceQueue : IAsyncDisposable
             _byKey.Add(scopedKey, _pending.AddLast(pending));
             _accepted++;
             _peak = Math.Max(_peak, _pending.Count + _inFlight.Length);
+            if (_pending.Count >= _batchSize) _batchWake?.TrySetResult();
             if (!_active) { _active = true; _worker = Task.Run(DrainAsync); }
             return true;
         }
@@ -98,6 +104,7 @@ public sealed class DiagnosticPersistenceQueue : IAsyncDisposable
             if (_barriers.Count >= 64) throw new InvalidOperationException("Too many concurrent diagnostic flush requests.");
             barrier = new(_sequence);
             _barriers.Add(barrier);
+            _batchWake?.TrySetResult();
         }
         try { await barrier.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false); }
         finally { lock (_gate) _barriers.Remove(barrier); }
@@ -116,9 +123,28 @@ public sealed class DiagnosticPersistenceQueue : IAsyncDisposable
         while (true)
         {
             Pending[] batch;
+            TaskCompletionSource? wake = null;
             lock (_gate)
             {
                 if (_pending.Count == 0) { _active = false; CompleteBarriers(); return; }
+                // Aggregate small bursts before opening a durable transaction.
+                // Full batches, flush barriers and shutdown never wait for this
+                // optional window. One timer per batch, not one task per event.
+                if (_coalescingInterval > TimeSpan.Zero && _pending.Count < _batchSize && !_closed && _barriers.Count == 0)
+                    wake = _batchWake = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            if (wake is not null)
+            {
+                using var wait = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+                var delay = _clock.DelayAsync(_coalescingInterval, wait.Token);
+                await Task.WhenAny(delay, wake.Task).ConfigureAwait(false);
+                wait.Cancel();
+                try { await delay.ConfigureAwait(false); }
+                catch (OperationCanceledException) when (wait.IsCancellationRequested) { }
+                lock (_gate) _batchWake = null;
+            }
+            lock (_gate)
+            {
                 batch = _pending.Take(_batchSize).ToArray();
                 foreach (var item in batch) { _pending.RemoveFirst(); _byKey.Remove(item.Key); }
                 _inFlight = batch;
@@ -158,7 +184,7 @@ public sealed class DiagnosticPersistenceQueue : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Task worker;
-        lock (_gate) { _closed = true; worker = _worker; }
+        lock (_gate) { _closed = true; _batchWake?.TrySetResult(); worker = _worker; }
         try { await worker.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
         catch (TimeoutException)
         {

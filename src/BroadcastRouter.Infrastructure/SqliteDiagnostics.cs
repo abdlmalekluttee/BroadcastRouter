@@ -180,9 +180,10 @@ public sealed partial class SqliteDataStore
     private async Task WriteDiagnosticBatchAsync(IReadOnlyList<DiagnosticLogRecord> records, CancellationToken cancellationToken)
     {
         EnsureDiagnosticReserve();
-        // Optional summaries never monopolize the essential-state writer queue.
-        if (!await _writeGate.WaitAsync(TimeSpan.FromMilliseconds(250), cancellationToken))
-            throw new IOException("Diagnostic writer is busy; summaries could not be committed.");
+        // The single bounded worker may wait without holding the writer gate.
+        // A slow essential commit is backpressure, not evidence loss. Shutdown
+        // cancels this wait after the existing five-second drain deadline.
+        await _writeGate.WaitAsync(cancellationToken);
         try
         {
             EnsureDiagnosticReserve();

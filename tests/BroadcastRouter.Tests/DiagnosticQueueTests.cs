@@ -9,6 +9,75 @@ namespace BroadcastRouter.Tests;
 public sealed class DiagnosticQueueTests
 {
     [Fact]
+    public async Task SmallLifecycleBurstCoalescesBeforeOpeningDurableTransaction()
+    {
+        var time = new ObservedBatchClock();
+        var entered = Signal();
+        var writes = new ConcurrentQueue<DiagnosticLogRecord[]>();
+        await using var queue = new DiagnosticPersistenceQueue((batch, _) =>
+        { writes.Enqueue(batch.ToArray()); entered.TrySetResult(); return Task.CompletedTask; },
+            new SupervisionClock(time), coalescingInterval: TimeSpan.FromMilliseconds(100));
+        queue.TryEnqueue("exit", "Information", "Synthetic", "first");
+        await Task.WhenAny(time.TimerCreated.Task, entered.Task).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(entered.Task.IsCompleted, "A small diagnostic burst opened a transaction before its coalescing window.");
+        for (var i = 0; i < 19; i++) queue.TryEnqueue("exit", "Information", "Synthetic", "latest");
+        time.Advance(TimeSpan.FromMilliseconds(99));
+        Assert.Empty(writes);
+        time.Advance(TimeSpan.FromMilliseconds(1));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await queue.FlushAsync();
+        var record = Assert.Single(Assert.Single(writes));
+        Assert.Equal(20, record.Occurrences);
+        Assert.Equal("latest", record.Message);
+        Assert.Equal(20, queue.Status.Written);
+    }
+
+    [Theory]
+    [InlineData("flush")]
+    [InlineData("full-batch")]
+    [InlineData("shutdown")]
+    public async Task BarriersAndFullBatchesWakeCoalescingWithoutWaitingForClock(string action)
+    {
+        var time = new ObservedBatchClock();
+        var entered = Signal();
+        var writes = new ConcurrentQueue<DiagnosticLogRecord>();
+        await using var queue = new DiagnosticPersistenceQueue((batch, _) =>
+        { foreach (var item in batch) writes.Enqueue(item); entered.TrySetResult(); return Task.CompletedTask; },
+            new SupervisionClock(time), batchSize: 4, coalescingInterval: TimeSpan.FromMilliseconds(100));
+        queue.TryEnqueue("first", "Information", "Synthetic", "first");
+        await Task.WhenAny(time.TimerCreated.Task, entered.Task).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(entered.Task.IsCompleted, "The diagnostic coalescing window was not entered.");
+        if (action == "flush") await queue.FlushAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        else if (action == "shutdown") await queue.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+        else
+        {
+            for (var i = 0; i < 3; i++) queue.TryEnqueue("other-" + i, "Information", "Synthetic", "other");
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await queue.FlushAsync();
+        }
+        Assert.Equal(action == "full-batch" ? 4 : 1, writes.Count);
+        Assert.Equal(0, queue.Status.Pending);
+        Assert.Equal(0, queue.Status.WriteFailures);
+        Assert.Equal(0, queue.Status.Abandoned);
+    }
+
+    private sealed class ObservedBatchClock : TimeProvider
+    {
+        private readonly ManualTimeProvider _inner = new();
+        internal TaskCompletionSource TimerCreated { get; } = Signal();
+        public override DateTimeOffset GetUtcNow() => _inner.GetUtcNow();
+        public override long GetTimestamp() => _inner.GetTimestamp();
+        public override long TimestampFrequency => _inner.TimestampFrequency;
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = _inner.CreateTimer(callback, state, dueTime, period);
+            TimerCreated.TrySetResult();
+            return timer;
+        }
+        internal void Advance(TimeSpan elapsed) => _inner.Advance(elapsed);
+    }
+
+    [Fact]
     public async Task CoalescingNeverHidesWarningBehindEarlierInformation()
     {
         var entered = Signal(); var release = Signal();

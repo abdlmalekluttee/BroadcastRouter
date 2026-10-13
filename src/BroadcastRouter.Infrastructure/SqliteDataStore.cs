@@ -33,7 +33,8 @@ public sealed partial class SqliteDataStore
             Cache = SqliteCacheMode.Shared,
             Pooling = true
         }.ToString();
-        _diagnostics = new DiagnosticPersistenceQueue(WriteDiagnosticBatchAsync, clock);
+        _diagnostics = new DiagnosticPersistenceQueue(WriteDiagnosticBatchAsync, clock,
+            coalescingInterval: TimeSpan.FromMilliseconds(100));
     }
 
     public string DatabasePath { get; }
