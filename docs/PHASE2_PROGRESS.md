@@ -22,7 +22,7 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-03 disk budget | R10,R11; owner Gate B ruling | fix/P2-03-disk-budget | [#73](https://github.com/abdlmalekluttee/BroadcastRouter/pull/73) | Review findings fixed test-first; normal273/273, strict seven OPEN, build and all hosted checks green; awaiting owner | [Disk budget](phase2/P2-03-disk-budget.md) |
 | P2-23 | R07 | fix/P2-23-strict-wowza | [#74](https://github.com/abdlmalekluttee/BroadcastRouter/pull/74) | Fixture corrections reviewed/test-first; Release315/315, strict six OPEN; Build/Main suite/KnownDefect hosted rerun38314054985 all green | [Strict inventory](phase2/P2-23.md) |
 | P2-22 | R06 | fix/P2-22-media-health | [#75](https://github.com/abdlmalekluttee/BroadcastRouter/pull/75) (draft) | Independent review findings fixed test-first; Release466/466, strict five OPEN, rebuild0 warnings/errors, provenance/CI12 each; hosted38327361196 all green, main11m10s exceeds10min target; bench pending; not deployment-ready | [Media evidence checkpoint](phase2/P2-22.md) |
-| P2-20 | R04 | fix/P2-20-audio-detector | Draft pending | Review test blind spot mutation-verified; Release499/499, strict three OPEN, rebuild0 warnings/errors, provenance/CI12 each; hosted/bench pending; not deployment-ready | [Audio evidence](phase2/P2-20.md) |
+| P2-20 | R04 | fix/P2-20-audio-detector | [#76](https://github.com/abdlmalekluttee/BroadcastRouter/pull/76) (draft) | Review test blind spot mutation-verified; Release499/499, strict three OPEN, rebuild0 warnings/errors, provenance/CI12 each; hosted/bench pending; not deployment-ready | [Audio evidence](phase2/P2-20.md) |
 
 ## Open KnownDefect register
 
