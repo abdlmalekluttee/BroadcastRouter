@@ -15,6 +15,18 @@ namespace BroadcastRouter.Tests;
 public sealed class SourceMediaReportingTests
 {
     [Fact]
+    public async Task QualificationFailureShowsOperatorReasonAsAnAlarm()
+    {
+        var source = new DiscoveredSource(new("TEST", "fixture", "default", "unknown"), "Unknown",
+            new Uri("rtsp://example.invalid/test"), SourceState.Unknown, 0);
+        var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(source))!;
+        json["MediaQualificationDetail"] = "Required one second of decoded audio samples missing. Standby retained.";
+        var html = await Render(JsonSerializer.Deserialize<DiscoveredSource>(json.ToJsonString())!, new(Guid.NewGuid(), true, null));
+        Assert.Contains("role=\"alert\"", html);
+        Assert.Contains("Required one second of decoded audio samples missing. Standby retained.", html);
+    }
+
+    [Fact]
     public async Task SparseVideoWithoutAudioIsExplicitlyUnknownWithObservationTime()
     {
         var source = new DiscoveredSource(new("TEST", "fixture", "default", "sparse"), "Sparse",
@@ -33,7 +45,7 @@ public sealed class SourceMediaReportingTests
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
         await lab.InstallFakeMediaTools();
-        lab.Settings.SourceMediaProfiles.Add(new() { SourceId = lab.Source.Value, Expectation = SourceMediaExpectation.AudioOnly });
+        lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.AudioOnly;
         await DeclaredMediaCoordinatorTests.Poll(lab);
         var session = lab.Owner.SessionId;
         // A newer observation qualifies video; it cannot change the running graph.
