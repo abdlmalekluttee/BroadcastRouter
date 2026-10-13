@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Diagnostics;
 using System.Text.Json;
 using BroadcastRouter.Application;
 using BroadcastRouter.Domain;
@@ -11,6 +12,92 @@ namespace BroadcastRouter.Tests;
 
 public sealed class CoordinatorIndependentMediaTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EarlyDeadMediaRecoversAfterStartupEvenWithPublisherHold(bool fastLoop)
+    {
+        await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture();
+        await using var lab = await Lab.Create(fixture, true, captureTelemetry: true);
+        for (var i = 0; i <= 2; i++)
+        {
+            if (i > 0) lab.Time.Advance(TimeSpan.FromMilliseconds(500));
+            await FaultHarnessTests.Eventually(() => lab.Owner.IndependentMedia!.Signals.All(s => s.LastAdvancedAt == lab.Clock.Now));
+        }
+        await FaultHarnessTests.Eventually(() => lab.Owner.RecentErrors.Any(e => e.Contains("Synthetic observation batch complete")));
+        lab.Time.Advance(TimeSpan.FromSeconds(25));
+        lab.Routes[fixture.Source.Identity.Value] = lab.Route with { HoldOutputWhilePublisherLive = true };
+        lab.Settings.WowzaServers.Add(new() { ServerId = "TEST", Enabled = true });
+        lab.Get<PublisherLiveHoldPolicy>("_publisherLiveHold").Observe(fixture.Source.Identity.Value, true);
+        if (fastLoop) await lab.FastInputTurn(); else await lab.Monitor();
+        Assert.False(lab.Owner.Running, "Valid early-stalled media remained alive indefinitely under publisher hold.");
+        Assert.Equal(1, lab.Route.RestartCount);
+        Assert.Equal("MediaAdvancementLost", lab.Route.FailureCategory);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OneFailedMediaSignalWithFreshProgressRetainsOwnerAndRecordsAbstention(bool fastLoop)
+    {
+        await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture(stopPcmAfterBatch: 30);
+        await using var lab = await Lab.Create(fixture, true, captureTelemetry: true);
+        await lab.Qualify();
+        await FaultHarnessTests.Eventually(() => lab.Owner.RecentErrors.Any(e => e.Contains("Synthetic audio observation batch complete")));
+        lab.Time.Advance(TimeSpan.FromSeconds(25));
+        for (var i = 0; i <= 4; i++)
+        {
+            if (i > 0) lab.Time.Advance(TimeSpan.FromMilliseconds(500));
+            await FaultHarnessTests.Eventually(() => lab.Owner.IndependentMedia!.Signals
+                .Where(s => s.Kind != MediaSignalKind.InputAudio).All(s => s.LastAdvancedAt == lab.Clock.Now));
+        }
+        await lab.Progress(1000);
+        var signals = lab.Owner.IndependentMedia!.Signals;
+        Assert.Equal(MediaSignalState.Failed, signals.Single(s => s.Kind == MediaSignalKind.InputAudio).State);
+        Assert.All(signals.Where(s => s.Kind != MediaSignalKind.InputAudio), s => Assert.Equal(MediaSignalState.Healthy, s.State));
+        Assert.Null(lab.Owner.InputFailure);
+        var session = lab.Owner.SessionId;
+        if (fastLoop) await lab.FastInputTurn(); else await lab.Monitor();
+        Assert.True(lab.Owner.Running);
+        Assert.Equal(session, lab.Owner.SessionId);
+        Assert.Equal(0, lab.Route.RestartCount);
+        await lab.Telemetry!.FlushAsync();
+        var decision = Assert.Single(lab.Decisions().Where(value => value.GetProperty("Action").GetString() == "KeepOwner"
+            && value.GetProperty("Result").GetString() == "InsufficientMediaEvidence"));
+        Assert.Single(decision.GetProperty("Before").GetProperty("IndependentMedia").GetProperty("Signals")
+            .EnumerateArray().Where(s => s.GetProperty("State").GetString() == "Failed"));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task ExplicitManualSourceDisableOrRemovalStopsOwner(bool saved, bool removed)
+    {
+        var identity = new SourceIdentity("MANUAL", "manual", "_definst_", "configured-source");
+        await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture(identity: identity);
+        await using var lab = await Lab.Create(fixture, true, captureTelemetry: true);
+        lab.Time.Advance(TimeSpan.FromSeconds(25));
+        await lab.Qualify();
+        await lab.Progress(1000);
+        if (!removed) lab.Settings.ManualSources.Add(new() { StableId = "configured-source", Enabled = false,
+            FriendlyName = "Synthetic", RtspUrl = "rtsp://example.invalid/fixture" });
+        lab.Get<Dictionary<string, DiscoveredSource>>("_sources")[identity.Value] = fixture.Source with
+            { State = removed ? SourceState.PublisherDisconnected : SourceState.Disabled };
+        lab.Get<Dictionary<string, DeckLinkPort>>("_ports")["TEST-OUTPUT"] =
+            new("TEST-OUTPUT", "Synthetic", "Synthetic", 0, 0, null, [], true, IsOutputPort: true);
+        lab.Get<PortReservationManager>("_reservations").TryReserve("TEST-OUTPUT", identity, false, lab.Clock.Now, out _);
+        lab.Routes[identity.Value] = lab.Route with { State = RouteState.Running, PortId = "TEST-OUTPUT",
+            DesiredPortId = saved ? "TEST-OUTPUT" : null, AssignmentMode = saved ? AssignmentMode.Manual : AssignmentMode.Automatic };
+        lab.Get<Dictionary<string, DateTimeOffset>>("_sourceMissingSince")[identity.Value] = lab.Clock.Now.AddMinutes(-5);
+        if (saved) await lab.Invoke("ReconcileSavedRouteAsync", identity.Value, CancellationToken.None);
+        else await lab.Invoke("ReleaseExpiredMissingRoutesAsync", lab.Settings, CancellationToken.None);
+        Assert.False(lab.Owner.Running, "Explicit operator source disable/removal was ignored by media preservation.");
+        Assert.Equal(saved ? RouteState.WaitingForStream : RouteState.Released, lab.Route.State);
+        Assert.Equal(0, lab.Route.RestartCount);
+    }
+
     [Theory]
     [InlineData("saved-source")]
     [InlineData("expired-source")]
@@ -162,6 +249,15 @@ public sealed class CoordinatorIndependentMediaTests
             }
         }
         internal Task Monitor()=>(Task)typeof(RouterCoordinator).GetMethod("MonitorProcessesAsync",Flags)!.Invoke(Coordinator,[CancellationToken.None])!;
+        internal async Task Progress(long frame)
+        {
+            var owners = typeof(FfmpegProcessSupervisor).GetField("_running", Flags)!.GetValue(Supervisor)!;
+            var managed = owners.GetType().GetProperty("Item")!.GetValue(owners, [_fixture.Source.Identity.Value])!;
+            var process = (Process)managed.GetType().GetProperty("Process")!.GetValue(managed)!;
+            await process.StandardInput.WriteLineAsync($"progress {frame} {frame * 40000}");
+            await process.StandardInput.FlushAsync();
+            await FaultHarnessTests.Eventually(() => Owner.Progress?.Frame == frame);
+        }
         internal Task Invoke(string method, params object[] arguments) =>
             (Task)typeof(RouterCoordinator).GetMethod(method, Flags)!.Invoke(Coordinator, arguments)!;
         internal JsonElement[] Decisions() => Directory.GetFiles(Path.Combine(_fixture.Root,"logs"),"*.decisions.*.jsonl")
