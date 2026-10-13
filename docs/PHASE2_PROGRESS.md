@@ -22,7 +22,8 @@ Deployment requires separate explicit approval and a maintenance window.
 | P2-03 disk budget | R10,R11; owner Gate B ruling | fix/P2-03-disk-budget | [#73](https://github.com/abdlmalekluttee/BroadcastRouter/pull/73) | Review findings fixed test-first; normal273/273, strict seven OPEN, build and all hosted checks green; awaiting owner | [Disk budget](phase2/P2-03-disk-budget.md) |
 | P2-23 | R07 | fix/P2-23-strict-wowza | [#74](https://github.com/abdlmalekluttee/BroadcastRouter/pull/74) | Fixture corrections reviewed/test-first; Release315/315, strict six OPEN; Build/Main suite/KnownDefect hosted rerun38314054985 all green | [Strict inventory](phase2/P2-23.md) |
 | P2-22 | R06 | fix/P2-22-media-health | [#75](https://github.com/abdlmalekluttee/BroadcastRouter/pull/75) (draft) | Independent review findings fixed test-first; Release466/466, strict five OPEN, rebuild0 warnings/errors, provenance/CI12 each; hosted38327361196 all green, main11m10s exceeds10min target; bench pending; not deployment-ready | [Media evidence checkpoint](phase2/P2-22.md) |
-| P2-20 | R04 | fix/P2-20-audio-detector | [#76](https://github.com/abdlmalekluttee/BroadcastRouter/pull/76) (draft) | Review test blind spot mutation-verified; Release499/499, strict three OPEN, rebuild0 warnings/errors, provenance/CI12 each; hosted/bench pending; not deployment-ready | [Audio evidence](phase2/P2-20.md) |
+| P2-20 | R04 | fix/P2-20-audio-detector | [#76](https://github.com/abdlmalekluttee/BroadcastRouter/pull/76) (draft) | Review test blind spot mutation-verified; Release499/499, strict three OPEN, rebuild0 warnings/errors, provenance/CI12 each; final-head hosted38329930103 all green, main10m51s/job11m38s exceeds10min target; bench pending; not deployment-ready | [Audio evidence](phase2/P2-20.md) |
+| P2-21 | R05 | fix/P2-21-video-detector | Draft publication pending | Review: no Critical/Important, one deferred diagnostic Minor; Release530/530, clean build, strict two OPEN, Python12+12; earlier529/530 telemetry flush timeout remains unexplained; hosted/bench pending; not deployment-ready | [Video evidence](phase2/P2-21.md) |
 
 ## Open KnownDefect register
 
@@ -34,9 +35,9 @@ to the normal suite in the same PR.
 
 | Planned test | Finding | Status |
 |---|---|---|
-| SamePacketAudioBurstDoesNotAuthorizeRecovery | R04 | Unchanged probe promoted on P2-20 branch; local499/499; not merged/deployed; hosted/bench pending |
-| MillisecondQueueWarningsDoNotAuthorizeRecovery | R04 | Unchanged probe promoted on P2-20 branch; local499/499; not merged/deployed; hosted/bench pending |
-| DuplicateBurstRespectsConfirmationWindow | R05 | Open; exact assertion failure required by CI |
+| SamePacketAudioBurstDoesNotAuthorizeRecovery | R04 | Unchanged probe promoted on P2-20 branch; local499/499 and hosted green; not merged/deployed; bench pending |
+| MillisecondQueueWarningsDoNotAuthorizeRecovery | R04 | Unchanged probe promoted on P2-20 branch; local499/499 and hosted green; not merged/deployed; bench pending |
+| DuplicateBurstRespectsConfirmationWindow | R05 | Unchanged probe promoted in P2-21 fix; local530/530, hosted/bench pending; not merged/deployed |
 | FreshProgressDoesNotConcealStalledMedia | R06 | Identical probe promoted on P2-22 branch; local466/466 and hosted all green; broader bench/Phase C qualification still OPEN |
 | MissingIncomingStreamsIsUnknown | R07 | Fixed on P2-23 branch; identical assertion promoted to normal suite; not merged/deployed |
 | DiagnosticActorIsRedacted | R18 | Open; exact assertion failure required by CI |

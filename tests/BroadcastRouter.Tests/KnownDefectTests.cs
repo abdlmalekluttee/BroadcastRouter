@@ -13,18 +13,6 @@ public sealed class KnownDefectTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2025-01-01T00:00:00Z");
 
-    [Fact, Trait("Finding", "R05")]
-    public void DuplicateBurstRespectsConfirmationWindow()
-    {
-        var detector = new FfmpegInputFreezeDetector();
-        detector.Observe(101, new(100, 25, TimeSpan.FromSeconds(4), 0, 0, 1, Now, false),
-            Now, TimeSpan.FromSeconds(8));
-        var later = Now.AddMilliseconds(500);
-        var restart = detector.Observe(101, new(112, 25, TimeSpan.FromSeconds(4.5), 0, 12, 1, later, false),
-            later, TimeSpan.FromSeconds(8));
-        Assert.False(restart, "R05: a 500ms duplicate burst must not bypass the confirmation window");
-    }
-
     [Fact, Trait("Finding", "R18")]
     public void DiagnosticActorIsRedacted() => Assert.False(AuditJson().Contains("PERSON_EXAMPLE", StringComparison.Ordinal),
         "R18: exported audit must not retain the raw actor");

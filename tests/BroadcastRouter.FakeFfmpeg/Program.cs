@@ -41,6 +41,12 @@ var quit = Task.Run(async () =>
             await Console.Out.WriteLineAsync($"frame={frame}\nfps=25\nspeed=1\nout_time_us={microseconds}\nprogress=continue");
             await Console.Out.FlushAsync();
         }
+        if (script.ProgressCommands && line.Split(' ') is ["progress-duplicates", var duplicateFrame, var duplicateTime, var duplicates]
+            && long.TryParse(duplicateFrame, out _) && long.TryParse(duplicateTime, out _) && long.TryParse(duplicates, out _))
+        {
+            await Console.Out.WriteLineAsync($"frame={duplicateFrame}\nfps=25\nspeed=1\nout_time_us={duplicateTime}\ndup_frames={duplicates}\nprogress=continue");
+            await Console.Out.FlushAsync();
+        }
         if (line == "q" && !script.IgnoreQuit)
         {
             await Console.Error.WriteLineAsync("synthetic quit received");

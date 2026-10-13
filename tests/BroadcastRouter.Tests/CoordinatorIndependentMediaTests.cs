@@ -13,6 +13,41 @@ namespace BroadcastRouter.Tests;
 public sealed class CoordinatorIndependentMediaTests
 {
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task HealthyMediaRetainsOwnerDespiteSustainedDuplicateCounts(bool fastLoop, bool hold)
+    {
+        await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture();
+        await using var lab = await Lab.Create(fixture, true, captureTelemetry: true);
+        lab.Time.Advance(TimeSpan.FromSeconds(25));
+        await lab.Qualify();
+        var source = fixture.Source.Identity.Value;
+        lab.Routes[source] = lab.Route with { State = RouteState.Running, HoldOutputWhilePublisherLive = hold };
+        lab.Settings.WowzaServers.Add(new() { ServerId = "TEST", Enabled = true });
+        var session = lab.Owner.SessionId;
+        for (var i = 0; i <= 5; i++)
+        {
+            if (i > 0) await lab.Qualify();
+            await lab.Progress(100 + i * 25, i * 25);
+            lab.Get<PublisherLiveHoldPolicy>("_publisherLiveHold").Observe(source, true);
+            if (fastLoop) await lab.FastInputTurn(100 + i * 25); else await lab.Monitor();
+            Assert.True(lab.Owner.Running);
+            Assert.Equal(session, lab.Owner.SessionId);
+            Assert.Equal(0, lab.Route.RestartCount);
+            Assert.All(lab.Owner.IndependentMedia!.Signals, s => Assert.Equal(MediaSignalState.Healthy, s.State));
+        }
+        await lab.Telemetry!.FlushAsync();
+        var decisions = lab.Decisions();
+        Assert.DoesNotContain(decisions, d => d.GetProperty("Action").GetString() is "StopOwnedProcess" or "StopForOutputHandoff");
+        if (fastLoop && !hold) Assert.Contains(decisions, d => d.GetProperty("Action").GetString() == "KeepOwner"
+            && d.GetProperty("Result").GetString() == "InsufficientMediaEvidence");
+        if (fastLoop && hold) Assert.Contains(decisions, d => d.GetProperty("Action").GetString() == "KeepOwner"
+            && d.GetProperty("Result").GetString() == "RecoverySuppressed");
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task EarlyDeadMediaRecoversAfterStartupEvenWithPublisherHold(bool fastLoop)
@@ -249,12 +284,14 @@ public sealed class CoordinatorIndependentMediaTests
             }
         }
         internal Task Monitor()=>(Task)typeof(RouterCoordinator).GetMethod("MonitorProcessesAsync",Flags)!.Invoke(Coordinator,[CancellationToken.None])!;
-        internal async Task Progress(long frame)
+        internal async Task Progress(long frame, long? duplicates = null)
         {
             var owners = typeof(FfmpegProcessSupervisor).GetField("_running", Flags)!.GetValue(Supervisor)!;
             var managed = owners.GetType().GetProperty("Item")!.GetValue(owners, [_fixture.Source.Identity.Value])!;
             var process = (Process)managed.GetType().GetProperty("Process")!.GetValue(managed)!;
-            await process.StandardInput.WriteLineAsync($"progress {frame} {frame * 40000}");
+            await process.StandardInput.WriteLineAsync(duplicates is { } count
+                ? $"progress-duplicates {frame} {frame * 40000} {count}"
+                : $"progress {frame} {frame * 40000}");
             await process.StandardInput.FlushAsync();
             await FaultHarnessTests.Eventually(() => Owner.Progress?.Frame == frame);
         }
@@ -263,7 +300,7 @@ public sealed class CoordinatorIndependentMediaTests
         internal JsonElement[] Decisions() => Directory.GetFiles(Path.Combine(_fixture.Root,"logs"),"*.decisions.*.jsonl")
             .SelectMany(File.ReadAllLines).Select(line =>
             { using var document = JsonDocument.Parse(line); return document.RootElement.GetProperty("Event").Clone(); }).ToArray();
-        internal async Task FastInputTurn()
+        internal async Task FastInputTurn(long? expectedDuplicateFrame = null)
         {
             using var stop = new CancellationTokenSource();
             var task = (Task)typeof(RouterCoordinator).GetMethod("RunFastInputSupervisionAsync",Flags)!.Invoke(Coordinator,[stop.Token])!;
@@ -274,6 +311,14 @@ public sealed class CoordinatorIndependentMediaTests
                 // reached and finished its owned-session decision (not a sleep).
                 var gates = Get<System.Collections.Concurrent.ConcurrentDictionary<string,SemaphoreSlim>>("_routeGates");
                 await FaultHarnessTests.Eventually(()=>gates.ContainsKey(_fixture.Source.Identity.Value));
+                if (expectedDuplicateFrame is { } expected)
+                    await FaultHarnessTests.Eventually(() =>
+                    {
+                        lock (Get<object>("_gate"))
+                            return Get<Dictionary<string, FfmpegInputFreezeDetector>>("_inputFreezeDetectors")
+                                .TryGetValue(_fixture.Source.Identity.Value, out var detector)
+                                && (long)typeof(FfmpegInputFreezeDetector).GetField("_frame", Flags)!.GetValue(detector)! == expected;
+                    });
                 await gates[_fixture.Source.Identity.Value].WaitAsync().WaitAsync(TimeSpan.FromSeconds(5));
                 gates[_fixture.Source.Identity.Value].Release();
             }
