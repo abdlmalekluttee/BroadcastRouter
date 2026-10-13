@@ -196,6 +196,7 @@ internal static class PublisherLiveHoldTests
         {
             Supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
             Coordinator.Dispose();
+            Store.StopDiagnosticsAsync().AsTask().GetAwaiter().GetResult();
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             Directory.Delete(directory, true);
         }

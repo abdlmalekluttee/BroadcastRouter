@@ -67,6 +67,17 @@
                         <span>Ask the administrator to check disk access, free space, and telemetry capacity. This alarm does not stop outputs.</span>
                     </div>
                 }
+                @if (Coordinator.DiagnosticPersistence is { IsHealthy: false } persistence)
+                {
+                    <div class="notice danger" role="alert" data-diagnostic-persistence-alarm>
+                        <strong>@(persistence.Dropped + persistence.WriteFailures + persistence.Abandoned > 0
+                            ? "Diagnostic summaries are incomplete." : "Diagnostic summaries are delayed.")</strong>
+                        <span>Pending: @persistence.Pending; oldest: @persistence.OldestAge.TotalSeconds.ToString("0.0") s;
+                            dropped: @persistence.Dropped; failed: @persistence.WriteFailures; abandoned: @persistence.Abandoned.</span>
+                        <span>Last database transaction: @persistence.LastTransaction.TotalMilliseconds.ToString("0") ms.
+                            Ask the administrator to check database access and free disk space. This alarm does not stop outputs.</span>
+                    </div>
+                }
                 @Body
             </section>
         </main>

@@ -7,13 +7,13 @@ using Microsoft.Data.Sqlite;
 
 namespace BroadcastRouter.Infrastructure;
 
-public sealed class SqliteDataStore
+public sealed partial class SqliteDataStore
 {
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
-    public SqliteDataStore(string databasePath)
+    public SqliteDataStore(string databasePath, SupervisionClock? clock = null)
     {
         DatabasePath = Path.GetFullPath(databasePath);
         Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
@@ -24,6 +24,7 @@ public sealed class SqliteDataStore
             Cache = SqliteCacheMode.Shared,
             Pooling = true
         }.ToString();
+        _diagnostics = new DiagnosticPersistenceQueue(WriteDiagnosticBatchAsync, clock);
     }
 
     public string DatabasePath { get; }
@@ -295,6 +296,13 @@ public sealed class SqliteDataStore
 
     public async Task<IReadOnlyList<StructuredLogEntry>> ReadLogsAsync(string? search = null, int limit = 500, CancellationToken cancellationToken = default)
     {
+        // Readers can briefly drain admitted summaries, but a stalled writer
+        // must not make the operator log page wait indefinitely.
+        using var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        drain.CancelAfter(TimeSpan.FromSeconds(1));
+        try { await _diagnostics.FlushAsync(drain.Token); }
+        catch (IOException) { } // Status remains degraded; return rows actually committed.
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = string.IsNullOrWhiteSpace(search)

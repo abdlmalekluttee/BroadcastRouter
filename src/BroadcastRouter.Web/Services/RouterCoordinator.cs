@@ -17,6 +17,7 @@ public sealed class RouterCoordinator(
     ILogger<RouterCoordinator> logger,
     SupervisionClock? clock = null, SupervisionTelemetry? telemetry = null) : BackgroundService
 {
+    public DiagnosticPersistenceStatus? DiagnosticPersistence => store?.DiagnosticStatus;
     private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
     private readonly object _gate = new();
     private readonly PortReservationManager _reservations = new();
@@ -469,8 +470,8 @@ public sealed class RouterCoordinator(
                             ? $" {decision.SuppressedCount} identical failure(s) were suppressed during the previous minute."
                             : "";
                         logger.LogError(ex, "Router reconciliation cycle failed.{Suppressed}", suppressed);
-                        await store.WriteLogAsync("Error", "Coordinator",
-                            $"Reconciliation cycle failed: {ex.Message}.{suppressed}", cancellationToken: stoppingToken);
+                        store.EnqueueDiagnostic("Error", "Coordinator",
+                            $"Reconciliation cycle failed: {ex.Message}.{suppressed}", coalesceKey: "CoordinatorFailure");
                     }
                     MarkCoordinatorProgress("Cycle fault handled", completedCycle: true);
                     Publish("Reconciliation degraded");
@@ -3311,10 +3312,7 @@ public sealed class RouterCoordinator(
         replacement?.Complete(null, "SupervisorReplaced");
     }
 
-    private void OnProcessLifecycleChanged(RouteProcessLifecycleEvent value) =>
-        _ = PersistProcessLifecycleAsync(value);
-
-    private async Task PersistProcessLifecycleAsync(RouteProcessLifecycleEvent value)
+    private void OnProcessLifecycleChanged(RouteProcessLifecycleEvent value)
     {
         try
         {
@@ -3328,7 +3326,8 @@ public sealed class RouterCoordinator(
             var message = $"Owned FFmpeg process {value.ProcessId}: {value.State}.{exit}";
             logger.Log(level == "Warning" ? LogLevel.Warning : LogLevel.Information,
                 "{Category}: {Message}", "ProcessLifecycle", message);
-            await store.WriteLogAsync(level, "ProcessLifecycle", message, value.Source.Value);
+            store.EnqueueDiagnostic(level, "ProcessLifecycle", message, value.Source.Value,
+                coalesceKey: $"Lifecycle:{value.Source.Value}:{value.State}");
         }
         catch (Exception ex)
         {
@@ -3495,10 +3494,11 @@ public sealed class RouterCoordinator(
         : $"mode={route.AssignmentMode}; desiredPort={route.DesiredPortId ?? "none"}; preset={route.PresetId}; " +
           $"reserveOffline={route.ReserveWhileOffline}; temporaryUse={route.AllowTemporaryUse}; locked={route.Locked}";
 
-    private async Task LogAsync(string level, string category, string message, string? sourceId = null, string? correlationId = null, CancellationToken cancellationToken = default)
+    private Task LogAsync(string level, string category, string message, string? sourceId = null, string? correlationId = null, CancellationToken cancellationToken = default)
     {
-        await store.WriteLogAsync(level, category, message, sourceId, correlationId, cancellationToken);
+        store.EnqueueDiagnostic(level, category, message, sourceId, correlationId);
         logger.Log(level switch { "Error" or "Critical" => LogLevel.Error, "Warning" => LogLevel.Warning, _ => LogLevel.Information }, "{Category}: {Message}", category, LogRedactor.Redact(message));
+        return Task.CompletedTask;
     }
 
     private static bool Compatible(DeckLinkPort port, OutputPresetProfile preset, string? requiredGroup)

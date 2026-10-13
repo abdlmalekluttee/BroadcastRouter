@@ -262,6 +262,7 @@ public sealed class OfflineFallbackTests
         {
             await Supervisor.DisposeAsync();
             Coordinator.Dispose();
+            await Store.StopDiagnosticsAsync();
             _loggerFactory?.Dispose();
             if (Telemetry is not null) await Telemetry.DisposeAsync();
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
