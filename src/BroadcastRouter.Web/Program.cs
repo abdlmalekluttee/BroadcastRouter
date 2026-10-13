@@ -59,6 +59,16 @@ if (OperatingSystem.IsWindows())
 
 var dataSetting = builder.Configuration["DataDirectory"] ?? "data";
 var dataDirectory = Path.IsPathRooted(dataSetting) ? dataSetting : Path.Combine(AppContext.BaseDirectory, dataSetting);
+// Explicit, fail-closed bench mode. It cannot be enabled, disabled or widened by
+// editable operator settings. Check release/isolation before opening the bench DB
+// or constructing any coordinator/hosted service. Production has no bench policy.
+BenchOutputGuard? benchGuard = null;
+if (builder.Configuration["Bench:PolicyFile"] is { } benchPolicyFile)
+{
+    benchGuard = await BenchModeStartup.LoadAndVerifyAsync(benchPolicyFile, AppContext.BaseDirectory, dataDirectory,
+        BenchReleasePreflight.ReadWindowsProcessesAsync);
+    builder.Services.AddSingleton(benchGuard);
+}
 Directory.CreateDirectory(dataDirectory);
 await using var supervisionTelemetry = new SupervisionTelemetry(Path.Combine(dataDirectory, "telemetry"), SupervisionClock.System,
     maxFileBytes: builder.Configuration.GetValue("Telemetry:SegmentBytes", SupervisionTelemetry.DefaultSegmentBytes),
@@ -71,6 +81,7 @@ var deckLinkAssetDirectory = Path.Combine(dataDirectory, "decklink-assets");
 var bootstrapStore = new SqliteDataStore(databasePath);
 await bootstrapStore.InitializeAsync();
 var persistedSettings = await bootstrapStore.LoadSettingsAsync();
+if (benchGuard is not null) BenchModeStartup.VerifySettings(persistedSettings);
 var bindAddress = string.IsNullOrWhiteSpace(persistedSettings.Security.BindAddress) ? "127.0.0.1" : persistedSettings.Security.BindAddress.Trim();
 var bindPort = Math.Clamp(persistedSettings.Security.Port, 1, 65535);
 var scheme = persistedSettings.Security.HttpsEnabled ? "https" : "http";

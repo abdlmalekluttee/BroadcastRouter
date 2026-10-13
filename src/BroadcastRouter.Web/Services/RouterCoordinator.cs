@@ -15,8 +15,16 @@ public sealed class RouterCoordinator(
     IHttpClientFactory httpClientFactory,
     IHubContext<StatusHub> hub,
     ILogger<RouterCoordinator> logger,
-    SupervisionClock? clock = null, SupervisionTelemetry? telemetry = null) : BackgroundService
+    SupervisionClock? clock = null, SupervisionTelemetry? telemetry = null,
+    BenchOutputGuard? benchGuard = null) : BackgroundService
 {
+    // Preserve the six-argument activation contract used by existing host tooling.
+    // DI selects the longer constructor when the optional bench guard is present.
+    public RouterCoordinator(SqliteDataStore store, IHttpClientFactory httpClientFactory,
+        IHubContext<StatusHub> hub, ILogger<RouterCoordinator> logger,
+        SupervisionClock? clock, SupervisionTelemetry? telemetry)
+        : this(store, httpClientFactory, hub, logger, clock, telemetry, null) { }
+
     private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
     private readonly object _gate = new();
     private readonly PortReservationManager _reservations = new();
@@ -3303,7 +3311,7 @@ public sealed class RouterCoordinator(
         _supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions(ffmpegPath, true,
                 TimeSpan.FromMilliseconds(inputReadTimeoutMilliseconds),
                 UseWindowsDeckLinkSafeTerminate: useWindowsDeckLinkSafeTerminate),
-            TimeSpan.FromSeconds(Math.Clamp(_settings.Routing.GracefulStopSeconds, 1, 30)), _clock, telemetry);
+            TimeSpan.FromSeconds(Math.Clamp(_settings.Routing.GracefulStopSeconds, 1, 30)), _clock, telemetry, benchGuard);
         _supervisor.LifecycleChanged += OnProcessLifecycleChanged;
         _supervisorPath = ffmpegPath;
         _supervisorUsesWindowsDeckLinkSafeTerminate = useWindowsDeckLinkSafeTerminate;
