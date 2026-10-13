@@ -15,6 +15,20 @@ namespace BroadcastRouter.Tests;
 public sealed class SourceMediaReportingTests
 {
     [Fact]
+    public async Task SparseVideoWithoutAudioIsExplicitlyUnknownWithObservationTime()
+    {
+        var source = new DiscoveredSource(new("TEST", "fixture", "default", "sparse"), "Sparse",
+            new Uri("rtsp://example.invalid/test"), SourceState.Ready, 0,
+            RecoveryReadinessTests.Av().Media! with { Expectation = SourceMediaExpectation.SparseVideo, AudioCodec = null },
+            LastObservedAt: DateTimeOffset.Parse("2026-01-02T03:04:05Z"));
+        var html = await Render(source, new(Guid.NewGuid(), false, source.Media));
+        Assert.Contains("media status unknown", html);
+        Assert.Contains("2026-01-02 03:04:05 UTC", html);
+        Assert.DoesNotContain("video qualified", html);
+        Assert.DoesNotContain("success", html);
+    }
+
+    [Fact]
     public async Task PublishedSelectionAndDecisionEvidenceStayWithRunningGraph()
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();

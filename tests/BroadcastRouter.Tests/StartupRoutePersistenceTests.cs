@@ -11,6 +11,40 @@ namespace BroadcastRouter.Tests;
 
 public sealed class StartupRoutePersistenceTests
 {
+    [Fact]
+    public async Task UpgradeDeclaresPersistedBehaviourOnceWithoutOverridingExplicitProfiles()
+    {
+        await WithStore(async (store, connection) =>
+        {
+            var settings = new OperatorSettings();
+            settings.SourceMediaProfiles.Add(new() { SourceId = "TEST/fixture/default/explicit", Expectation = SourceMediaExpectation.SparseVideo });
+            await store.SaveSettingsAsync(settings);
+            foreach (var name in new[] { "audio-led", "video", "unknown", "explicit" })
+            {
+                var media = name == "unknown" ? null : RecoveryReadinessTests.Av().Media! with { HasUsableVideo = name != "audio-led" };
+                await store.UpsertSourceAsync(new(new("TEST", "fixture", "default", name), name,
+                    new Uri("rtsp://example.invalid/test"), SourceState.PublisherDisconnected, 0, media));
+            }
+            await RunStartupOnly(store, new(new ManualTimeProvider()));
+            var migrated = await store.LoadSettingsAsync();
+            Assert.Equal(4, migrated.SourceMediaProfiles.Count);
+            Assert.Equal(SourceMediaExpectation.AudioOnly, SourceMediaPolicy.Get(migrated, "TEST/fixture/default/audio-led").Expectation);
+            Assert.True(SourceMediaPolicy.Get(migrated, "TEST/fixture/default/audio-led").RequireAudio);
+            Assert.Equal(SourceMediaExpectation.ContinuousVideo, SourceMediaPolicy.Get(migrated, "TEST/fixture/default/video").Expectation);
+            Assert.Equal(SourceMediaExpectation.Undeclared, SourceMediaPolicy.Get(migrated, "TEST/fixture/default/unknown").Expectation);
+            Assert.Equal(SourceMediaExpectation.SparseVideo, SourceMediaPolicy.Get(migrated, "TEST/fixture/default/explicit").Expectation);
+            // After upgrade, a later discovery must not silently declare itself.
+            await store.UpsertSourceAsync(new(new("TEST", "fixture", "default", "later"), "Later",
+                new Uri("rtsp://example.invalid/later"), SourceState.Ready, 0, RecoveryReadinessTests.Av().Media));
+            await using var trigger = connection.CreateCommand();
+            trigger.CommandText = "CREATE TABLE settings_writes(n INTEGER); CREATE TRIGGER count_settings AFTER UPDATE ON settings BEGIN INSERT INTO settings_writes VALUES(1); END;";
+            await trigger.ExecuteNonQueryAsync();
+            await RunStartupOnly(store, new(new ManualTimeProvider()));
+            Assert.Equal(0, await Scalar(connection, "SELECT COUNT(*) FROM settings_writes"));
+            Assert.Equal(SourceMediaExpectation.Undeclared, SourceMediaPolicy.Get(await store.LoadSettingsAsync(), "TEST/fixture/default/later").Expectation);
+        });
+    }
+
     [Theory]
     [InlineData(1)]
     [InlineData(-1)]
