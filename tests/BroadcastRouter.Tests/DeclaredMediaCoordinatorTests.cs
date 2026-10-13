@@ -30,11 +30,12 @@ public sealed class DeclaredMediaCoordinatorTests
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
         var standby = await PrepareInitialStart(lab);
-        lab.Settings.SourceMediaProfiles.Add(new() { SourceId = lab.Source.Value, RequireAudio = true });
+        lab.Settings.SourceMediaProfiles[0].RequireAudio = true;
         lab.Settings.Presets[0].IncludeAudio = false;
         await StartInitial(lab);
         Assert.True(lab.Supervisor.IsRunning(standby, RouteProcessPurpose.Fallback));
         Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
+        Assert.Contains("audio", lab.Sources[lab.Source.Value].MediaQualificationDetail!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -53,7 +54,7 @@ public sealed class DeclaredMediaCoordinatorTests
         try
         {
             Assert.False(attempt.IsCompleted);
-            lab.Settings.SourceMediaProfiles.Add(new() { SourceId = lab.Source.Value, Expectation = SourceMediaExpectation.AudioOnly });
+            lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.AudioOnly;
         }
         finally { gate.Release(); await attempt; }
         Assert.True(lab.Supervisor.IsRunning(standby, RouteProcessPurpose.Fallback));
@@ -142,8 +143,7 @@ public sealed class DeclaredMediaCoordinatorTests
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
         await lab.InstallFakeMediaTools();
-        lab.Settings.SourceMediaProfiles.Add(new() { SourceId = lab.Source.Value,
-            Expectation = packetOnlyAudio ? SourceMediaExpectation.AudioOnly : SourceMediaExpectation.ContinuousVideo });
+        lab.Settings.SourceMediaProfiles[0].Expectation = packetOnlyAudio ? SourceMediaExpectation.AudioOnly : SourceMediaExpectation.ContinuousVideo;
         var json = packetOnlyAudio
             ? """{"streams":[{"codec_type":"video","codec_name":"h264","nb_read_frames":"50"},{"codec_type":"audio","codec_name":"aac","nb_read_packets":"50","nb_read_frames":"0"}]}"""
             : """{"streams":[{"codec_type":"audio","codec_name":"aac","nb_read_frames":"50"}]}""";
@@ -151,6 +151,7 @@ public sealed class DeclaredMediaCoordinatorTests
         await Poll(lab);
         Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
         Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
+        Assert.False(string.IsNullOrWhiteSpace(lab.Sources[lab.Source.Value].MediaQualificationDetail));
     }
 
     [Fact]
@@ -158,7 +159,7 @@ public sealed class DeclaredMediaCoordinatorTests
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
         await lab.InstallFakeMediaTools();
-        lab.Settings.SourceMediaProfiles.Add(new() { SourceId = lab.Source.Value, Expectation = SourceMediaExpectation.AudioOnly });
+        lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.AudioOnly;
         await File.WriteAllTextAsync(Path.Combine(lab.Root, "live.json"), JsonSerializer.Serialize(new { captureArguments = true, events = Array.Empty<object>() }));
         await Poll(lab);
         Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live));
