@@ -121,7 +121,8 @@ public sealed class SupervisorAudioRecoveryTests
         Assert.False(lab.Owner.IndependentMedia!.ConfirmedMediaFailure);
     }
 
-    private sealed class Lab : IAsyncDisposable
+    // Shared real-child diagnostic fixture; no test hook in production code.
+    internal sealed class Lab : IAsyncDisposable
     {
         private readonly SupervisorMediaEvidenceTests.MediaChildFixture _fixture = new();
         internal ManualTimeProvider Time { get; } = new();
