@@ -10,6 +10,52 @@ namespace BroadcastRouter.Tests;
 public sealed class OutputControllerTests
 {
     [Fact]
+    public async Task SameSourceRestartWaitsForItsAdmittedGracefulStop()
+    {
+        await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture();
+        await File.WriteAllTextAsync(Path.Combine(fixture.Root, "live.json"),
+            "{\"events\":[],\"quitDelayMilliseconds\":1500}");
+        await using var supervisor = new FfmpegProcessSupervisor(new(fixture.Executable), TimeSpan.FromSeconds(3));
+        await fixture.Start(supervisor);
+        var first = Assert.Single(supervisor.RunningSnapshot());
+        var stop = supervisor.StopAsync(fixture.Source.Identity, CancellationToken.None);
+        await FaultHarnessTests.Eventually(() => supervisor.Snapshot().Any(value => value.StopRequested));
+        var restart = fixture.Start(supervisor);
+        await stop;
+        await restart;
+        var next = Assert.Single(supervisor.RunningSnapshot());
+        Assert.NotEqual(first.SessionId, next.SessionId);
+        Assert.NotEqual(first.ProcessId, next.ProcessId);
+    }
+
+    [Fact]
+    public async Task BusyControllerRefusesConflictingLaunchWithoutChangingExistingOwner()
+    {
+        await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture();
+        var registry = new PortReservationManager();
+        await using var supervisor = new FfmpegProcessSupervisor(new(fixture.Executable), TimeSpan.FromSeconds(1), reservations: registry);
+        await fixture.Start(supervisor);
+        var original = Assert.Single(supervisor.RunningSnapshot());
+        var controller = registry.ControllerFor("TEST-OUTPUT");
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hold = controller.ExecuteAsync(async () => { entered.SetResult(); await release.Task; }, CancellationToken.None);
+        try
+        {
+            await entered.Task;
+            var other = new SourceIdentity("TEST", "fixture", "default", "busy-contender");
+            var error = await Assert.ThrowsAsync<TimeoutException>(() => supervisor.StartFallbackAsync(other,
+                new("TEST-OUTPUT", "TEST-DEVICE", "Synthetic", 0, 0, null, []),
+                new("test", "Test", new(1920,1080,25,1,"uyvy422"), false, 0), FallbackMode.Black, null, CancellationToken.None));
+            Assert.Equal("The physical output controller is busy; ownership was not changed.", error.Message);
+            Assert.Equal(original.SessionId, Assert.Single(supervisor.RunningSnapshot()).SessionId);
+            Assert.Equal(original.SessionId, controller.Session!.SessionId);
+            Assert.False(supervisor.TryGetRunning(other, out _));
+        }
+        finally { release.TrySetResult(); await hold; }
+    }
+
+    [Fact]
     public async Task SuccessfulStopWaitsForAnAlreadyAdmittedStartAndLeavesNoOwner()
     {
         await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture();

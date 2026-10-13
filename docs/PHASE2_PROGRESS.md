@@ -227,9 +227,13 @@ in the long-run fixture. Those findings were reproduced and corrected test-first
 Delayed exit cleanup was also graded Important because it stranded an idle output;
 its regression failed before the cleanup-admission retry was implemented.
 
-Corrected verification: 693 normal tests passed (678 remaining, 14 standby-day,
+Corrected verification: 695 normal tests passed (680 remaining, 14 standby-day,
 1 telemetry-day), zero skips/failures; Release build zero warnings/errors; CI contract
 17/17 and provenance12/12. Strict KnownDefect verifies two exact R18 failures; both
-remain OPEN for Phase G, not passing product behavior. The one-real-hour fake-child
-qualification is running separately and is NOT yet a completed acceptance row.
-No deployment, hardware claim, host restart, process kill or production edit.
+remain OPEN for Phase G, not passing product behavior. Repeated verification exposed
+a same-source stop/restart regression in original baseline 69; a deterministic
+slow-stop test failed first, then pending-stop intent restored the correct ordering.
+The original 136 tests are unchanged and green. The first long qualification failed
+on a documented busy refusal and a later run was superseded; both remain evidence,
+not passes. A fresh final-build hour is required and is NOT yet a completed row.
+No deployment, hardware claim, host restart or production edit.

@@ -85,6 +85,7 @@ public sealed class FfmpegProcessSupervisor(
     internal const int RetainedExitedOwners = 256;
     private readonly ConcurrentDictionary<string, ManagedProcess> _running = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, PendingLaunch> _pendingStarts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, PendingLaunch> _pendingStops = new(StringComparer.Ordinal);
     private sealed class PendingLaunch
     {
         public readonly TaskCompletionSource Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -177,8 +178,37 @@ public sealed class FfmpegProcessSupervisor(
         }
         else _running.TryGetValue(source.Value, out expected);
         if (expected is null) return;
+        var stop = new PendingLaunch { Owner = expected };
+        using var admission = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        admission.CancelAfter(TimeSpan.FromSeconds(46));
+        while (!_pendingStops.TryAdd(source.Value, stop))
+        {
+            if (_pendingStops.TryGetValue(source.Value, out var earlier))
+                await earlier.Completion.Task.WaitAsync(admission.Token).ConfigureAwait(false);
+            admission.Token.ThrowIfCancellationRequested();
+        }
         var output = ControllerFor(expected);
-        await output.ExecuteAsync(token => StopOwnedOnOutputAsync(expected, output, token), cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await output.ExecuteAsync(async token =>
+            {
+                if (Interlocked.CompareExchange(ref stop.Transfer, 1, 0) != 0)
+                    throw new OperationCanceledException("The stop was cancelled before worker transfer.");
+                try { await StopOwnedOnOutputAsync(expected, output, token).ConfigureAwait(false); }
+                finally { CompletePendingStop(source, stop); }
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (Interlocked.CompareExchange(ref stop.Transfer, -1, 0) == 0) CompletePendingStop(source, stop);
+            throw;
+        }
+    }
+
+    private void CompletePendingStop(SourceIdentity source, PendingLaunch stop)
+    {
+        _pendingStops.TryRemove(new KeyValuePair<string, PendingLaunch>(source.Value, stop));
+        stop.Completion.TrySetResult();
     }
 
     private async Task StopOwnedOnOutputAsync(ManagedProcess expected, OutputController output, CancellationToken cancellationToken)
@@ -319,6 +349,10 @@ public sealed class FfmpegProcessSupervisor(
             }
             var output = _outputs.ControllerFor(outputId ?? "source:" + source.Value);
             var generation = configuration ?? Volatile.Read(ref _configuration);
+            // A same-source restart follows its prior stop's full bounded
+            // graceful/reap lifetime, not unrelated-port contention admission.
+            if (_pendingStops.TryGetValue(source.Value, out var priorStop))
+                await priorStop.Completion.Task.WaitAsync(TimeSpan.FromSeconds(46), cancellationToken).ConfigureAwait(false);
             await output.ExecuteAsync(async token =>
             {
                 if (Interlocked.CompareExchange(ref pending.Transfer, 1, 0) != 0)
@@ -345,8 +379,8 @@ public sealed class FfmpegProcessSupervisor(
 
     private void CompletePendingLaunch(SourceIdentity source, PendingLaunch pending)
     {
-        pending.Completion.TrySetResult();
         _pendingStarts.TryRemove(new KeyValuePair<string, PendingLaunch>(source.Value, pending));
+        pending.Completion.TrySetResult();
     }
 
     private async Task StartProcessOnOutputAsync(SourceIdentity source, RouteProcessPurpose purpose, ProcessStartInfo start,

@@ -38,6 +38,7 @@ public sealed class OutputControllerQualificationTests(ITestOutputHelper output)
         var shutdownRaces = 0;
         var forcedStops = 0;
         var pendingStops = 0;
+        var busyRefusals = 0;
         using var ownership = new PhysicalOwners();
         lab.Supervisor.LifecycleChanged += evt =>
         {
@@ -91,6 +92,8 @@ public sealed class OutputControllerQualificationTests(ITestOutputHelper output)
                 {
                     try { await Launch(lab.Supervisor, source, index); }
                     catch (InvalidOperationException ex) { Assert.Contains("owned", ex.Message, StringComparison.OrdinalIgnoreCase); }
+                    catch (TimeoutException ex) when (ex.Message == "The physical output controller is busy; ownership was not changed.")
+                    { Interlocked.Increment(ref busyRefusals); }
                 })));
                 await Task.WhenAll(sources.Select(source => lab.Supervisor.StopAsync(source.Identity, CancellationToken.None)));
                 await FaultHarnessTests.Eventually(() => registry.ControllerFor("TEST-WORK").Session is null);
@@ -109,6 +112,8 @@ public sealed class OutputControllerQualificationTests(ITestOutputHelper output)
                         try { await Launch(supervisor, Source($"shutdown-{index}"), index % 3); }
                         catch (ObjectDisposedException ex) { Assert.Equal(typeof(FfmpegProcessSupervisor).FullName, ex.ObjectName); }
                         catch (InvalidOperationException ex) { Assert.Contains("owned", ex.Message, StringComparison.OrdinalIgnoreCase); }
+                        catch (TimeoutException ex) when (ex.Message == "The physical output controller is busy; ownership was not changed.")
+                        { Interlocked.Increment(ref busyRefusals); }
                     })).ToArray();
                     await Task.Yield();
                     await supervisor.DisposeAsync();
@@ -130,7 +135,7 @@ public sealed class OutputControllerQualificationTests(ITestOutputHelper output)
             Assert.Empty(ownership.Failures);
         }
         Assert.True(rounds > 0 && ownership.Starts > 0 && shutdownRaces > 0 && pendingStops > 0);
-        output.WriteLine($"Duration={timer.Elapsed}; requested={seconds}s; rounds={rounds}; workerStarts={ownership.Starts}; forcedStops={forcedStops}; shutdownRaces={shutdownRaces}; pendingLaunchStops={pendingStops}; simultaneousPhysicalOwnerViolations={ownership.Failures.Count}; controlSessionUnchanged=true");
+        output.WriteLine($"Duration={timer.Elapsed}; requested={seconds}s; rounds={rounds}; workerStarts={ownership.Starts}; forcedStops={forcedStops}; shutdownRaces={shutdownRaces}; pendingLaunchStops={pendingStops}; boundedBusyRefusals={busyRefusals}; simultaneousPhysicalOwnerViolations={ownership.Failures.Count}; controlSessionUnchanged=true");
     }
 
     private static readonly OutputPreset Preset = new("test-mode", "Test mode", new(1920, 1080, 25, 1, "uyvy422"), false, 0);
