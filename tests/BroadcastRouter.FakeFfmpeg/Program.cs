@@ -30,6 +30,11 @@ var quit = Task.Run(async () =>
 {
     while (await Console.In.ReadLineAsync() is { } line)
     {
+        if (script.ProgressCommands && line.StartsWith("stderr ", StringComparison.Ordinal))
+        {
+            await Console.Error.WriteLineAsync(line[7..]);
+            await Console.Error.FlushAsync();
+        }
         if (script.ProgressCommands && line.Split(' ') is ["progress", var frame, var microseconds]
             && long.TryParse(frame, out _) && long.TryParse(microseconds, out _))
         {
