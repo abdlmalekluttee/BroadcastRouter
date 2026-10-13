@@ -49,11 +49,15 @@ public sealed class FfmpegProcessSupervisor(
 
     public event Action<RouteProcessLifecycleEvent>? LifecycleChanged;
 
-    public async Task StartAsync(RouteRecord route, DiscoveredSource source, DeckLinkPort port, OutputPreset preset, CancellationToken cancellationToken)
+    public Task StartAsync(RouteRecord route, DiscoveredSource source, DeckLinkPort port, OutputPreset preset, CancellationToken cancellationToken) =>
+        StartAsync(route, source, port, preset, cancellationToken, options.UseIndependentMediaStats);
+
+    public async Task StartAsync(RouteRecord route, DiscoveredSource source, DeckLinkPort port, OutputPreset preset,
+        CancellationToken cancellationToken, bool useIndependentMediaStats)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var start = FfmpegCommandBuilder.Build(options, source, port, preset);
-        var media = options.UseIndependentMediaStats ? new FfmpegMediaSession(source.Media, preset.IncludeAudio, _clock) : null;
+        var media = useIndependentMediaStats ? new FfmpegMediaSession(source.Media, preset.IncludeAudio, _clock) : null;
         try
         {
             if (media is not null) await media.AttachToAsync(start).ConfigureAwait(false);

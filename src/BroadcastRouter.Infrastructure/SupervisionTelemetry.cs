@@ -2,8 +2,10 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using BroadcastRouter.Application;
+using BroadcastRouter.Domain;
 
 namespace BroadcastRouter.Infrastructure;
 
@@ -13,7 +15,19 @@ public sealed record SupervisionEvidence(bool? ProcessAlive = null, long? Frame 
     bool? PublisherConnected = null, int? ExitCode = null,
     int? AudioStarvationWarnings = null, int? VideoStarvationWarnings = null, int? AudioDecodeErrors = null,
     int? AudioTimestampDiscontinuities = null, int? VideoTimestampDiscontinuities = null,
-    double? FirstAnomalyAgeMilliseconds = null, double? LastAnomalyAgeMilliseconds = null);
+    double? FirstAnomalyAgeMilliseconds = null, double? LastAnomalyAgeMilliseconds = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IndependentMediaDecisionEvidence? IndependentMedia = null);
+
+public sealed record MediaSignalDecisionEvidence(
+    [property: JsonConverter(typeof(JsonStringEnumConverter<MediaSignalKind>))] MediaSignalKind Kind,
+    [property: JsonConverter(typeof(JsonStringEnumConverter<MediaSignalState>))] MediaSignalState State,
+    double? LastAdvanceAgeMilliseconds);
+
+public sealed record IndependentMediaDecisionEvidence(
+    [property: JsonConverter(typeof(JsonStringEnumConverter<MediaSignalState>))] MediaSignalState Process,
+    [property: JsonConverter(typeof(JsonStringEnumConverter<MediaSignalState>))] MediaSignalState Heartbeat,
+    bool ConfirmedMediaFailure, IReadOnlyList<MediaSignalDecisionEvidence> Signals);
 
 public sealed record SupervisionDecisionRecord(DateTimeOffset Utc, long MonotonicTicks, Guid ServiceRunId,
     string RouteId, string? OutputId, long SourceEpoch, Guid? SessionId, int? ProcessId,
@@ -195,7 +209,11 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
             AudioTimestampDiscontinuities: process?.MediaHealth.AudioTimestampDiscontinuities,
             VideoTimestampDiscontinuities: process?.MediaHealth.VideoTimestampDiscontinuities,
             FirstAnomalyAgeMilliseconds: process?.MediaHealth.FirstAnomalyAt is { } first ? (clock.Now - first).TotalMilliseconds : null,
-            LastAnomalyAgeMilliseconds: process?.MediaHealth.LastAnomalyAt is { } last ? (clock.Now - last).TotalMilliseconds : null);
+            LastAnomalyAgeMilliseconds: process?.MediaHealth.LastAnomalyAt is { } last ? (clock.Now - last).TotalMilliseconds : null,
+            IndependentMedia: process?.IndependentMedia is { } independent ? new(independent.Process,
+                independent.Heartbeat, independent.ConfirmedMediaFailure,
+                independent.Signals.Select(signal => new MediaSignalDecisionEvidence(signal.Kind, signal.State,
+                    signal.LastAdvancedAt is { } at ? Math.Max(0, (clock.Now - at).TotalMilliseconds) : null)).ToArray()) : null);
 
     public async Task FlushAsync(CancellationToken cancellationToken = default)
     {

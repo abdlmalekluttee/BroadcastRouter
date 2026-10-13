@@ -12,7 +12,7 @@ private static readonly (string Name, Action Body)[] Tests =
     ("Publisher-live hold is opt-in, scoped, and preserves outage continuity", PublisherLiveHoldTests.Policy),
     ("Recovery hold is durable, audited atomically, and backward compatible", PublisherLiveHoldTests.Persistence),
     ("Recovery hold commands require admin and survive stale route writes", PublisherLiveHoldTests.Commands),
-    ("Live hold protects owned process in both watchdogs and disabling resumes recovery", PublisherLiveHoldTests.Watchdogs),
+    ("Live hold toggle never replaces media corroboration in either watchdog", PublisherLiveHoldTests.Watchdogs),
     ("Live hold allows confirmed publisher-stop and process-exit recovery", PublisherLiveHoldTests.DisconnectAndExit),
     ("Persistent source identity", SourceIdentityIsUnambiguous),
     ("Unique generated IDs skip collisions", GeneratedIdsSkipCollisions),

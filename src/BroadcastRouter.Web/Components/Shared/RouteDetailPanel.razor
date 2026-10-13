@@ -32,7 +32,10 @@
             {
                 @if (Route.HoldOutputWhilePublisherLive)
                 {
-                    <div class="notice warning">Automatic media recovery is held while the publisher remains live. Manual restart and process-exit recovery remain available.</div>
+                    <div class="notice warning" role="status" data-publisher-presence="@PublisherPresence">
+                        <strong>Publisher observation: @PublisherPresenceLabel</strong>
+                        <p>@PublisherHoldExplanation Confirmed media failure and process exit still recover automatically.</p>
+                    </div>
                 }
                 <div class="route-detail-actions">
                     <button class="btn small primary" disabled="@busy" @onclick='() => Run("restore")'>Activate / restore</button>
@@ -99,6 +102,21 @@
     private string AssignmentClass => Route?.FailureCategory == "RoutingConflict" ? "danger" : Route?.AssignmentMode switch { AssignmentMode.Preconfigured or AssignmentMode.Fixed or AssignmentMode.Rule => "preconfigured", AssignmentMode.Manual => "manual", AssignmentMode.Automatic => "automatic", _ => "unassigned" };
     private string HealthSummary => Route is null ? "No route process" : $"{Route.Fps?.ToString("0.00") ?? "—"} fps · drop {Route.DroppedFrames} · dup {Route.DuplicatedFrames} · retry {Route.RestartCount}";
     private bool IsWowzaSource => Source is not null && !Source.Identity.ServerId.Equals("MANUAL", StringComparison.OrdinalIgnoreCase);
+    private MediaSignalState PublisherPresence => SelectedSourceId is not null
+        && Snapshot.PublisherPresence?.TryGetValue(SelectedSourceId, out var presence) == true
+            ? presence : MediaSignalState.Unknown;
+    private string PublisherPresenceLabel => PublisherPresence switch
+    {
+        MediaSignalState.Healthy => "Live confirmed",
+        MediaSignalState.Failed => "Publisher absent",
+        _ => "Unknown"
+    };
+    private string PublisherHoldExplanation => PublisherPresence switch
+    {
+        MediaSignalState.Healthy => "Hold enabled for speculative recovery only.",
+        MediaSignalState.Failed => "Hold enabled, but the latest publisher observation is absent.",
+        _ => "Hold enabled, but publisher evidence is missing or expired. Unknown does not mean the stream is offline."
+    };
     private string StandbySummary => Snapshot.Standbys?.FirstOrDefault(value => value.PortId.Equals(SelectedPortId, StringComparison.OrdinalIgnoreCase))?.Summary ?? "Not running";
 
     protected override void OnParametersSet()
@@ -127,7 +145,7 @@
     private async Task Run(string action)
     {
         if (busy || SelectedSourceId is null) return;
-        if (action == "enable-live-hold" && !await confirmDialog.ShowAsync("Disable media recovery", "A frozen picture or muted audio may persist until manually restarted while the publisher remains live.", "Disable recovery")) return;
+        if (action == "enable-live-hold" && !await confirmDialog.ShowAsync("Enable publisher-live hold", "Fresh publisher evidence suppresses speculative recovery only. Confirmed media failure and process exit still recover automatically. Publisher evidence expires after 10 seconds.", "Enable hold")) return;
         if (action == "remove-assignment" && !await confirmDialog.ShowAsync("Remove saved assignment", "This removes the saved routing entry and releases its output for other streams.", "Remove assignment")) return;
         var routeBeforeCommand = Route;
         try

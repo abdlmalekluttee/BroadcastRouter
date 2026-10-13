@@ -21,13 +21,18 @@ public sealed class PublisherLiveHoldPolicy(SupervisionClock? clock = null)
         lock (_gate) _connected[sourceId] = (connected, _clock.Now);
     }
 
-    public MediaSignalState Presence(string sourceId) => MediaSignalState.Unknown;
+    public MediaSignalState Presence(string sourceId)
+    {
+        lock (_gate) return !_connected.TryGetValue(sourceId, out var observation)
+            || _clock.Now - observation.At >= EvidenceLifetime ? MediaSignalState.Unknown
+            : observation.Connected ? MediaSignalState.Healthy : MediaSignalState.Failed;
+    }
 
     public bool ShouldHold(RuntimeRoute route, bool wowzaEnabled, bool ownedLiveProcessRunning,
         MediaEvidenceSnapshot? media = null)
     {
         lock (_gate) return route.HoldOutputWhilePublisherLive && wowzaEnabled
-            && ownedLiveProcessRunning && _connected.TryGetValue(route.SourceId, out var observation)
-            && observation.Connected && _clock.Now - observation.At < EvidenceLifetime;
+            && ownedLiveProcessRunning && media?.MayRecover != true
+            && Presence(route.SourceId) == MediaSignalState.Healthy;
     }
 }

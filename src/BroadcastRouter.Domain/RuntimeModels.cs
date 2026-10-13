@@ -12,7 +12,8 @@ public sealed record MediaToolValidation(
     IReadOnlyList<string> Findings,
     DateTimeOffset? CheckedAt,
     bool WindowsDeckLinkSafeTerminateSupported = false,
-    bool PortStandbySupported = false)
+    bool PortStandbySupported = false,
+    bool IndependentMediaStatsSupported = false)
 {
     public bool CanStartHardwareRoutes => State == ToolValidationState.Valid && DeckLinkCompiled
         && DesktopVideoInstalled && DeckLinkOutputCount > 0;
@@ -105,6 +106,7 @@ public sealed record RouterSnapshot(
     bool SimulationMode,
     bool EmergencyStopped,
     string StatusMessage,
-    IReadOnlyList<PortStandbyStatus>? Standbys = null);
+    IReadOnlyList<PortStandbyStatus>? Standbys = null,
+    IReadOnlyDictionary<string, MediaSignalState>? PublisherPresence = null);
 
 public sealed record QueueItemSnapshot(string SourceId, int Priority, string Reason, long Sequence);

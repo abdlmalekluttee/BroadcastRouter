@@ -2,11 +2,15 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.IO.Pipes;
+using System.Text.RegularExpressions;
 
 // Test-only child: no network, media devices or application endpoints.
 // In an isolated copied fixture directory, accept the application's real tokenized
 // media-tool arguments. This executable never opens URLs or hardware.
 var scriptPath = args.Length == 1 ? args[0]
+    : args is ["-hide_banner", "-h", "full"] ? Path.Combine(AppContext.BaseDirectory, "help-full.json")
+    : args is ["-hide_banner", "-h", "filter=astats"] ? Path.Combine(AppContext.BaseDirectory, "help-astats.json")
+    : args is ["-hide_banner", "-h", "filter=ametadata"] ? Path.Combine(AppContext.BaseDirectory, "help-ametadata.json")
     : args.Contains("-show_streams") ? Path.Combine(AppContext.BaseDirectory, "probe.json")
     : args.Contains("-progress") ? Path.Combine(AppContext.BaseDirectory, "live.json") : null;
 if (scriptPath is null || !File.Exists(scriptPath)) return 64;
@@ -53,14 +57,24 @@ try
         var wait = TimeSpan.FromMilliseconds(item.AtMilliseconds) - timer.Elapsed;
         if (wait > TimeSpan.Zero) await Task.Delay(wait, complete.Token);
         TextWriter writer;
-        if (item.Channel.StartsWith("-stats_", StringComparison.Ordinal))
+        if (item.Channel.StartsWith("-stats_", StringComparison.Ordinal) || item.Channel == "pcm")
         {
-            var index = Array.IndexOf(args, item.Channel);
+            var index = Array.IndexOf(args, item.Channel == "pcm" ? "-af" : item.Channel);
             if (index < 0) continue; // Missing instrumentation is observable by the parent, not a child crash.
             if (!mediaWriters.TryGetValue(item.Channel, out var mediaWriter))
             {
-                if (index + 1 >= args.Length || !args[index + 1].StartsWith(@"\\.\pipe\broadcast-router-media-", StringComparison.Ordinal)) return 66;
-                var pipe = new NamedPipeClientStream(".", args[index + 1][9..], PipeDirection.Out, PipeOptions.Asynchronous);
+                if (index + 1 >= args.Length) return 66;
+                var endpoint = args[index + 1];
+                if (item.Channel == "pcm")
+                {
+                    var match = Regex.Match(endpoint, "file='([^']+)'", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+                    if (!match.Success) continue;
+                    endpoint = match.Groups[1].Value.Replace("\\\\", "\\", StringComparison.Ordinal);
+                }
+                const string prefix = @"\\.\pipe\broadcast-router-media-";
+                if (!endpoint.StartsWith(prefix, StringComparison.Ordinal)
+                    || !Guid.TryParseExact(endpoint[prefix.Length..], "N", out _)) return 66;
+                var pipe = new NamedPipeClientStream(".", endpoint[9..], PipeDirection.Out, PipeOptions.Asynchronous);
                 try { await pipe.ConnectAsync(3000, complete.Token); }
                 catch { pipe.Dispose(); throw; }
                 mediaWriter = new StreamWriter(pipe);

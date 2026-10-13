@@ -10,7 +10,7 @@ internal sealed class FfmpegMediaSession : IAsyncDisposable
     private readonly SupervisionClock _clock;
     private readonly MediaEvidenceTracker _evidence;
     private readonly MediaSignalKind[] _required;
-    private readonly List<FfmpegMediaChannel> _channels = [];
+    private readonly List<IAsyncDisposable> _channels = [];
     private bool _attached;
     private Task? _dispose;
 
@@ -39,6 +39,11 @@ internal sealed class FfmpegMediaSession : IAsyncDisposable
                 creatingChannels = true;
                 foreach (var kind in _required)
                 {
+                    if (kind == MediaSignalKind.InputAudio)
+                    {
+                        AttachAudioSamples(start);
+                        continue;
+                    }
                     var channel = new FfmpegMediaChannel(kind, observation =>
                     {
                         if (observation is { } sample) _evidence.Observe(kind, sample.Counter, _clock.Now);
@@ -68,6 +73,27 @@ internal sealed class FfmpegMediaSession : IAsyncDisposable
 
     internal MediaEvidenceSnapshot Snapshot(bool processAlive) => _evidence.Snapshot(_clock.Now, processAlive);
     internal void ObserveHeartbeat() => _evidence.ObserveHeartbeat(_clock.Now);
+
+    private void AttachAudioSamples(ProcessStartInfo start)
+    {
+        var filterIndex = start.ArgumentList.IndexOf("-af");
+        if (filterIndex < 0 || filterIndex + 1 >= start.ArgumentList.Count)
+            throw new ArgumentException("A mapped source audio filter is required for PCM observation.", nameof(start));
+        var channel = new FfmpegAudioSampleChannel(observation =>
+        {
+            if (observation is { } sample) _evidence.Observe(MediaSignalKind.InputAudio, sample.Samples, _clock.Now);
+            else _evidence.Invalidate(MediaSignalKind.InputAudio, _clock.Now);
+        });
+        _channels.Add(channel);
+        // Observe decoded input before async resampling can insert silence or
+        // change sample count. This is a private generated pipe name, never a
+        // source URL/path. Quoting is FFmpeg filter syntax inside one argv token.
+        var endpoint = channel.Endpoint.Replace("\\", "\\\\", StringComparison.Ordinal);
+        start.ArgumentList[filterIndex + 1] =
+            "astats=metadata=1:measure_perchannel=none:measure_overall=Number_of_samples," +
+            $"ametadata=mode=print:key=lavfi.astats.Overall.Number_of_samples:file='{endpoint}':direct=1," +
+            start.ArgumentList[filterIndex + 1];
+    }
 
     public ValueTask DisposeAsync()
     {
