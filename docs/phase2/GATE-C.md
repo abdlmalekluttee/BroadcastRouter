@@ -6,8 +6,8 @@ Only the owner merges. No production changes were made for Phase C software.
 
 ## PRs and findings
 
-P2-23#74, P2-22#75, P2-20#76, P2-21#77 await owner review/merge. P2-24 publication
-pending. Prior Phase B stack#66–72 was not amended. Account remains the owner's
+P2-23#74, P2-22#75, P2-20#76, P2-21#77 and P2-24#81 await owner review/merge.
+P2-24 is draft. Prior Phase B stack#66–72 was not amended. Account remains the owner's
 GitHub account; separate bot/code-owner review configuration remains pending.
 
 R04/R05/R07 targeted software defects have regression coverage and their exact
