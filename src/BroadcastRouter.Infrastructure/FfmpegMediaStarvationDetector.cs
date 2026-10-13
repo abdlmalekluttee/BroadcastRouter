@@ -15,7 +15,8 @@ public sealed class FfmpegMediaStarvationDetector
     private int _videoStarvationCount;
 
     public bool Observe(string line, DateTimeOffset observedAt, DateTimeOffset processStartedAt,
-        TimeSpan startupGrace, out string category, out string detail)
+        TimeSpan startupGrace, out string category, out string detail,
+        BroadcastRouter.Domain.MediaEvidenceSnapshot? media = null)
     {
         category = "";
         detail = "";
