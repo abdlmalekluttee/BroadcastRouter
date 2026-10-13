@@ -76,18 +76,22 @@ public static class FfmpegStallDetector
         processRunning && (progress is null || progress.Frame <= 0) && timeout > TimeSpan.Zero && now - startedAt > timeout;
 }
 
+/// <summary>
+/// Legacy type name: observes sustained duplicate-counter suspicion, not a
+/// confirmed input freeze. FFmpeg's fps-filter repeats do not increment the
+/// same counter as CFR synchronization. Neither counter proves decoder failure.
+/// The coordinator must require independent media evidence before any restart.
+/// </summary>
 public sealed class FfmpegInputFreezeDetector(
     double minimumDuplicateRatio = 0.90,
-    long minimumFrameAdvance = 5,
-    long rapidBurstDuplicateThreshold = 12)
+    long minimumFrameAdvance = 5)
 {
     private int? _processId;
     private long _frame;
     private long _duplicatedFrames;
     private DateTimeOffset? _duplicateDominatedSince;
 
-    public bool Observe(int processId, FfmpegProgressSnapshot? progress, DateTimeOffset observedAt, TimeSpan timeout,
-        bool allowRapidBurst = true)
+    public bool Observe(int processId, FfmpegProgressSnapshot? progress, DateTimeOffset observedAt, TimeSpan timeout)
     {
         if (progress is null || progress.Completed || timeout <= TimeSpan.Zero)
         {
@@ -114,14 +118,8 @@ public sealed class FfmpegInputFreezeDetector(
             return false;
         }
 
-        // FFmpeg's fps filter duplicates the last decoded frame when the RTSP
-        // session disappears without closing its TCP socket. A half-second
-        // burst at normal broadcast rates is enough evidence to recreate the
-        // decoder immediately. Low-frame-rate sources opt out at the caller and
-        // continue using the duration-based detector below.
-        if (allowRapidBurst && duplicatedAdvance >= rapidBurstDuplicateThreshold)
-            return true;
-
+        // Multiplicity cannot bypass elapsed observation. This result is only
+        // diagnostic suspicion, never a Failed media measurement or restart vote.
         _duplicateDominatedSince ??= observedAt;
         return observedAt - _duplicateDominatedSince.Value >= timeout;
     }

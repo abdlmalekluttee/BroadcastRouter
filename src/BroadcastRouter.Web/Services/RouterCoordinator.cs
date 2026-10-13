@@ -481,9 +481,9 @@ public sealed class RouterCoordinator(
                         if (route is null || route.State is not (RouteState.Starting or RouteState.Running)) continue;
 
                         var failure = current.InputFailure;
-                        var frozen = failure is null && IsInputFrozen(current, _clock.Now);
+                        var duplicateSuspect = failure is null && HasSustainedDuplicateSuspicion(current, _clock.Now);
                         var confirmed = current.IndependentMedia?.ConfirmedMediaFailure == true;
-                        if (failure is null && !frozen && !confirmed && !HasUnhealthyMediaObservation(current)) continue;
+                        if (failure is null && !duplicateSuspect && !confirmed && !HasUnhealthyMediaObservation(current)) continue;
 
                         if (ShouldHoldLiveOutput(route, current))
                         {
@@ -2430,7 +2430,7 @@ public sealed class RouterCoordinator(
             "Independent media advancement failed at two measurement points; recreating the owned decoder session.", cancellationToken);
     }
 
-    private bool IsInputFrozen(RouteProcessSnapshot process, DateTimeOffset now)
+    private bool HasSustainedDuplicateSuspicion(RouteProcessSnapshot process, DateTimeOffset now)
     {
         DiscoveredSource? source;
         lock (_gate) _sources.TryGetValue(process.Source.Value, out source);
@@ -2449,9 +2449,8 @@ public sealed class RouterCoordinator(
                 _inputFreezeDetectors[process.Source.Value] = detector;
             }
         }
-        var allowRapidBurst = source.Media.FramesPerSecond is >= 10;
         return detector.Observe(process.ProcessId, process.Progress, now,
-            TimeSpan.FromSeconds(_settings.Routing.FrozenInputTimeoutSeconds), allowRapidBurst);
+            TimeSpan.FromSeconds(_settings.Routing.FrozenInputTimeoutSeconds));
     }
 
     private async Task ScheduleRetryAsync(RuntimeRoute route, string category, string detail, CancellationToken cancellationToken)

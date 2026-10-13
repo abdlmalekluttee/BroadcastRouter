@@ -912,10 +912,10 @@ static void FfmpegDuplicateFrameFreezeIsDetected()
     var detector = new FfmpegInputFreezeDetector();
     var now = DateTimeOffset.UtcNow;
     var initial = new FfmpegProgressSnapshot(100, 25, TimeSpan.FromSeconds(4), 0, 0, 1, now, false);
-    True(!detector.Observe(101, initial, now, TimeSpan.FromSeconds(8), allowRapidBurst: false));
-    True(!detector.Observe(101, initial with { Frame = 125, DuplicatedFrames = 25 }, now.AddSeconds(1), TimeSpan.FromSeconds(8), allowRapidBurst: false));
-    True(!detector.Observe(101, initial with { Frame = 300, DuplicatedFrames = 200 }, now.AddSeconds(8), TimeSpan.FromSeconds(8), allowRapidBurst: false));
-    True(detector.Observe(101, initial with { Frame = 325, DuplicatedFrames = 225 }, now.AddSeconds(9), TimeSpan.FromSeconds(8), allowRapidBurst: false));
+    True(!detector.Observe(101, initial, now, TimeSpan.FromSeconds(8)));
+    True(!detector.Observe(101, initial with { Frame = 125, DuplicatedFrames = 25 }, now.AddSeconds(1), TimeSpan.FromSeconds(8)));
+    True(!detector.Observe(101, initial with { Frame = 300, DuplicatedFrames = 200 }, now.AddSeconds(8), TimeSpan.FromSeconds(8)));
+    True(detector.Observe(101, initial with { Frame = 325, DuplicatedFrames = 225 }, now.AddSeconds(9), TimeSpan.FromSeconds(8)));
 
     detector.Reset();
     True(!detector.Observe(102, initial, now, TimeSpan.FromSeconds(8)));
@@ -929,13 +929,15 @@ static void FfmpegRapidDuplicateBurstIsDetected()
     var now = DateTimeOffset.UtcNow;
     var initial = new FfmpegProgressSnapshot(100, 25, TimeSpan.FromSeconds(4), 0, 0, 1, now, false);
     True(!detector.Observe(201, initial, now, TimeSpan.FromSeconds(8)));
-    True(detector.Observe(201, initial with { Frame = 115, DuplicatedFrames = 15 },
+    // P2-21 deliberately rejects the former rapid-burst policy; preserve this
+    // legacy case identity while asserting the newly required safe behavior.
+    True(!detector.Observe(201, initial with { Frame = 115, DuplicatedFrames = 15 },
         now.AddMilliseconds(500), TimeSpan.FromSeconds(8)));
 
     detector.Reset();
-    True(!detector.Observe(202, initial, now, TimeSpan.FromSeconds(8), allowRapidBurst: false));
+    True(!detector.Observe(202, initial, now, TimeSpan.FromSeconds(8)));
     True(!detector.Observe(202, initial with { Frame = 125, DuplicatedFrames = 25 },
-        now.AddSeconds(1), TimeSpan.FromSeconds(8), allowRapidBurst: false));
+        now.AddSeconds(1), TimeSpan.FromSeconds(8)));
 }
 
 static void FfmpegFirstProgressTimeoutIsDetected()
@@ -1454,7 +1456,9 @@ static void PostStartupDeckLinkMediaStarvationIsDetected()
     True(!detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
         observedAt, startedAt, TimeSpan.FromSeconds(5), out _, out _));
     True(detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
-        observedAt.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5), out var videoCategory, out _));
+        observedAt.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5), out var videoCategory, out _,
+        new(MediaSignalState.Healthy, MediaSignalState.Healthy,
+            [new(MediaSignalKind.InputVideo, MediaSignalState.Failed, observedAt.AddSeconds(-3))], false, false)));
     Equal("DeckLinkVideoStarved", videoCategory);
 }
 
@@ -1498,11 +1502,15 @@ static void SupervisorCapturesDeckLinkMediaStarvation()
         var captured = SpinWait.SpinUntil(() =>
         {
             snapshot = supervisor.Snapshot().SingleOrDefault(value => value.Source == owner);
-            return snapshot?.InputFailure is not null;
+            return snapshot?.RecentErrors.Any(error => error.Contains("There's no buffered audio", StringComparison.Ordinal)) == true;
         }, TimeSpan.FromSeconds(12));
 
         True(captured);
-        Equal("DeckLinkVideoStarved", snapshot!.InputFailure!.Category);
+        // Warnings are retained, but without instrumentation they are not a
+        // classified input failure. Positive measured-video recovery has its
+        // own real-child regression in SupervisorVideoRecoveryTests.
+        True(snapshot!.InputFailure is null);
+        True(snapshot.Running);
     }
     finally
     {
