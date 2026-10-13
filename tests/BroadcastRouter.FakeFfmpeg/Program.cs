@@ -15,7 +15,13 @@ var scriptPath = args.Length == 1 ? args[0]
     : args.Contains("-progress") ? Path.Combine(AppContext.BaseDirectory, "live.json") : null;
 if (scriptPath is null || !File.Exists(scriptPath)) return 64;
 if (args.Contains("-show_streams"))
-    await File.AppendAllTextAsync(Path.Combine(AppContext.BaseDirectory, "probe-starts.log"), Environment.ProcessId + "\n");
+{
+    // Independent probes must not crash (or lose counts) by sharing an append
+    // handle. Publish one completed marker per invocation, atomically after close.
+    var marker = Path.Combine(AppContext.BaseDirectory, $"probe-starts.log.{Guid.NewGuid():N}.pending");
+    await File.WriteAllTextAsync(marker, Environment.ProcessId + "\n");
+    File.Move(marker, Path.ChangeExtension(marker, "started"));
+}
 if (OperatingSystem.IsWindows()) Native.SetErrorMode(0x0002 | 0x8000);
 var script = JsonSerializer.Deserialize<Script>(await File.ReadAllTextAsync(scriptPath),
     new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new InvalidDataException("Missing script");

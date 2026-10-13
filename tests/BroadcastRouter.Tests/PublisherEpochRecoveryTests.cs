@@ -55,21 +55,21 @@ public sealed class PublisherEpochRecoveryTests
             lab.Time.Advance(TimeSpan.FromSeconds(1));
         }
         var marker = Path.Combine(lab.Root, "probe-starts.log");
-        Assert.Equal(124, File.ReadAllLines(marker).Length);
+        Assert.Equal(124, ProbeMarker.CountStarted(marker));
         http.Connected = false;
         await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
         await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
         http.Connected = true;
         await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
         await ProbeDue();
-        Assert.Equal(125, File.ReadAllLines(marker).Length);
+        Assert.Equal(125, ProbeMarker.CountStarted(marker));
         for (var second = 0; second < 29; second++)
         {
             lab.Time.Advance(TimeSpan.FromSeconds(1));
             await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
             await ProbeDue();
         }
-        Assert.Equal(125, File.ReadAllLines(marker).Length);
+        Assert.Equal(125, ProbeMarker.CountStarted(marker));
         Assert.Single(lab.Events, e => e.State == RouteProcessLifecycleState.Started);
         Assert.DoesNotContain(lab.Events, e => e.State == RouteProcessLifecycleState.StopRequested);
         Assert.Equal(3, lab.Route.RestartCount);

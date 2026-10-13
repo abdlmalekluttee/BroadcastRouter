@@ -48,6 +48,11 @@ All136 original case identities retained,2 strict R18 defects OPEN, clean Releas
 0 warnings/errors, Python provenance12/12+CI12/12. First full558/560 failed stale
 test reflection (corrected) and an unchanged slow-probe test (cause unresolved;
 isolated/related/final-full reruns passed). No timing assertion was weakened.
+That slow-probe failure recurred on the first hosted run (568/569, main12m25s,
+job13m22s). Further deterministic tests established shared fake-probe marker
+writer collisions, including13/16 child crashes. The test-only marker correction
+passed46 focused cases; subsequent full/head verification is recorded on PR#81.
+The unrelated earlier telemetry Flush delay is still unresolved.
 
 Previously completed bench cohort was500 controlled stops,0 forced exits,
 p99~1199ms/max~1266ms; one loopback had100 tones/100 silent standby captures.
