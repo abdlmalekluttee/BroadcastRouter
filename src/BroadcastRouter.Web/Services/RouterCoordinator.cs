@@ -483,7 +483,7 @@ public sealed class RouterCoordinator(
                         var failure = current.InputFailure;
                         var frozen = failure is null && IsInputFrozen(current, _clock.Now);
                         var confirmed = current.IndependentMedia?.ConfirmedMediaFailure == true;
-                        if (failure is null && !frozen && !confirmed) continue;
+                        if (failure is null && !frozen && !confirmed && !HasUnhealthyMediaObservation(current)) continue;
 
                         if (ShouldHoldLiveOutput(route, current))
                         {
@@ -1520,7 +1520,8 @@ public sealed class RouterCoordinator(
             var ownedProcess = _settings.SimulationMode
                 ? null
                 : _supervisor?.Snapshot().FirstOrDefault(value => value.Source.Value == route.SourceId && value.Running);
-            if (ownsLease && ShouldHoldLiveOutput(route, ownedProcess)) return;
+            var explicitlyDisabled = IsManualSourceDisabledByOperator(source.Identity);
+            if (!explicitlyDisabled && ownsLease && ShouldHoldLiveOutput(route, ownedProcess)) return;
             // A healthy owned decoder is stronger evidence than an overlapping FFprobe timeout.
             // This prevents a slow discovery sample from tearing down a route that has already
             // reconnected and is producing actual source video.
@@ -1531,7 +1532,7 @@ public sealed class RouterCoordinator(
                     Progress.Frame: > 0
                 }
                 && source.Media?.HasUsableVideo == true;
-            var active = RapidStreamRecoveryPolicy.IsEffectivelyActive(source, ownedLiveVideoIsAdvancing);
+            var active = !explicitlyDisabled && RapidStreamRecoveryPolicy.IsEffectivelyActive(source, ownedLiveVideoIsAdvancing);
             if (!active && !CanAutomaticallyRetireForSourceAbsence(route.SourceId, ownedProcess))
             {
                 RecordUnconfirmedRecovery(route, ownedProcess!, "SourceReconciliation");
@@ -1550,17 +1551,17 @@ public sealed class RouterCoordinator(
             if (active && (route.State is RouteState.Reconnecting or RouteState.Fallback)
                 && route.RetryAt is not null && route.RetryAt > _clock.Now)
                 return;
-            if (!active && DesiredRoutePolicy.HasSavedAssignment(route)
+            if (!explicitlyDisabled && !active && DesiredRoutePolicy.HasSavedAssignment(route)
                 && route.State is RouteState.Reconnecting or RouteState.Fallback
                 && route.RetryAt is not null)
                 return;
             var recoveryStartupGrace = TimeSpan.FromMilliseconds(
                 Math.Clamp(_settings.Routing.InputReadTimeoutMilliseconds, 500, 30000) + 2000);
-            if (ownedProcess is not null && RapidStreamRecoveryPolicy.ShouldKeepStartingAttempt(
+            if (!explicitlyDisabled && ownedProcess is not null && RapidStreamRecoveryPolicy.ShouldKeepStartingAttempt(
                     route, active, ownsLiveProcess, ownedProcess.StartedAt,
                     _clock.Now, recoveryStartupGrace))
                 return;
-            if (RapidStreamRecoveryPolicy.ShouldEnterSavedRetry(route, active))
+            if (!explicitlyDisabled && RapidStreamRecoveryPolicy.ShouldEnterSavedRetry(route, active))
             {
                 await StopOwnedForDecisionAsync(source.Identity, route.PortId, "SourceTemporarilyUnavailable",
                     "Existing saved-route inactive policy after startup grace", true, cancellationToken);
@@ -2261,7 +2262,7 @@ public sealed class RouterCoordinator(
                     continue;
                 }
                 var hold = ShouldHoldLiveOutput(route, process);
-                var speculative = process.InputFailure is not null
+                var speculative = process.InputFailure is not null || HasUnhealthyMediaObservation(process)
                     || FfmpegStallDetector.IsFirstProgressTimedOut(true, progress, process.StartedAt, now,
                         TimeSpan.FromSeconds(_settings.Routing.FirstProgressTimeoutSeconds))
                     || FfmpegStallDetector.IsStalled(true, progress, now, TimeSpan.FromSeconds(_settings.Routing.StallTimeoutSeconds));
@@ -2762,6 +2763,7 @@ public sealed class RouterCoordinator(
 
     private bool CanAutomaticallyRetireForSourceAbsence(string sourceId, RouteProcessSnapshot? owner)
     {
+        if (IsManualSourceDisabledByOperator(SourceIdentityFromValue(sourceId))) return true;
         if (owner is not { Running: true, Purpose: RouteProcessPurpose.Live }) return true;
         if (owner.IndependentMedia?.ConfirmedMediaFailure == true) return true;
         lock (_gate)
@@ -2770,6 +2772,18 @@ public sealed class RouterCoordinator(
                 && _servers.TryGetValue(stamp.ServerId, out var server) && server.Reachable
                 && _clock.Now - server.CheckedAt < PublisherLiveHoldPolicy.EvidenceLifetime;
     }
+
+    private bool IsManualSourceDisabledByOperator(SourceIdentity identity)
+    {
+        // Current saved operator settings are authority, not a discovery or
+        // probe result. A removed/disabled manual input is deliberately stopped.
+        if (!identity.ServerId.Equals("MANUAL", StringComparison.OrdinalIgnoreCase)) return false;
+        lock (_gate) return !_settings.ManualSources.Any(source => source.Enabled
+            && source.StableId.Equals(identity.StreamName, StringComparison.Ordinal));
+    }
+
+    private static bool HasUnhealthyMediaObservation(RouteProcessSnapshot process) =>
+        process.IndependentMedia?.Signals.Any(signal => signal.State is MediaSignalState.Suspect or MediaSignalState.Failed) == true;
 
     private bool SourceHasBeenReadyLongEnough(string sourceId, int stableSeconds)
     {
