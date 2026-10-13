@@ -47,12 +47,7 @@ public sealed class OfflineFallbackTests
         await using var lab = await RecoveryLab.Create();
         await lab.InstallFakeMediaTools();
         var old = lab.Owner;
-        await lab.RestartDue();
-        for (var i = 0; i < 100 && !lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live); i++)
-        {
-            await Task.Delay(20);
-            await lab.RestartDue();
-        }
+        await AutomaticMediaCoordinatorTests.Poll(lab);
         Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live),
             "R02: a fresh decoded AV probe did not produce a live handoff");
         await FaultHarnessTests.Eventually(() => lab.Owner.Progress?.Frame > 0);
@@ -84,14 +79,13 @@ public sealed class OfflineFallbackTests
         lab.Routes[lab.Source.Value] = lab.Route with { AssignmentMode = AssignmentMode.Automatic, DesiredPortId = null };
         var observation = lab.Sources[lab.Source.Value] with { State = SourceState.PublisherActive };
         var task = lab.Invoke("ProbeObservationAsync", observation, lab.Settings, CancellationToken.None, null);
-        await task;
+        await AutomaticMediaCoordinatorTests.Drive(lab, task);
         var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
         var source = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
         Assert.Equal(SourceState.Ready, source.State);
         lab.Sources[lab.Source.Value] = source;
         Assert.True(RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(lab.Route, source));
-        for (var i = 0; i < 100 && !lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live); i++)
-        { await lab.RestartDue(); await Task.Delay(20); }
+        await AutomaticMediaCoordinatorTests.Poll(lab);
         Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live));
     }
 
@@ -140,6 +134,8 @@ public sealed class OfflineFallbackTests
     {
         await using var lab = await RecoveryLab.Create();
         await lab.InstallFakeMediaTools();
+        await lab.RestartDue();
+        await DeclaredMediaCoordinatorTests.AwaitPending(lab);
         var portGate = lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim>>("_portGates")
             .GetOrAdd("TEST-OUTPUT", _ => new(1, 1));
         await portGate.WaitAsync();
@@ -160,7 +156,7 @@ public sealed class OfflineFallbackTests
                 case "publisher": lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value].Invalidate(); break;
                 case "settings-revision": lab.Settings.ConfigurationRevision++; break;
                 case "simulation-mode": lab.Settings.SimulationMode = true; break;
-                case "media-declaration": lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.AudioOnly; break;
+                case "media-declaration": lab.Settings.SourceMediaProfiles[0].Override = SourceMediaOverride.ForceAudioOnly; break;
                 case "device-rediscovery":
                     var ports = lab.Get<Dictionary<string, DeckLinkPort>>("_ports");
                     ports["TEST-OUTPUT"] = ports["TEST-OUTPUT"] with { FfmpegName = "Remapped output" };

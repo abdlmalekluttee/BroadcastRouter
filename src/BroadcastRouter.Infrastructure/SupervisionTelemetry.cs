@@ -19,11 +19,22 @@ public sealed record SupervisionEvidence(bool? ProcessAlive = null, long? Frame 
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     IndependentMediaDecisionEvidence? IndependentMedia = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    SelectedMediaDecisionEvidence? SelectedMedia = null);
+    SelectedMediaDecisionEvidence? SelectedMedia = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    MediaQualificationDecisionEvidence? Qualification = null);
+
+public sealed record MediaQualificationDecisionEvidence(
+    [property: JsonConverter(typeof(JsonStringEnumConverter<DetectedMediaProfile>))] DetectedMediaProfile DetectedProfile,
+    [property: JsonConverter(typeof(JsonStringEnumConverter<SourceMediaOverride>))] SourceMediaOverride Override,
+    double AdvancingVideoSeconds, double AdvancingAudioSeconds, bool AudioDisabledByPreset,
+    long? PlannedUpgradeEpoch);
 
 public sealed record SelectedMediaDecisionEvidence(
     [property: JsonConverter(typeof(JsonStringEnumConverter<SourceMediaExpectation>))] SourceMediaExpectation Expectation,
-    bool SourceVideoSelected);
+    bool SourceVideoSelected,
+    [property: JsonConverter(typeof(JsonStringEnumConverter<DetectedMediaProfile>))] DetectedMediaProfile DetectedProfile,
+    [property: JsonConverter(typeof(JsonStringEnumConverter<SourceMediaOverride>))] SourceMediaOverride Override,
+    bool AudioDisabledByPreset, bool SourceAudioSelected);
 
 public sealed record MediaSignalDecisionEvidence(
     [property: JsonConverter(typeof(JsonStringEnumConverter<MediaSignalKind>))] MediaSignalKind Kind,
@@ -220,7 +231,9 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
                 independent.Heartbeat, independent.ConfirmedMediaFailure,
                 independent.Signals.Select(signal => new MediaSignalDecisionEvidence(signal.Kind, signal.State,
                     signal.LastAdvancedAt is { } at ? Math.Max(0, (clock.Now - at).TotalMilliseconds) : null)).ToArray()) : null,
-            SelectedMedia: process?.SelectedMedia is { } selected ? new(selected.Expectation, selected.HasUsableVideo) : null);
+            SelectedMedia: process?.SelectedMedia is { } selected ? new(selected.Expectation, selected.HasUsableVideo,
+                selected.DetectedProfile, selected.SelectedOverride, selected.AudioDisabledByPreset,
+                selected.AudioCodec is not null && !selected.AudioDisabledByPreset) : null);
 
     public async Task FlushAsync(CancellationToken cancellationToken = default)
     {

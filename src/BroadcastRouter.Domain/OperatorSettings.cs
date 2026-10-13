@@ -24,7 +24,8 @@ public sealed record SettingsApplyResult(
     OperatorSettings Settings,
     long ConfigurationRevision,
     DateTimeOffset AppliedAt,
-    string AppliedBy);
+    string AppliedBy,
+    IReadOnlyList<string>? Warnings = null);
 
 public sealed class DeckLinkCardOverride
 {
@@ -87,6 +88,8 @@ public sealed class ManualSourceProfile
 public sealed class SourceMediaProfile
 {
     public string SourceId { get; set; } = "";
+    public SourceMediaOverride Override { get; set; } = SourceMediaOverride.Auto;
+    // Legacy fields remain readable for settings compatibility, not admission.
     public SourceMediaExpectation Expectation { get; set; } = SourceMediaExpectation.ContinuousVideo;
     public bool RequireAudio { get; set; }
 }

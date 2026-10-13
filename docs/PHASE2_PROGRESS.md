@@ -1,5 +1,34 @@
 # Phase 2 progress
 
+## Automatic-media redesign checkpoint — 13 October
+
+New branch `fix/P2-24-auto-media-detection`, stacked on #81 without amending the
+accepted stack. [Design and evidence](phase2/P2-24-AUTO.md) supersede the static
+declaration design below. Default Auto, immutable selected graph, one planned
+richer-profile attempt per epoch, authoritative preset mute, non-blocking save
+warnings and advanced admin overrides are implemented. Production is unchanged.
+
+Local Release build: zero warnings/errors. Normal suite: **660/660** across three
+disjoint shards (645 remaining / 14 standby / 1 telemetry); slowest shard 4m29s.
+Provenance tests **12/12**; CI contract tests **17/17**. Strict KnownDefect checks
+the exact two OPEN R18 failures (`DiagnosticActorIsRedacted`,
+`DiagnosticReasonIsRedacted`); they remain defects, not passing behavior tests.
+Final independent review, clean-package verification and exact-head GitHub CI
+are still required before this candidate is ready for review.
+
+The private read-only mute inventory is retained outside the repository. No
+source declaration confirmation list is required. Local simulation browser
+testing exercised the closed advanced disclosure, four options, save failure
+with preserved draft and backend-confirmed successful save. A parent-page Razor
+binding regression found visually was reproduced and fixed test-first.
+
+Gate B/C hardware rows remain open: the new side-by-side candidate/handle guard
+is not physically qualified. Only the previously established loop is proven;
+prior hardware-cycle results do not qualify this redesign. The native -5 cause
+is an owner-accepted residual risk mitigated by breaker/alarm, not a solved root
+cause. Phase D is authorized on fakes but not implemented in this PR. The prior
+telemetry flush-timeout root cause belongs to P2-31. Soak needs separate approval.
+
 Gate A follow-up: [isolated direct/force-push rejection proof](phase2/P2-01-protection-proof.md)
 records both actual GH013 rejections, verified cleanup and unchanged main protection.
 No runtime changes or production access were needed for that proof.

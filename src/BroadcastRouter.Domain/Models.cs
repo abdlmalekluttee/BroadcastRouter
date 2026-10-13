@@ -17,6 +17,8 @@ public enum AssignmentMode { None, Automatic, Rule, Fixed, Manual, Preconfigured
 public enum FallbackMode { Black, TestPattern, FreezeLastFrame, StandbySource, File }
 public enum StandbyPattern { Black, SmpteBars, SmpteHdBars, TestSource }
 public enum SourceMediaExpectation { ContinuousVideo, SparseVideo, AudioOnly, Undeclared }
+public enum SourceMediaOverride { Auto, ForceAudioVideo, ForceVideoOnly, ForceAudioOnly }
+public enum DetectedMediaProfile { Unknown, AudioVideo, VideoOnly, AudioOnly }
 
 public sealed record WowzaServerConfiguration(
     string FriendlyName,
@@ -46,7 +48,10 @@ public sealed record MediaProperties(
     int? AudioChannels,
     bool HasUsableVideo,
     bool? Interlaced = null,
-    SourceMediaExpectation Expectation = SourceMediaExpectation.ContinuousVideo);
+    SourceMediaExpectation Expectation = SourceMediaExpectation.ContinuousVideo,
+    DetectedMediaProfile DetectedProfile = DetectedMediaProfile.Unknown,
+    SourceMediaOverride SelectedOverride = SourceMediaOverride.Auto,
+    bool AudioDisabledByPreset = false);
 
 public sealed record DiscoveredSource(
     SourceIdentity Identity,

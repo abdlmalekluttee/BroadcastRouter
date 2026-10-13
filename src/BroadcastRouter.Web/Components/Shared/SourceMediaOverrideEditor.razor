@@ -1,0 +1,69 @@
+@using BroadcastRouter.Application
+@inject RouterCoordinator Coordinator
+@inject AuthorizedRouterCommands Commands
+@inject OperatorErrorMessage OperatorErrors
+
+<details class="source-media-advanced">
+    <summary>Advanced source details</summary>
+    <p class="secondary-text">Auto qualifies every detected input track before handoff. Overrides apply to the next qualified session; they never restart a healthy owner or defeat audio disabled by preset.</p>
+    <label class="form-group"><span>Media selection</span>
+        <select aria-label="Media selection for @SourceId" disabled="@busy" @bind="mode">
+            <option value="@SourceMediaOverride.Auto">Auto (recommended)</option>
+            <option value="@SourceMediaOverride.ForceAudioVideo">Force video + audio</option>
+            <option value="@SourceMediaOverride.ForceVideoOnly">Force video-only</option>
+            <option value="@SourceMediaOverride.ForceAudioOnly">Force audio-only</option>
+        </select>
+    </label>
+    @if (SelectedMedia is not null && SelectedMedia.SelectedOverride != savedMode)
+    {
+        <p class="text-warning" role="status">Saved override is pending the next qualified session. The current output graph is unchanged.</p>
+    }
+    <div class="actions">
+        <button type="button" class="btn small primary" disabled="@(busy || mode == savedMode)" @onclick="Save">@(busy ? "Saving…" : "Save media selection")</button>
+        <button type="button" class="btn small" disabled="@busy" @onclick="Reload">Reload confirmed state</button>
+    </div>
+    <NoticeBoard Severity="danger" @bind-Message="error" />
+    <NoticeBoard Severity="success" @bind-Message="confirmation" />
+    <NoticeBoard Severity="warning" @bind-Message="warning" />
+</details>
+@code {
+    [Parameter, EditorRequired] public string SourceId { get; set; } = "";
+    [Parameter] public MediaProperties? SelectedMedia { get; set; }
+    private string? loadedSource;
+    private SourceMediaOverride mode, savedMode;
+    private long revision;
+    private bool busy;
+    private string error = "", confirmation = "", warning = "";
+    protected override void OnParametersSet()
+    {
+        if (loadedSource == SourceId) return; // snapshots never overwrite an unsaved draft
+        loadedSource = SourceId;
+        Reload();
+    }
+    private void Reload()
+    {
+        var settings = Coordinator.GetSettings();
+        mode = savedMode = SourceMediaPolicy.Get(settings, SourceId).Override;
+        revision = settings.ConfigurationRevision;
+        error = confirmation = warning = "";
+    }
+    private async Task Save()
+    {
+        if (busy || mode == savedMode) return;
+        busy = true;
+        error = confirmation = warning = "";
+        try
+        {
+            var result = await Commands.SetSourceMediaOverrideAsync(SourceId, mode, revision);
+            revision = result.ConfigurationRevision;
+            mode = savedMode = SourceMediaPolicy.Get(result.Settings, SourceId).Override;
+            confirmation = $"Media selection saved (revision {revision}). Current owner unchanged.";
+            warning = string.Join(" ", result.Warnings ?? []);
+        }
+        catch (Exception ex)
+        {
+            error = OperatorErrors.Describe(ex, "saving media selection") + " Your selection is retained. Reload confirmed state if the backend revision changed.";
+        }
+        finally { busy = false; }
+    }
+}

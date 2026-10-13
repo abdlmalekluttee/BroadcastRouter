@@ -58,7 +58,7 @@
 {
     var route = snapshot.Routes.FirstOrDefault(x => x.SourceId == source.Identity.Value);
     var routeAction = SourceRouteActionPolicy.Resolve(route);
-    <tr><td><span class="primary-text">@source.FriendlyName</span><span class="secondary-text">@source.Identity.Value</span></td>
+    <tr><td><span class="primary-text">@source.FriendlyName</span><span class="secondary-text">@source.Identity.Value</span><AuthorizeView Roles="Administrator"><Authorized><BroadcastRouter.Web.Components.Shared.SourceMediaOverrideEditor @key="source.Identity.Value" SourceId="@source.Identity.Value" SelectedMedia="snapshot.OutputSelections?.GetValueOrDefault(source.Identity.Value)?.Media" /></Authorized></AuthorizeView></td>
         <td>@source.Identity.ServerId<span class="secondary-text">@source.Identity.Application / @source.Identity.ApplicationInstance</span></td>
         <td class="mono" title="@Sanitize(source.RtspUri)">@Sanitize(source.RtspUri)</td>
         <td><BroadcastRouter.Web.Components.Shared.SourceMediaStatus Source="source" Output="snapshot.OutputSelections?.GetValueOrDefault(source.Identity.Value)" /></td>

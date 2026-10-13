@@ -1,4 +1,5 @@
 <span class="@(AmbiguousSparse ? "text-warning" : null)" data-observed-media="@(AmbiguousSparse ? "Unknown" : Source.State.ToString())">Observed: @Observed()</span>
+<span class="secondary-text">Detected profile: @ProfileLabel(Source.Media?.DetectedProfile ?? DetectedMediaProfile.Unknown)</span>
 @if (AmbiguousSparse)
 {
     <span class="secondary-text">Last observation: @(Source.LastObservedAt?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'") ?? "Not Available")</span>
@@ -17,7 +18,7 @@
     {
         SourceState.WaitingForKeyframe => "waiting for decoded video",
         SourceState.Unknown => "unknown / required tracks not qualified",
-        SourceState.Ready when Source.Media?.Expectation == SourceMediaExpectation.AudioOnly => "declared audio-only qualified",
+        SourceState.Ready when Source.Media?.Expectation == SourceMediaExpectation.AudioOnly => "audio-only qualified",
         SourceState.Ready when Source.Media?.HasUsableVideo == true => $"video qualified · {Source.Media.VideoCodec} · {Source.Media.Width}×{Source.Media.Height} · {Source.Media.FramesPerSecond:0.##} fps",
         _ => Source.State.ToString()
     };
@@ -25,8 +26,14 @@
     {
         null => "no running owner",
         { IsFallback: true } => "standby",
-        { Media.Expectation: SourceMediaExpectation.AudioOnly } => "generated black (declared audio-only)",
-        { Media.HasUsableVideo: true } => "source video",
+        { Media.AudioDisabledByPreset: true, Media.HasUsableVideo: true } => "source video · audio disabled by preset",
+        { Media.AudioDisabledByPreset: true } => "audio disabled by preset",
+        { Media.HasUsableVideo: false, Media.AudioCodec: not null } => "generated black + source audio",
+        { Media.HasUsableVideo: true, Media.AudioCodec: not null } => "source video + source audio",
+        { Media.HasUsableVideo: true } => "source video + generated silence",
         _ => "not available"
     };
+    private static string ProfileLabel(DetectedMediaProfile profile) => profile switch {
+        DetectedMediaProfile.AudioVideo => "video + audio", DetectedMediaProfile.VideoOnly => "video-only",
+        DetectedMediaProfile.AudioOnly => "audio-only", _ => "unknown" };
 }

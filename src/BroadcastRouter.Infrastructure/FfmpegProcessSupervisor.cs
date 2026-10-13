@@ -62,7 +62,8 @@ public sealed class FfmpegProcessSupervisor(
         try
         {
             if (media is not null) await media.AttachToAsync(start).ConfigureAwait(false);
-            await StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken, port.StableId, media, source.Media).ConfigureAwait(false);
+            await StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken, port.StableId, media,
+                source.Media is null ? null : source.Media with { AudioDisabledByPreset = !preset.IncludeAudio }).ConfigureAwait(false);
         }
         catch
         {

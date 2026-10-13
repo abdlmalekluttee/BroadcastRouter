@@ -177,7 +177,7 @@ public sealed class StrictWowzaTests
             await File.WriteAllTextAsync(release, "continue");
             // Even a failed assertion must join discovery before the lab clears
             // SQLite pools and removes the child's release marker/database.
-            await discovery;
+            await AutomaticMediaCoordinatorTests.Drive(lab, discovery);
         }
         await lab.Invoke("ReconcileRoutesAsync", CancellationToken.None);
         Assert.Equal(session, lab.Owner.SessionId);
@@ -205,7 +205,7 @@ public sealed class StrictWowzaTests
         finally
         {
             http.Release.TrySetResult();
-            await discovery;
+            await AutomaticMediaCoordinatorTests.Drive(lab, discovery);
         }
         http.Mode = "offline";
         await lab.Invoke("SuperviseWowzaPublisherPresenceAsync", lab.Supervisor, CancellationToken.None);
@@ -237,7 +237,7 @@ public sealed class StrictWowzaTests
         finally
         {
             await File.WriteAllTextAsync(release, "continue");
-            await discovery;
+            await AutomaticMediaCoordinatorTests.Drive(lab, discovery);
         }
         var incoming = Assert.Single(lab.Sources.Values, source => source.Identity.StreamName == "source-B");
         Assert.Equal(SourceState.Ready, incoming.State);
@@ -250,8 +250,7 @@ public sealed class StrictWowzaTests
         try
         {
             await lab.InstallFakeMediaTools();
-            for (var i = 0; i < 100 && !lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live); i++)
-            { await lab.RestartDue(); await Task.Delay(20); }
+            await AutomaticMediaCoordinatorTests.Poll(lab);
             await FaultHarnessTests.Eventually(() => lab.Owner.Progress?.Frame > 0);
             Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live));
             lab.Routes[lab.Source.Value] = lab.Route with { State = RouteState.Running, RetryAt = null };
