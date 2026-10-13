@@ -1,0 +1,22 @@
+<span data-observed-media="@Source.State">Observed: @Observed()</span>
+<span class="secondary-text" data-selected-session="@Output?.SessionId.ToString("N")">Output graph: @Selected()</span>
+@code {
+    [Parameter, EditorRequired] public DiscoveredSource Source { get; set; } = null!;
+    [Parameter] public OutputMediaSelection? Output { get; set; }
+    private string Observed() => Source.State switch
+    {
+        SourceState.WaitingForKeyframe => "waiting for decoded video",
+        SourceState.Unknown => "unknown / required tracks not qualified",
+        SourceState.Ready when Source.Media?.Expectation == SourceMediaExpectation.AudioOnly => "declared audio-only qualified",
+        SourceState.Ready when Source.Media?.HasUsableVideo == true => $"video qualified · {Source.Media.VideoCodec} · {Source.Media.Width}×{Source.Media.Height} · {Source.Media.FramesPerSecond:0.##} fps",
+        _ => Source.State.ToString()
+    };
+    private string Selected() => Output switch
+    {
+        null => "no running owner",
+        { IsFallback: true } => "standby",
+        { Media.Expectation: SourceMediaExpectation.AudioOnly } => "generated black (declared audio-only)",
+        { Media.HasUsableVideo: true } => "source video",
+        _ => "not available"
+    };
+}

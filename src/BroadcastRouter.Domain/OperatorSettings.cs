@@ -10,6 +10,7 @@ public sealed class OperatorSettings
     public MediaToolPaths MediaTools { get; set; } = new();
     public List<WowzaServerProfile> WowzaServers { get; set; } = [];
     public List<ManualSourceProfile> ManualSources { get; set; } = [];
+    public List<SourceMediaProfile> SourceMediaProfiles { get; set; } = [];
     public List<OutputPresetProfile> Presets { get; set; } = OutputPresetProfile.CommonDefaults();
     public List<RoutingRuleProfile> Rules { get; set; } = [];
     public List<DeckLinkCardOverride> DeckLinkCardOverrides { get; set; } = [];
@@ -80,6 +81,13 @@ public sealed class ManualSourceProfile
     public string FixedPortId { get; set; } = "";
     public bool Locked { get; set; }
     public bool Enabled { get; set; } = true;
+}
+
+public sealed class SourceMediaProfile
+{
+    public string SourceId { get; set; } = "";
+    public SourceMediaExpectation Expectation { get; set; } = SourceMediaExpectation.ContinuousVideo;
+    public bool RequireAudio { get; set; }
 }
 
 public sealed class OutputPresetProfile

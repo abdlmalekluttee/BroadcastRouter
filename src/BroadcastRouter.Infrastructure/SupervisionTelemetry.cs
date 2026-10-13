@@ -17,7 +17,13 @@ public sealed record SupervisionEvidence(bool? ProcessAlive = null, long? Frame 
     int? AudioTimestampDiscontinuities = null, int? VideoTimestampDiscontinuities = null,
     double? FirstAnomalyAgeMilliseconds = null, double? LastAnomalyAgeMilliseconds = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IndependentMediaDecisionEvidence? IndependentMedia = null);
+    IndependentMediaDecisionEvidence? IndependentMedia = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    SelectedMediaDecisionEvidence? SelectedMedia = null);
+
+public sealed record SelectedMediaDecisionEvidence(
+    [property: JsonConverter(typeof(JsonStringEnumConverter<SourceMediaExpectation>))] SourceMediaExpectation Expectation,
+    bool SourceVideoSelected);
 
 public sealed record MediaSignalDecisionEvidence(
     [property: JsonConverter(typeof(JsonStringEnumConverter<MediaSignalKind>))] MediaSignalKind Kind,
@@ -213,7 +219,8 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
             IndependentMedia: process?.IndependentMedia is { } independent ? new(independent.Process,
                 independent.Heartbeat, independent.ConfirmedMediaFailure,
                 independent.Signals.Select(signal => new MediaSignalDecisionEvidence(signal.Kind, signal.State,
-                    signal.LastAdvancedAt is { } at ? Math.Max(0, (clock.Now - at).TotalMilliseconds) : null)).ToArray()) : null);
+                    signal.LastAdvancedAt is { } at ? Math.Max(0, (clock.Now - at).TotalMilliseconds) : null)).ToArray()) : null,
+            SelectedMedia: process?.SelectedMedia is { } selected ? new(selected.Expectation, selected.HasUsableVideo) : null);
 
     public async Task FlushAsync(CancellationToken cancellationToken = default)
     {

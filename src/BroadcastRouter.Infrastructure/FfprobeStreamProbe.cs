@@ -83,13 +83,16 @@ public sealed class FfprobeStreamProbe(
     private static StreamProbeResult ParseDocument(string json)
     {
         using var document = JsonDocument.Parse(json);
-        if (!document.RootElement.TryGetProperty("streams", out var streams) || streams.ValueKind != JsonValueKind.Array)
+        if (document.RootElement.ValueKind != JsonValueKind.Object
+            || !document.RootElement.TryGetProperty("streams", out var streams) || streams.ValueKind != JsonValueKind.Array)
             return new(true, false, null, "NoStreams", "FFprobe opened the input but returned no streams.");
 
         JsonElement? video = null;
         JsonElement? audio = null;
         foreach (var stream in streams.EnumerateArray())
         {
+            if (stream.ValueKind != JsonValueKind.Object)
+                return new(false, false, null, "InvalidOutput", "FFprobe returned an invalid stream entry.");
             var codecType = Text(stream, "codec_type");
             if (codecType == "video" && video is null) video = stream.Clone();
             if (codecType == "audio" && audio is null) audio = stream.Clone();
@@ -103,13 +106,15 @@ public sealed class FfprobeStreamProbe(
             var audioMedia = new MediaProperties(null, audio is null ? null : Text(audio.Value, "codec_name"), null, null, null, null,
                 audio is null ? null : Integer(audio.Value, "sample_rate"), audio is null ? null : Integer(audio.Value, "channels"), false);
             return audioReceived
-                ? new(true, false, audioMedia, null, $"Received {audioCount} audio packet(s)/frame(s); continuous black video will be generated for routing.", true, decodedAudioReceived)
+                ? new(true, false, audioMedia, null, "Audio observed; video selection requires a declared source expectation.", true, decodedAudioReceived)
                 : new(true, false, audioMedia, "AudioOnly", "Audio metadata was detected, but no audio packets or frames were received.");
         }
 
         var frameCount = Integer64(video.Value, "nb_read_frames") ?? 0;
         var fps = Rational(Text(video.Value, "avg_frame_rate")) ?? Rational(Text(video.Value, "r_frame_rate"));
-        var sustainedVideo = frameCount > 0 && (!audioReceived || HasSustainedVideo(frameCount, fps));
+        // A decoded still is valid video. Cadence is a source declaration, not
+        // something a short sample can establish (long GOPs and sparse video).
+        var sustainedVideo = frameCount > 0;
         var bitRate = Integer64(video.Value, "bit_rate");
         var fieldOrder = Text(video.Value, "field_order");
         var interlaced = fieldOrder switch
@@ -118,7 +123,8 @@ public sealed class FfprobeStreamProbe(
             "progressive" => false,
             _ => (bool?)null
         };
-        if (bitRate is null && document.RootElement.TryGetProperty("format", out var format)) bitRate = Integer64(format, "bit_rate");
+        if (bitRate is null && document.RootElement.TryGetProperty("format", out var format)
+            && format.ValueKind == JsonValueKind.Object) bitRate = Integer64(format, "bit_rate");
         var media = new MediaProperties(
             Text(video.Value, "codec_name"),
             audio is null ? null : Text(audio.Value, "codec_name"),
@@ -133,19 +139,8 @@ public sealed class FfprobeStreamProbe(
         return sustainedVideo
             ? new(true, true, media, null, $"Received {frameCount} video frame(s) during validation.", audioReceived, decodedAudioReceived)
             : audioReceived
-                ? new(true, false, media, null, $"Received {audioCount} audio packet(s)/frame(s) while video delivered only {frameCount} frame(s); continuous black video will be generated for routing.", true, decodedAudioReceived)
+                ? new(true, false, media, null, "Audio observed; waiting for a decoded video frame.", true, decodedAudioReceived)
             : new(true, false, media, "NoVideoFrames", "Video metadata was detected but no decoded/read frames were reported.");
-    }
-
-    private static bool HasSustainedVideo(long frameCount, double? framesPerSecond)
-    {
-        // Decoder startup and RTSP keyframe acquisition consume part of the two-second sample.
-        // Five frames (or 20% of the advertised cadence) distinguishes continuous video from
-        // the isolated 0-1 frame keepalives used by audio-led services without misclassifying
-        // a healthy feed merely because its first keyframe arrived late.
-        var cadence = Math.Clamp(framesPerSecond.GetValueOrDefault(2), 1, 60);
-        var minimumFrames = Math.Max(2L, (long)Math.Ceiling(cadence * .2));
-        return frameCount >= minimumFrames;
     }
 
     private static long ReadCount(JsonElement stream) => Math.Max(

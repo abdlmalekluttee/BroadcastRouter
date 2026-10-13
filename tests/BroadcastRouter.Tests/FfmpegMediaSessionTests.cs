@@ -11,6 +11,38 @@ public sealed class FfmpegMediaSessionTests
 {
     private static readonly MediaProperties Av = new("h264", "aac", 1920, 1080, 25, null, 48000, 2, true);
 
+    [Fact]
+    public async Task SparseInputHasNoCadenceFailureButPcmAndOutputLossRemainAuthoritative()
+    {
+        var time = new ManualTimeProvider();
+        var clock = new SupervisionClock(time);
+        await using var session = new FfmpegMediaSession(Av with { Expectation = SourceMediaExpectation.SparseVideo }, true, clock);
+        var command = Command();
+        await session.AttachToAsync(command);
+        var writers = await Connect(PipeNames(command));
+        try
+        {
+            await Qualify(session, time, clock, writers);
+            time.Advance(TimeSpan.FromSeconds(25));
+            for (var i = 0; i <= 4; i++)
+            {
+                if (i > 0) time.Advance(TimeSpan.FromMilliseconds(500));
+                await writers[1].WriteLineAsync($"brmedia|mux|v|{100 + i}");
+                await writers[2].WriteLineAsync($"brmedia|mux|a|{100 + i}");
+                await writers[3].WriteLineAsync($"frame:{100+i} pts:{(100+i)*1024} pts_time:0\nlavfi.astats.Overall.Number_of_samples={(101+i)*1024}.000000");
+                await FaultHarnessTests.Eventually(() => session.Snapshot(true).Signals.Where(s => s.Kind != MediaSignalKind.InputVideo)
+                    .All(s => s.LastAdvancedAt == clock.Now));
+            }
+            var still = session.Snapshot(true);
+            Assert.Equal(MediaSignalState.Unknown, still.Signals.Single(s => s.Kind == MediaSignalKind.InputVideo).State);
+            Assert.All(still.Signals.Where(s => s.Kind != MediaSignalKind.InputVideo), s => Assert.Equal(MediaSignalState.Healthy, s.State));
+            Assert.False(still.MayRecover);
+            time.Advance(TimeSpan.FromSeconds(5));
+            Assert.True(session.Snapshot(true).ConfirmedMediaFailure);
+        }
+        finally { foreach (var writer in writers) await writer.DisposeAsync(); }
+    }
+
     // Break caught: generated output tracks must never be labelled source advancement.
     [Theory]
     [InlineData(true, true, true, 4)]

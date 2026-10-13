@@ -10,6 +10,7 @@ internal sealed class FfmpegMediaSession : IAsyncDisposable
     private readonly SupervisionClock _clock;
     private readonly MediaEvidenceTracker _evidence;
     private readonly MediaSignalKind[] _required;
+    private readonly bool _sparseVideo;
     private readonly List<IAsyncDisposable> _channels = [];
     private bool _attached;
     private Task? _dispose;
@@ -17,6 +18,7 @@ internal sealed class FfmpegMediaSession : IAsyncDisposable
     internal FfmpegMediaSession(MediaProperties? media, bool includeAudio, SupervisionClock clock)
     {
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        _sparseVideo = media?.Expectation == SourceMediaExpectation.SparseVideo;
         var video = media?.HasUsableVideo == true;
         var audio = includeAudio && !string.IsNullOrWhiteSpace(media?.AudioCodec);
         _required = Enum.GetValues<MediaSignalKind>().Where(kind =>
@@ -71,7 +73,17 @@ internal sealed class FfmpegMediaSession : IAsyncDisposable
         }
     }
 
-    internal MediaEvidenceSnapshot Snapshot(bool processAlive) => _evidence.Snapshot(_clock.Now, processAlive);
+    internal MediaEvidenceSnapshot Snapshot(bool processAlive)
+    {
+        var observed = _evidence.Snapshot(_clock.Now, processAlive);
+        if (!_sparseVideo) return observed;
+        // Sparse input has no continuous cadence contract. Keep its last
+        // advancement visible, but do not turn an intentional gap into a vote.
+        var signals = observed.Signals.Select(s => s.Kind == MediaSignalKind.InputVideo && s.State != MediaSignalState.Healthy
+            ? s with { State = MediaSignalState.Unknown } : s).ToArray();
+        var failed = signals.Count(s => s.State == MediaSignalState.Failed) >= 2;
+        return observed with { Signals = signals, ConfirmedMediaFailure = failed, MayRecover = !processAlive || failed };
+    }
     internal void ObserveHeartbeat() => _evidence.ObserveHeartbeat(_clock.Now);
 
     private void AttachAudioSamples(ProcessStartInfo start)

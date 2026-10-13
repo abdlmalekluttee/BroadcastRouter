@@ -1599,7 +1599,7 @@ static void FfprobeAcceptsAudioLedSparseVideo()
     True(result.AudioReceived);
     Equal(null, result.FailureCategory);
     True(!result.Media!.HasUsableVideo);
-    Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(result));
+    Equal(SourceState.WaitingForKeyframe, SourceProbeReadinessPolicy.Resolve(result));
 }
 
 static void FfprobeAcceptsDelayedContinuousVideo()
@@ -1632,7 +1632,7 @@ static void AdaptiveProbePromotesLongGopVideo()
 
     var quick = FfprobeStreamProbe.Parse(quickJson);
     var extended = FfprobeStreamProbe.Parse(extendedJson);
-    True(SourceProbeReadinessPolicy.NeedsExtendedVideoConfirmation(quick));
+    True(!SourceProbeReadinessPolicy.NeedsExtendedVideoConfirmation(quick)); // One decoded image is already valid video.
     var selected = SourceProbeReadinessPolicy.PreferExtendedVideoEvidence(quick, extended);
     True(selected.FramesReceived && selected.Media!.HasUsableVideo);
 
@@ -1656,8 +1656,8 @@ static void FfprobeIgnoresIsolatedVideoFrames()
     ]}
     """;
     var result = FfprobeStreamProbe.Parse(json);
-    True(result.Opened && result.AudioReceived && !result.FramesReceived);
-    True(!result.Media!.HasUsableVideo);
+    True(result.Opened && result.AudioReceived && result.FramesReceived);
+    True(result.Media!.HasUsableVideo); // P2-24: sparse pictures must not be discarded by an inferred cadence.
     Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(result));
 }
 
@@ -1668,7 +1668,7 @@ static void FfprobeAcceptsAudioOnlyInput()
     True(result.Opened && result.AudioReceived && !result.FramesReceived);
     Equal(null, result.Media!.VideoCodec);
     Equal("aac", result.Media.AudioCodec);
-    Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(result));
+    Equal(SourceState.Unknown, SourceProbeReadinessPolicy.Resolve(result)); // Packet receipt is not decoded PCM or a declaration.
 }
 
 static void FfprobeRequiresReadFrames()
@@ -1683,15 +1683,17 @@ static void FfprobeRequiresReadFrames()
 static void ProbeReadinessAcceptsAudioAndRejectsMetadataOnly()
 {
     var media = new MediaProperties("h264", "aac", 1920, 1080, 30, null, 48_000, 2, false);
-    Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(new(true, false, media, null, null, true)));
-    Equal(SourceState.UnsupportedMedia, SourceProbeReadinessPolicy.Resolve(new(true, false, media, "NoVideoFrames", null)));
+    Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(SourceMediaPolicy.Apply(
+        new(true, false, media, null, null, true, true), new() { Expectation = SourceMediaExpectation.AudioOnly })));
+    Equal(SourceState.WaitingForKeyframe, SourceProbeReadinessPolicy.Resolve(new(true, false, media, "NoVideoFrames", null)));
     Equal(SourceState.RtspUnavailable, SourceProbeReadinessPolicy.Resolve(new(false, false, null, "Network", null)));
 }
 
 static void ProbeReadinessRetainsAudioLedMode()
 {
-    var media = new MediaProperties("h264", "aac", 1920, 1080, 30, null, 48_000, 2, true);
-    var current = new StreamProbeResult(true, true, media, null, "Received sustained video.", true);
+    var media = new MediaProperties("h264", "aac", 1920, 1080, 30, null, 48_000, 2, true,
+        Expectation: SourceMediaExpectation.AudioOnly);
+    var current = new StreamProbeResult(true, true, media, null, "Received sustained video.", true, true);
     var retained = SourceProbeReadinessPolicy.RetainAudioLedMode(current, previouslyAudioLed: true);
     True(retained.Opened && retained.AudioReceived && !retained.FramesReceived);
     True(!retained.Media!.HasUsableVideo);
