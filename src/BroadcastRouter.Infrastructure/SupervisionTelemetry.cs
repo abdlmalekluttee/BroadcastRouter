@@ -84,6 +84,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     private readonly long _maxTotalBytes;
     private readonly Func<string, TelemetryVolumeSpace> _readVolumeSpace;
     private readonly Func<string, Stream> _openAppend;
+    private readonly Action<FileStream> _flushDurable;
     private long _retainedBytes, _diskPressureEvents;
     private bool _markerProvisioned;
     private bool _inventoryKnown;
@@ -114,7 +115,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     public SupervisionTelemetry(string root, SupervisionClock? clock = null,
         int maxFileBytes = DefaultSegmentBytes, int maxFiles = DefaultMaxSegments, int queueCapacity = 4096,
         long maxTotalBytes = DefaultMaxTotalBytes, Func<string, TelemetryVolumeSpace>? readVolumeSpace = null,
-        Func<string, Stream>? openAppend = null)
+        Func<string, Stream>? openAppend = null, Action<FileStream>? flushDurable = null)
     {
         if (maxFileBytes < 16384 || maxFiles < 2 || queueCapacity < 1) throw new ArgumentOutOfRangeException(nameof(maxFileBytes));
         if (maxTotalBytes < StorageHeadroomBytes + 16384 || maxTotalBytes > DefaultMaxTotalBytes)
@@ -129,6 +130,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
         _maxTotalBytes = maxTotalBytes;
         _readVolumeSpace = readVolumeSpace ?? ReadVolumeSpace;
         _openAppend = openAppend ?? (path => new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read));
+        _flushDurable = flushDurable ?? (stream => stream.Flush(flushToDisk: true));
         RejectReparsePath(_root);
         Directory.CreateDirectory(_root);
         RejectReparsePath(_root);
@@ -469,7 +471,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
         using var stream = new FileStream(path, mode, FileAccess.Write, FileShare.Read);
         stream.Write(padded);
         stream.SetLength(RetentionMarkerBytes);
-        stream.Flush(flushToDisk: true);
+        _flushDurable(stream);
         // A torn marker is invalid and therefore fails closed on the next start.
     }
 
