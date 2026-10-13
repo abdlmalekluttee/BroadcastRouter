@@ -113,8 +113,10 @@ public sealed class SupervisorMediaEvidenceTests
         internal DiscoveredSource Source { get; } = new(new("TEST", "fixture", "_default_", "synthetic-media"), "Synthetic",
             new Uri("rtsp://example.invalid/fixture"), SourceState.Ready, 0,
             new("h264", "aac", 1920, 1080, 25, null, 48000, 2, true));
-        internal MediaChildFixture(bool exitImmediately = false, string? stderr = null)
+        internal MediaChildFixture(bool exitImmediately = false, string? stderr = null,
+            SourceIdentity? identity = null, int? stopPcmAfterBatch = null)
         {
+            if (identity is not null) Source = Source with { Identity = identity };
             Directory.CreateDirectory(Root);
             var child = Path.Combine(FaultHarnessTests.RepositoryRoot(), "tests", "BroadcastRouter.FakeFfmpeg", "bin", "Release", "net8.0");
             foreach (var file in Directory.GetFiles(child, "BroadcastRouter.FakeFfmpeg.*")) File.Copy(file, Path.Combine(Root, Path.GetFileName(file)));
@@ -123,12 +125,15 @@ public sealed class SupervisorMediaEvidenceTests
             for (var i = 0; i < (exitImmediately ? 0 : 150); i++)
             {
                 events.Add(new { atMilliseconds=i*20, channel="-stats_enc_pre:v:0", text=$"brmedia|pre|v|{i}|{i}|1/25|{i}" });
-                events.Add(new { atMilliseconds=i*20, channel="pcm", text=$"frame:{i} pts:{i*1024} pts_time:0\nlavfi.astats.Overall.Number_of_samples={(i+1)*1024}.000000" });
+                if (stopPcmAfterBatch is null || i < stopPcmAfterBatch)
+                    events.Add(new { atMilliseconds=i*20, channel="pcm", text=$"frame:{i} pts:{i*1024} pts_time:0\nlavfi.astats.Overall.Number_of_samples={(i+1)*1024}.000000" });
+                if (i == stopPcmAfterBatch)
+                    events.Add(new { atMilliseconds=i*20, channel="stderr", text="Synthetic audio observation batch complete" });
                 events.Add(new { atMilliseconds=i*20, channel="-stats_mux_pre:v:0", text=$"brmedia|mux|v|{i}" });
                 events.Add(new { atMilliseconds=i*20, channel="-stats_mux_pre:a:0", text=$"brmedia|mux|a|{i}" });
             }
             if (!exitImmediately) events.Add(new { atMilliseconds=3020, channel="stderr", text="Synthetic observation batch complete" });
-            File.WriteAllText(Path.Combine(Root, "live.json"), JsonSerializer.Serialize(new { events, captureArguments=true,
+            File.WriteAllText(Path.Combine(Root, "live.json"), JsonSerializer.Serialize(new { events, captureArguments=true, progressCommands=true,
                 exitAfterMilliseconds=exitImmediately ? (int?)0 : null }));
         }
         internal Task Start(FfmpegProcessSupervisor supervisor) => supervisor.StartAsync(

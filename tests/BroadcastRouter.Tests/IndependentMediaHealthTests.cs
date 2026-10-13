@@ -113,6 +113,20 @@ public sealed class IndependentMediaHealthTests
         Assert.True(result.MayRecover);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public void ValidEarlyMediaThatStopsBeforeHealthyQualificationStillFailsAfterStartup(int advances)
+    {
+        var tracker = new MediaEvidenceTracker(Av, Now);
+        for (var i = 0; i <= advances; i++)
+            foreach (var kind in Av) tracker.Observe(kind, i, Now.AddMilliseconds(i * 500));
+        Assert.False(tracker.Snapshot(Now.AddSeconds(19), true).MayRecover);
+        var stopped = tracker.Snapshot(Now.AddSeconds(20), true);
+        Assert.All(stopped.Signals, signal => Assert.Equal(MediaSignalState.Failed, signal.State));
+        Assert.True(stopped.MayRecover);
+    }
+
     [Fact]
     public void CounterResetRequiresFreshQualificationInsteadOfInventingStalledMedia()
     {
