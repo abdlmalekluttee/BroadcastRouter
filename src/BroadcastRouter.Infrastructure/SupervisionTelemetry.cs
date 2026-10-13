@@ -86,6 +86,9 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     private readonly Func<string, Stream> _openAppend;
     private readonly Action<FileStream> _flushDurable;
     private long _retainedBytes, _diskPressureEvents;
+    // Only the single writer touches these durable checkpoints. After a crash
+    // counts may be a lower bound, but the first loss is never forgotten.
+    private long _durableEvictions, _durablePressure;
     private bool _markerProvisioned;
     private bool _inventoryKnown;
     private int _unrecordedHistory;
@@ -290,7 +293,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
             {
                 if (_shutdown.IsCancellationRequested)
                 { item.Flush?.TrySetCanceled(); continue; }
-                if (item.Flush is not null) { Prune(); item.Flush.TrySetResult(); continue; }
+                if (item.Flush is not null) { Prune(); CheckpointRetentionLoss(); item.Flush.TrySetResult(); continue; }
                 if (BeforeWriteForTesting is { } beforeWrite) await beforeWrite().ConfigureAwait(false);
                 _shutdown.Token.ThrowIfCancellationRequested();
                 RejectReparsePath(_root);
@@ -327,6 +330,11 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
                 item.Flush?.TrySetException(new IOException("Telemetry storage is degraded; inspect disk access/capacity."));
             }
             finally { if (item.Flush is null) Interlocked.Decrement(ref _pendingRecords); }
+        }
+        if (!_shutdown.IsCancellationRequested)
+        {
+            try { CheckpointRetentionLoss(); }
+            catch { Interlocked.Increment(ref _writeFailures); }
         }
     }
 
@@ -432,6 +440,8 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
                 throw new IOException("Invalid retention state.");
             Interlocked.Exchange(ref _capacityEvictions, state.CapacityEvictions);
             Interlocked.Exchange(ref _diskPressureEvents, state.DiskPressureEvents);
+            _durableEvictions = state.CapacityEvictions;
+            _durablePressure = state.DiskPressureEvents;
             Volatile.Write(ref _unrecordedHistory, state.UnrecordedHistory ? 1 : 0);
         }
         _retentionStateLoaded = true;
@@ -457,9 +467,24 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
 
     private void SaveRetentionLoss(long count, bool diskPressure = false)
     {
+        var pressure = diskPressure ? 1 : Interlocked.Read(ref _diskPressureEvents);
+        // Persist each new loss category before its first destructive action.
+        // Repeated losses cannot make the sticky alarm more true; checkpoint
+        // their counters at flush/shutdown rather than fsync every eviction.
+        if ((count == 0 || _durableEvictions > 0) && (pressure == 0 || _durablePressure > 0)) return;
         var path = Path.Combine(_root, "retention-loss.json");
         RejectReparsePath(path);
-        WriteRetentionMarker(path, FileMode.Open, count, diskPressure ? 1 : Interlocked.Read(ref _diskPressureEvents));
+        WriteRetentionMarker(path, FileMode.Open, Math.Max(count, _durableEvictions), Math.Max(pressure, _durablePressure));
+    }
+
+    private void CheckpointRetentionLoss()
+    {
+        var evictions = Math.Max(Interlocked.Read(ref _capacityEvictions), _durableEvictions);
+        var pressure = Math.Max(Interlocked.Read(ref _diskPressureEvents), _durablePressure);
+        if (evictions == _durableEvictions && pressure == _durablePressure) return;
+        var path = Path.Combine(_root, "retention-loss.json");
+        RejectReparsePath(path);
+        WriteRetentionMarker(path, FileMode.Open, evictions, pressure);
     }
 
     private void WriteRetentionMarker(string path, FileMode mode, long evictions, long pressure)
@@ -472,6 +497,8 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
         stream.Write(padded);
         stream.SetLength(RetentionMarkerBytes);
         _flushDurable(stream);
+        _durableEvictions = evictions;
+        _durablePressure = pressure;
         // A torn marker is invalid and therefore fails closed on the next start.
     }
 
