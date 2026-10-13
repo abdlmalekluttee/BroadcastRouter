@@ -11,6 +11,7 @@ public sealed class WatchdogTelemetryTests
 {
     [Theory]
     [InlineData("healthy")]
+    [InlineData("healthy-slow-disk")]
     [InlineData("async-stall")]
     [InlineData("synchronous-stall")]
     public async Task TerminationEvidenceIsDrainedBeforeFakeTerminationAndSlowDatabaseIsBounded(string databaseMode)
@@ -20,7 +21,12 @@ public sealed class WatchdogTelemetryTests
         try
         {
             var clock = new SupervisionClock(new ManualTimeProvider());
-            await using var telemetry = new SupervisionTelemetry(root, clock, readVolumeSpace: TelemetryTestVolume.Read);
+            await using var telemetry = new SupervisionTelemetry(root, clock, readVolumeSpace: TelemetryTestVolume.Read)
+            {
+                // A bounded, successful append can exceed the fixture's old
+                // 100ms budget without being a database stall or storage fault.
+                BeforeWriteForTesting = databaseMode == "healthy-slow-disk" ? () => Task.Delay(250) : null
+            };
             using var coordinator = new RouterCoordinator(null!, null!, null!, NullLogger<RouterCoordinator>.Instance, clock, telemetry);
             var calls = 0;
             using var watchdog = new RouterCoordinatorWatchdog(coordinator, null!, NullLogger<RouterCoordinatorWatchdog>.Instance, clock, telemetry)
