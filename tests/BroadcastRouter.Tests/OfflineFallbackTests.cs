@@ -78,10 +78,7 @@ public sealed class OfflineFallbackTests
         await lab.InstallFakeMediaTools();
         lab.Routes[lab.Source.Value] = lab.Route with { AssignmentMode = AssignmentMode.Automatic, DesiredPortId = null };
         var observation = lab.Sources[lab.Source.Value] with { State = SourceState.PublisherActive };
-        var task = lab.Invoke("ProbeObservationAsync", observation, lab.Settings, CancellationToken.None, null);
-        await AutomaticMediaCoordinatorTests.Drive(lab, task);
-        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
-        var source = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
+        var source = await AutomaticMediaCoordinatorTests.ObserveQualifiedDiscovery(lab, observation);
         Assert.Equal(SourceState.Ready, source.State);
         lab.Sources[lab.Source.Value] = source;
         Assert.True(RapidStreamRecoveryPolicy.CanAttemptReservedRecovery(lab.Route, source));

@@ -15,6 +15,27 @@ public sealed class MutedPresetWarningTests
     private const string Warning = "incompatible preset: audio-only source on a muted output";
 
     [Fact]
+    public async Task MutingAnExistingAudioOnlyOwnerWarnsAboutNextSessionNotCurrentOutput()
+    {
+        await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
+        await lab.InstallFakeMediaTools();
+        await DeclaredMediaCoordinatorTests.WriteProbe(lab, AutomaticMediaCoordinatorTests.Json(false, true));
+        await AutomaticMediaCoordinatorTests.Poll(lab);
+        lab.Routes[lab.Source.Value] = lab.Route with { State = RouteState.Running };
+        var original = lab.Owner.SessionId;
+        lab.Settings.DeckLinkPortOverrides.Add(new() { StableId = "TEST-OUTPUT", IsOutputPort = true,
+            StandbyPresetId = lab.Settings.Presets[0].Id });
+        var submitted = lab.Coordinator.GetSettings();
+        submitted.Presets[0].IncludeAudio = false;
+        var result = await lab.Coordinator.SaveSettingsAsync(submitted, "Test administrator");
+        Assert.Equal(original, lab.Owner.SessionId);
+        var warning = Assert.Single(result.Warnings!);
+        Assert.Contains("current owner is unchanged", warning, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("next qualification", warning, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Standby will remain on air", warning);
+    }
+
+    [Fact]
     public async Task PresetSaveSucceedsAndReturnsCompatibilityWarningFromBackend()
     {
         await using var lab = await OfflineFallbackTests.RecoveryLab.Create();

@@ -18,6 +18,29 @@ public sealed class RecoveryReadinessTests
     internal static StreamProbeResult Av() => MediaQualificationDurationTests.Probe(
         MediaQualificationDurationTests.Video(), MediaQualificationDurationTests.Audio());
 
+    [Theory]
+    [InlineData("consumed")]
+    [InlineData("expired")]
+    [InlineData("epoch")]
+    [InlineData("config")]
+    public void DiscoveryProofCanBeSharedButNeverReauthorizedOrExtended(string change)
+    {
+        var time = new ManualTimeProvider();
+        var gate = new RecoveryReadinessGate(new(time));
+        var calls = 0;
+        Task<StreamProbeResult> Probe() { calls++; return Task.FromResult(Av()); }
+        var proof = gate.Poll("first", null, null, Probe, reuseUnconsumedProof: true);
+        Assert.NotNull(proof);
+        Assert.Same(proof, gate.Poll("first", null, null, Probe, reuseUnconsumedProof: true));
+        if (change == "consumed") Assert.True(gate.TryAuthorizeHandoff(proof));
+        if (change == "expired") time.Advance(TimeSpan.FromSeconds(3));
+        if (change == "epoch") gate.AccelerateForPublisherEpoch();
+        var next = gate.Poll(change == "config" ? "second" : "first", null, null, Probe, reuseUnconsumedProof: true);
+        Assert.NotSame(proof, next);
+        Assert.False(gate.TryAuthorizeHandoff(proof));
+        Assert.Equal(change == "epoch" ? 2 : 1, calls);
+    }
+
     [Fact]
     public void OfflineDayUsesBoundedProbesAndNeverProducesHandoff()
     {

@@ -14,6 +14,40 @@ public sealed class AutomaticMediaHandoffGuardTests
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PublisherHoldPreventsEnrichmentWithoutSpendingEpochBudget(bool enableWhileWaitingForPort)
+    {
+        await using var lab = await Ready();
+        lab.Settings.WowzaServers.Add(new() { ServerId = "TEST", Enabled = true });
+        typeof(RouterCoordinator).GetMethod("StampPublisherObservation", Private)!.Invoke(lab.Coordinator,
+            [lab.Source.Value, "TEST", true, 1L]);
+        lab.Get<Dictionary<string, ServerHealth>>("_servers")["TEST"] = new("TEST", "Fixture", true, true, 1, "healthy", lab.Clock.Now);
+        lab.Get<PublisherLiveHoldPolicy>("_publisherLiveHold").Observe(lab.Source.Value, true);
+        var policy = Seed(lab);
+        var original = lab.Owner.SessionId;
+        var stops = lab.Events.Count(e => e.State == RouteProcessLifecycleState.StopRequested);
+        var portGate = lab.Get<ConcurrentDictionary<string, SemaphoreSlim>>("_portGates").GetOrAdd("TEST-OUTPUT", _ => new(1, 1));
+        if (enableWhileWaitingForPort) await portGate.WaitAsync();
+        else lab.Routes[lab.Source.Value] = lab.Route with { HoldOutputWhilePublisherLive = true };
+        var attempt = lab.Invoke("RecordMediaModeChangesAsync", CancellationToken.None);
+        try
+        {
+            if (enableWhileWaitingForPort)
+            {
+                Assert.False(attempt.IsCompleted);
+                lab.Routes[lab.Source.Value] = lab.Route with { HoldOutputWhilePublisherLive = true };
+                portGate.Release();
+            }
+            await attempt;
+            Assert.Equal(original, lab.Owner.SessionId);
+            Assert.Equal(stops, lab.Events.Count(e => e.State == RouteProcessLifecycleState.StopRequested));
+            Assert.True(policy.CanObserveGrowth, "An operator-held owner must not spend its one planned-attempt budget.");
+        }
+        finally { if (portGate.CurrentCount == 0) portGate.Release(); await attempt; }
+    }
+
+    [Theory]
     [InlineData("epoch")]
     [InlineData("settings")]
     [InlineData("override")]
