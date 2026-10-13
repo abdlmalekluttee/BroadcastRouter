@@ -12,6 +12,27 @@ namespace BroadcastRouter.Tests;
 public sealed class StartupRoutePersistenceTests
 {
     [Fact]
+    public async Task UpgradePreservesExistingMutedVideoAssignment()
+    {
+        await WithStore(async (store, connection) =>
+        {
+            var settings = new OperatorSettings();
+            settings.Presets[0].IncludeAudio = false;
+            await store.SaveSettingsAsync(settings);
+            var route = Route(AssignmentMode.Manual, RouteState.WaitingForStream) with { PresetId = settings.Presets[0].Id };
+            await store.SaveRouteAsync(route, route.State);
+            await store.UpsertSourceAsync(new(new("TEST", "fixture", "_default_", "source-A"), "Synthetic source",
+                new Uri("rtsp://example.invalid/test"), SourceState.Ready, 0, RecoveryReadinessTests.Av().Media));
+            await RunStartupOnly(store, new(new ManualTimeProvider()));
+            var migrated = await store.LoadSettingsAsync();
+            var declaration = SourceMediaPolicy.Get(migrated, route.SourceId);
+            Assert.Equal(SourceMediaExpectation.ContinuousVideo, declaration.Expectation);
+            Assert.False(declaration.RequireAudio);
+            Assert.False(migrated.Presets[0].IncludeAudio);
+        });
+    }
+
+    [Fact]
     public async Task UpgradeDeclaresPersistedBehaviourOnceWithoutOverridingExplicitProfiles()
     {
         await WithStore(async (store, connection) =>
