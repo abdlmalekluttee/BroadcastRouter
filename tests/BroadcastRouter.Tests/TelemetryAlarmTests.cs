@@ -20,7 +20,7 @@ public sealed class TelemetryAlarmTests
     public async Task DiagnosticQueueLossIsVisibleEvenWhenFileTelemetryIsHealthy()
     {
         var root = Path.Combine(Path.GetTempPath(), "router-diagnostic-ui-" + Guid.NewGuid().ToString("N"));
-        var store = new SqliteDataStore(Path.Combine(root, "router.db"));
+        var store = new SqliteDataStore(Path.Combine(root, "router.db"), readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
         try
         {
             await store.InitializeAsync();

@@ -70,10 +70,15 @@
                 @if (Coordinator.DiagnosticPersistence is { IsHealthy: false } persistence)
                 {
                     <div class="notice danger" role="alert" data-diagnostic-persistence-alarm>
-                        <strong>@(persistence.Dropped + persistence.WriteFailures + persistence.Abandoned > 0
+                        <strong>@(persistence.HistoricalIncomplete || persistence.Dropped + persistence.WriteFailures + persistence.Abandoned + persistence.RetentionEvictions > 0
                             ? "Diagnostic summaries are incomplete." : "Diagnostic summaries are delayed.")</strong>
                         <span>Pending: @persistence.Pending; oldest: @persistence.OldestAge.TotalSeconds.ToString("0.0") s;
-                            dropped: @persistence.Dropped; failed: @persistence.WriteFailures; abandoned: @persistence.Abandoned.</span>
+                            dropped: @persistence.Dropped; failed: @persistence.WriteFailures; abandoned: @persistence.Abandoned;
+                            early retention removals: @persistence.RetentionEvictions; maintenance failures: @persistence.MaintenanceFailures.</span>
+                        @if (persistence.HistoricalIncomplete)
+                        {
+                            <span>A previous session lost diagnostic summaries or did not finish its durable drain. Restarting does not clear this alarm.</span>
+                        }
                         <span>Last database transaction: @persistence.LastTransaction.TotalMilliseconds.ToString("0") ms.
                             Ask the administrator to check database access and free disk space. This alarm does not stop outputs.</span>
                     </div>

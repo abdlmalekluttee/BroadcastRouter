@@ -169,7 +169,7 @@ public sealed class StartupRoutePersistenceTests
         try
         {
             var file = Path.Combine(root, "test.db");
-            store = new SqliteDataStore(file);
+            store = new SqliteDataStore(file, readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
             await store.InitializeAsync();
             await using var connection = new SqliteConnection($"Data Source={file};Pooling=False");
             await connection.OpenAsync();

@@ -12,7 +12,7 @@ public sealed class DiagnosticPersistenceTests
     public async Task ServiceLifecycleDoesNotWaitForLockedDiagnosticWriter()
     {
         var root = Path.Combine(Path.GetTempPath(), "router-service-diagnostic-" + Guid.NewGuid().ToString("N"));
-        var store = new SqliteDataStore(Path.Combine(root, "router.db"));
+        var store = new SqliteDataStore(Path.Combine(root, "router.db"), readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
         await store.InitializeAsync();
         var reporter = new ServiceLifecycleReporter(store, NullLogger<ServiceLifecycleReporter>.Instance);
         var gate = (SemaphoreSlim)typeof(SqliteDataStore).GetField("_writeGate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
@@ -37,7 +37,7 @@ public sealed class DiagnosticPersistenceTests
     public async Task BoundedLongDiagnosticIsRetainedWithoutUsingMessageAsOversizedKey()
     {
         var root = Path.Combine(Path.GetTempPath(), "router-long-diagnostic-" + Guid.NewGuid().ToString("N"));
-        var store = new SqliteDataStore(Path.Combine(root, "router.db"));
+        var store = new SqliteDataStore(Path.Combine(root, "router.db"), readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
         try
         {
             await store.InitializeAsync();
@@ -58,7 +58,7 @@ public sealed class DiagnosticPersistenceTests
     public async Task CancelledEssentialWriteCannotBeAcknowledgedOrReplacedByQueueAdmission()
     {
         var root = Path.Combine(Path.GetTempPath(), "router-essential-write-" + Guid.NewGuid().ToString("N"));
-        var store = new SqliteDataStore(Path.Combine(root, "router.db"));
+        var store = new SqliteDataStore(Path.Combine(root, "router.db"), readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
         await store.InitializeAsync();
         var gate = (SemaphoreSlim)typeof(SqliteDataStore).GetField("_writeGate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
         await gate.WaitAsync();
@@ -85,7 +85,7 @@ public sealed class DiagnosticPersistenceTests
     public async Task CoordinatorDiagnosticCallbackDoesNotWaitForDatabaseWriter()
     {
         var root = Path.Combine(Path.GetTempPath(), "router-diagnostic-lock-" + Guid.NewGuid().ToString("N"));
-        var store = new SqliteDataStore(Path.Combine(root, "router.db"));
+        var store = new SqliteDataStore(Path.Combine(root, "router.db"), readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
         await store.InitializeAsync();
         using var coordinator = new RouterCoordinator(store, null!, null!, NullLogger<RouterCoordinator>.Instance);
         var gate = (SemaphoreSlim)typeof(SqliteDataStore).GetField("_writeGate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;

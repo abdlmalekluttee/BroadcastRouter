@@ -189,7 +189,7 @@ public sealed class OfflineFallbackTests
             Directory.CreateDirectory(Root);
             Clock = new(Time);
             if (captureTelemetry) Telemetry = new(Path.Combine(Root, "telemetry"), Clock, readVolumeSpace: TelemetryTestVolume.Read);
-            Store = new(Path.Combine(Root, "test.db"));
+            Store = new(Path.Combine(Root, "test.db"), readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
             var executable = Path.Combine(Root, "BroadcastRouter.FakeFfmpeg.exe");
             Supervisor = new(new FfmpegRouteOptions(executable), TimeSpan.FromSeconds(1), Clock, Telemetry);
             if (Telemetry is not null) _loggerFactory = new([new RouterFileLoggerProvider(Telemetry)]);

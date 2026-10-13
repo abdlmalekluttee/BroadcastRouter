@@ -7,9 +7,11 @@ public sealed record DiagnosticLogRecord(DateTimeOffset FirstUtc, DateTimeOffset
 
 public sealed record DiagnosticPersistenceStatus(int Pending, int PeakPending, long Accepted, long Written,
     long Coalesced, long Dropped, long WriteFailures, long Abandoned, TimeSpan OldestAge,
-    TimeSpan LastTransaction, TimeSpan MaxTransaction)
+    TimeSpan LastTransaction, TimeSpan MaxTransaction, long RetentionEvictions = 0, long MaintenanceFailures = 0,
+    bool HistoricalIncomplete = false)
 {
-    public bool IsHealthy => Dropped == 0 && WriteFailures == 0 && Abandoned == 0 && OldestAge < TimeSpan.FromSeconds(5);
+    public bool IsHealthy => Dropped == 0 && WriteFailures == 0 && Abandoned == 0
+        && RetentionEvictions == 0 && MaintenanceFailures == 0 && !HistoricalIncomplete && OldestAge < TimeSpan.FromSeconds(5);
 }
 
 /// <summary>
