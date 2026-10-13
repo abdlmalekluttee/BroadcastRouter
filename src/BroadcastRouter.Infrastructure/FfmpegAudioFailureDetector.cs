@@ -1,19 +1,15 @@
+using BroadcastRouter.Application;
+using BroadcastRouter.Domain;
+
 namespace BroadcastRouter.Infrastructure;
 
 /// <summary>
-/// Detects sustained AAC decoder corruption and audio timestamp discontinuity
-/// without treating one damaged packet as a route failure. This is intentionally
-/// independent from DeckLink starvation so recovery can begin before the
-/// physical output queue empties.
+/// Classifies a diagnostic only when decoded PCM has independently failed for
+/// the media confirmation window. Warning count is not elapsed unhealthy time:
+/// multiple diagnostics from one packet never supply additional failure votes.
 /// </summary>
 public sealed class FfmpegAudioFailureDetector
 {
-    private static readonly TimeSpan ConfirmationWindow = TimeSpan.FromSeconds(5);
-    private DateTimeOffset? _firstDecodeErrorAt;
-    private DateTimeOffset? _firstTimestampErrorAt;
-    private int _decodeErrorCount;
-    private int _timestampErrorCount;
-
     public bool Observe(
         string line,
         DateTimeOffset observedAt,
@@ -21,12 +17,13 @@ public sealed class FfmpegAudioFailureDetector
         TimeSpan startupGrace,
         out string category,
         out string detail,
-        BroadcastRouter.Domain.MediaEvidenceSnapshot? media = null)
+        MediaEvidenceSnapshot? media = null)
     {
         category = "";
         detail = "";
         if (string.IsNullOrWhiteSpace(line)) return false;
         if (observedAt - processStartedAt < startupGrace) return false;
+        if (!HasFailedPcm(media, observedAt)) return false;
 
         var text = line.ToLowerInvariant();
         var audioContext = text.Contains("[aac @", StringComparison.Ordinal)
@@ -42,33 +39,23 @@ public sealed class FfmpegAudioFailureDetector
             || text.Contains("scalefactor bands", StringComparison.Ordinal);
         if (decoderCorruption)
         {
-            if (!Confirmed(ref _firstDecodeErrorAt, ref _decodeErrorCount, observedAt)) return false;
             category = "AudioDecoderCorrupt";
-            detail = "FFmpeg repeatedly rejected AAC packets in the owned live decoder session.";
+            detail = "FFmpeg rejected AAC packets while decoded PCM advancement was confirmed failed.";
             return true;
         }
 
         if (text.Contains("invalid dropping", StringComparison.Ordinal))
         {
-            if (!Confirmed(ref _firstTimestampErrorAt, ref _timestampErrorCount, observedAt)) return false;
             category = "AudioTimestampDiscontinuous";
-            detail = "FFmpeg repeatedly dropped invalid audio timestamps in the owned live decoder session.";
+            detail = "FFmpeg dropped invalid audio timestamps while decoded PCM advancement was confirmed failed.";
             return true;
         }
 
         return false;
     }
 
-    private static bool Confirmed(ref DateTimeOffset? firstAt, ref int count, DateTimeOffset observedAt)
-    {
-        if (firstAt is null || observedAt < firstAt || observedAt - firstAt > ConfirmationWindow)
-        {
-            firstAt = observedAt;
-            count = 1;
-            return false;
-        }
-
-        count++;
-        return count >= 2;
-    }
+    internal static bool HasFailedPcm(MediaEvidenceSnapshot? media, DateTimeOffset now) =>
+        media?.Signals.Any(signal => signal.Kind == MediaSignalKind.InputAudio
+            && signal.State == MediaSignalState.Failed && signal.LastAdvancedAt is { } advanced
+            && now - advanced >= MediaEvidenceTracker.SuspectAfter + MediaEvidenceTracker.ConfirmationWindow) == true;
 }
