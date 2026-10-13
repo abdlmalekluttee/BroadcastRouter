@@ -73,6 +73,7 @@ public sealed class RouterCoordinator(
     private long _completedCycles;
     private FfmpegProcessSupervisor? _supervisor;
     private readonly object _supervisorLifetime = new();
+    private bool _supervisorClosing;
     private string? _supervisorPath;
     private bool _supervisorUsesWindowsDeckLinkSafeTerminate;
     private int _supervisorInputReadTimeoutMilliseconds;
@@ -841,9 +842,16 @@ public sealed class RouterCoordinator(
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        // Stop intent producers before closing their long-lived process owner.
+        FfmpegProcessSupervisor? supervisor;
+        lock (_supervisorLifetime)
+        {
+            _supervisorClosing = true;
+            supervisor = _supervisor;
+            supervisor?.CloseAdmission();
+        }
+        // Close admission before waiting on any possibly uncooperative producer.
         try { await base.StopAsync(cancellationToken); }
-        finally { if (_supervisor is not null) await _supervisor.DisposeAsync(); }
+        finally { if (supervisor is not null) await supervisor.DisposeAsync(); }
     }
 
     private async Task RefreshToolsAndPortsAsync(CancellationToken cancellationToken)
@@ -3313,6 +3321,7 @@ public sealed class RouterCoordinator(
     {
         lock (_supervisorLifetime)
         {
+            ObjectDisposedException.ThrowIf(_supervisorClosing, this);
             var inputReadTimeoutMilliseconds = Math.Clamp(
                 _settings.Routing.InputReadTimeoutMilliseconds, 500, 30000);
             var options = new FfmpegRouteOptions(ffmpegPath, true, TimeSpan.FromMilliseconds(inputReadTimeoutMilliseconds),

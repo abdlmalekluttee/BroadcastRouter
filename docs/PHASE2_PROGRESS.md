@@ -216,3 +216,20 @@ warning-free capture. Physical fifth-connector slate remains unverified because
 it is not looped. These tests used the immutable Phase B candidate, not the new
 Phase C correction. The native busy/unavailable matrix and historical -5 cause
 remain OPEN; software proof cannot replace physical qualification.
+
+## P2-30 software correction (draft qualification)
+
+Built from merged main; separate PR, owner-only merge. Physical-output controllers
+now retain exact ownership across configuration generations, bounded operations,
+shutdown and watchdog escalation. The independent review found pending-start stop
+and coordinator shutdown-admission races plus insufficient physical-key contention
+in the long-run fixture. Those findings were reproduced and corrected test-first.
+Delayed exit cleanup was also graded Important because it stranded an idle output;
+its regression failed before the cleanup-admission retry was implemented.
+
+Corrected verification: 693 normal tests passed (678 remaining, 14 standby-day,
+1 telemetry-day), zero skips/failures; Release build zero warnings/errors; CI contract
+17/17 and provenance12/12. Strict KnownDefect verifies two exact R18 failures; both
+remain OPEN for Phase G, not passing product behavior. The one-real-hour fake-child
+qualification is running separately and is NOT yet a completed acceptance row.
+No deployment, hardware claim, host restart, process kill or production edit.

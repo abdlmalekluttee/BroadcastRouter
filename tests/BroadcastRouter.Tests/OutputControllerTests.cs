@@ -10,6 +10,92 @@ namespace BroadcastRouter.Tests;
 public sealed class OutputControllerTests
 {
     [Fact]
+    public async Task SuccessfulStopWaitsForAnAlreadyAdmittedStartAndLeavesNoOwner()
+    {
+        await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture();
+        var registry = new PortReservationManager();
+        await using var supervisor = new FfmpegProcessSupervisor(new(fixture.Executable), TimeSpan.FromSeconds(1), reservations: registry);
+        var gates = (System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim>)typeof(FfmpegProcessSupervisor)
+            .GetField("_ownerGates", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(supervisor)!;
+        var gate = gates.GetOrAdd(fixture.Source.Identity.Value, _ => new(1, 1));
+        await gate.WaitAsync();
+        Task? start = null;
+        Task? stop = null;
+        try
+        {
+            start = fixture.Start(supervisor);
+            await FaultHarnessTests.Eventually(() => registry.ControllerFor("TEST-OUTPUT").Status.OperationActive);
+            stop = supervisor.StopAsync(fixture.Source.Identity, CancellationToken.None);
+            Assert.False(stop.IsCompletedSuccessfully, "Stop acknowledged before the already-admitted launch was resolved");
+        }
+        finally
+        {
+            gate.Release();
+            if (start is not null) await start;
+            if (stop is not null) await stop;
+        }
+        Assert.Empty(supervisor.RunningSnapshot());
+        Assert.Null(registry.ControllerFor("TEST-OUTPUT").Session);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CoordinatorClosesAdmissionBeforeWaitingForItsProducer(bool hasSupervisor)
+    {
+        await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
+        if (!hasSupervisor) lab.Set("_supervisor", null!);
+        var producer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Emulate the framework's currently executing, uncooperative producer.
+        typeof(Microsoft.Extensions.Hosting.BackgroundService)
+            .GetField("_executeTask", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(lab.Coordinator, producer.Task);
+        typeof(Microsoft.Extensions.Hosting.BackgroundService)
+            .GetField("_stoppingCts", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(lab.Coordinator, new CancellationTokenSource());
+        var stop = lab.Coordinator.StopAsync(CancellationToken.None);
+        try
+        {
+            Assert.False(stop.IsCompleted, "Fixture producer must still hold shutdown open");
+            var error = Record.Exception(() => typeof(RouterCoordinator)
+                .GetMethod("EnsureSupervisor", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(lab.Coordinator, [lab.Settings.MediaTools.FfmpegPath, false]));
+            Assert.IsType<ObjectDisposedException>(Assert.IsType<TargetInvocationException>(error).InnerException);
+            if (hasSupervisor)
+            {
+                await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture();
+                await Assert.ThrowsAsync<ObjectDisposedException>(() => fixture.Start(lab.Supervisor));
+            }
+            else Assert.Null(lab.Get<FfmpegProcessSupervisor?>("_supervisor"));
+        }
+        finally
+        {
+            producer.TrySetResult();
+            await stop;
+            // A failing baseline may have created a replacement supervisor.
+            var late = lab.Get<FfmpegProcessSupervisor?>("_supervisor");
+            if (late is not null && !ReferenceEquals(late, lab.Supervisor)) await late.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task SpontaneousExitEventuallyCleansExactSessionAfterBusyController()
+    {
+        await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture();
+        await File.WriteAllTextAsync(Path.Combine(fixture.Root, "live.json"),
+            "{\"events\":[],\"exitAfterMilliseconds\":300,\"exitCode\":37}");
+        var registry = new PortReservationManager();
+        await using var supervisor = new FfmpegProcessSupervisor(new(fixture.Executable), TimeSpan.FromSeconds(1), reservations: registry);
+        await fixture.Start(supervisor);
+        var controller = registry.ControllerFor("TEST-OUTPUT");
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hold = controller.ExecuteAsync(async () => { entered.SetResult(); await release.Task; }, CancellationToken.None);
+        try { await entered.Task; await Task.Delay(1800); }
+        finally { release.TrySetResult(); await hold; }
+        await FaultHarnessTests.Eventually(() => controller.Session is null);
+        Assert.Empty(supervisor.RunningSnapshot());
+    }
+
+    [Fact]
     public async Task FutureStartsUsePublishedGenerationWhileExistingSessionKeepsItsGeneration()
     {
         await using var original = new SupervisorMediaEvidenceTests.MediaChildFixture();
