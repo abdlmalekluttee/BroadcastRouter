@@ -25,12 +25,7 @@ public sealed class DeclaredMediaCoordinatorTests
             lab.Routes.Remove(lab.Source.Value);
             await lab.Supervisor.StopAsync(lab.Source, CancellationToken.None);
             var observation = lab.Sources[lab.Source.Value] with { State = SourceState.PublisherActive, Media = null };
-            var task = (Task)typeof(BroadcastRouter.Web.Services.RouterCoordinator)
-                .GetMethod("ProbeObservationAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(lab.Coordinator, [observation, lab.Settings, CancellationToken.None, null])!;
-            await AutomaticMediaCoordinatorTests.Drive(lab, task);
-            var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
-            var source = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
+            var source = await AutomaticMediaCoordinatorTests.ObserveQualifiedDiscovery(lab, observation);
             Assert.Equal(SourceState.Ready, source.State);
         }
         else
@@ -258,12 +253,7 @@ public sealed class DeclaredMediaCoordinatorTests
         lab.Settings.SourceMediaProfiles[0].Override = SourceMediaOverride.ForceVideoOnly;
         lab.Settings.SimulationMode = true; // Only the probe is simulated; the existing child is still real/owned.
         var observation = lab.Sources[lab.Source.Value] with { State = SourceState.PublisherActive, Media = null };
-        var task = (Task)typeof(BroadcastRouter.Web.Services.RouterCoordinator)
-            .GetMethod("ProbeObservationAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(lab.Coordinator, [observation, lab.Settings, CancellationToken.None, null])!;
-        await AutomaticMediaCoordinatorTests.Drive(lab, task);
-        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
-        var observed = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
+        var observed = await AutomaticMediaCoordinatorTests.ObserveQualifiedDiscovery(lab, observation);
         Assert.True(observed.Media!.HasUsableVideo);
         await lab.Invoke("RecordMediaModeChangesAsync", CancellationToken.None);
         Assert.Equal(owner, lab.Owner.SessionId);

@@ -35,6 +35,7 @@ public sealed class RouterCoordinator(
     private readonly Dictionary<string, PendingMediaGrowth> _mediaGrowth = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> _nextMediaGrowth = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _growthProbeSlots = new(2, 2);
+    private readonly SemaphoreSlim _detectionProbeSlots = new(8, 8);
     private readonly ConcurrentDictionary<string, RecoveryReadinessGate> _recoveryReadiness = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _portGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _settingsMutationGate = new(1, 1);
@@ -203,7 +204,10 @@ public sealed class RouterCoordinator(
                 .Where(x => x.Preset is not null && SourcePresetCompatibility.Warning(
                     _sources.GetValueOrDefault(x.Route.SourceId)?.Media, x.Preset.IncludeAudio,
                     SourceMediaPolicy.Get(_settings, x.Route.SourceId).Override) is not null)
-                .Select(x => $"{x.Route.SourceName} / {x.Preset!.Name}: {SourcePresetCompatibility.MutedAudioOnly}. Standby will remain on air.")
+                .Select(x => $"{x.Route.SourceName} / {x.Preset!.Name}: {SourcePresetCompatibility.MutedAudioOnly}. "
+                    + (OwnedSnapshot(x.Route.SourceId) is { Running: true, Purpose: RouteProcessPurpose.Live }
+                        ? "The current owner is unchanged; the next qualification will retain standby while this incompatibility exists."
+                        : "Standby will remain on air."))
                 .ToArray();
         }
     }
@@ -647,6 +651,20 @@ public sealed class RouterCoordinator(
                         if (recoveryRoute is null || recoverySource is null) continue;
                         var ownsLiveProcess = supervisor.IsRunning(
                             recoverySource.Identity, RouteProcessPurpose.Live);
+                        if (ownsLiveProcess && recoveryRoute.State == RouteState.Running
+                            && recoverySource.State != SourceState.Disabled
+                            && OwnedSnapshot(candidate.SourceId)?.SelectedMedia is { } selectedMedia)
+                        {
+                            // Nonblocking discovery can finish an older offline
+                            // view before this connected poll arrives. Reflect the
+                            // newer presence plus the still-owned qualified graph;
+                            // this is not REST-only admission or a restart intent.
+                            lock (_gate)
+                                if (IsCurrentPublisherObservation(candidate.SourceId, observationVersion)
+                                    && _sources.GetValueOrDefault(candidate.SourceId) == recoverySource)
+                                    _sources[candidate.SourceId] = recoverySource with { State = SourceState.Ready,
+                                        Media = selectedMedia, LastObservedAt = _clock.Now };
+                        }
                         var missingExpectedLiveOwner = !ownsLiveProcess
                             && recoveryRoute.State is RouteState.Starting or RouteState.Running;
                         if (!RapidStreamRecoveryPolicy.CanAccelerateConnectedPublisherRecovery(
@@ -1179,7 +1197,11 @@ public sealed class RouterCoordinator(
         finally { _discoveryGate.Release(); }
     }
 
-    private async Task<ProbeOutcome> ProbeObservationAsync(DiscoveredSource source, OperatorSettings settings,
+    private Task<ProbeOutcome> ProbeObservationAsync(DiscoveredSource source, OperatorSettings settings,
+        CancellationToken cancellationToken, long? observationVersion) =>
+        Task.FromResult(ProbeObservation(source, settings, cancellationToken, observationVersion));
+
+    private ProbeOutcome ProbeObservation(DiscoveredSource source, OperatorSettings settings,
         CancellationToken cancellationToken, long? observationVersion)
     {
         lock (_gate)
@@ -1257,7 +1279,20 @@ public sealed class RouterCoordinator(
                     : SourceMediaModeState.Unknown;
             }
         }
-        var qualifiedProbe = await DetectMediaAsync(source, settings, expectation.Override, cancellationToken);
+        RuntimeRoute? currentRoute;
+        lock (_gate) currentRoute = _routes.GetValueOrDefault(source.Identity.Value);
+        var selectedPreset = currentRoute?.PresetId ?? RoutingRuleEvaluator.Evaluate(source, settings.Rules,
+            settings.Presets.FirstOrDefault()?.Id ?? "").PresetId;
+        var preset = settings.Presets.FirstOrDefault(value => value.Id == selectedPreset);
+        if (preset is null) return new(source, null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false, false);
+        var readiness = _recoveryReadiness.GetOrAdd(source.Identity.Value, _ => new RecoveryReadinessGate(_clock));
+        if (source.State == SourceState.PublisherActive) readiness.ObservePublisher(true);
+        var qualifiedProbe = PollMediaReadiness(readiness, source, preset, settings, cancellationToken)
+            ?? readiness.LastObservation;
+        if (qualifiedProbe is null)
+            return new(source with { State = SourceState.Unknown, Media = previousSource?.Media,
+                MediaQualificationDetail = "Automatic media detection in progress; standby retained." },
+                null, SourceMediaMode.Unknown, SourceMediaMode.Unknown, false, false);
         var mode = SourceProbeReadinessPolicy.Resolve(qualifiedProbe) != SourceState.Ready ? SourceMediaMode.Unknown
             : qualifiedProbe.Media!.HasUsableVideo ? SourceMediaMode.Video : SourceMediaMode.AudioLed;
         var decision = new SourceMediaModeDecision(new(mode, 0, 0,
@@ -1387,6 +1422,7 @@ public sealed class RouterCoordinator(
     private async Task ReconcileRoutesAsync(CancellationToken cancellationToken)
     {
         if (_emergencyStopped) return;
+        await PollPendingDiscoveryMediaAsync(cancellationToken);
         var settings = GetSettings();
         await RestoreReservationsAndProcessesAsync(settings, cancellationToken);
         await RecordMediaModeChangesAsync(cancellationToken);
@@ -1430,6 +1466,40 @@ public sealed class RouterCoordinator(
                      && route.RetryAt <= _clock.Now
                      && SourceHasBeenReadyLongEnough(route.SourceId, settings.Routing.StableRestoreSeconds))
                 await RestartReservedRouteAsync(route, cancellationToken);
+        }
+    }
+
+    private async Task PollPendingDiscoveryMediaAsync(CancellationToken cancellationToken)
+    {
+        // The management polling interval may exceed proof lifetime. Consume
+        // completed discovery observations at reconciliation cadence, without
+        // waiting for another management request or launching another detector.
+        foreach (var source in SourcesCopy())
+        {
+            if (!_recoveryReadiness.TryGetValue(source.Identity.Value, out var gate)
+                || !gate.HasPendingObservation
+                || source.State is SourceState.Disabled or SourceState.PublisherDisconnected) continue;
+            long? version;
+            OperatorSettings settings;
+            lock (_gate)
+            {
+                version = _publisherObservationStamps.GetValueOrDefault(source.Identity.Value)?.Version;
+                settings = _settings;
+            }
+            var outcome = ProbeObservation(source with { Media = null }, settings, cancellationToken, version);
+            lock (_gate)
+            {
+                if (!IsCurrentPublisherObservation(source.Identity.Value, version)
+                    || _sources.GetValueOrDefault(source.Identity.Value) != source) continue;
+                _sources[source.Identity.Value] = outcome.Source;
+                if (outcome.Source.State == SourceState.Ready)
+                {
+                    _sourceReadySince.TryAdd(source.Identity.Value, _clock.Now);
+                    _sourceMissingSince.Remove(source.Identity.Value);
+                }
+            }
+            if (outcome.Source != source)
+                await store.UpsertSourceAsync(_clock.CaptureBoundary().SourceToUtc(outcome.Source), cancellationToken);
         }
     }
 
@@ -1702,6 +1772,7 @@ public sealed class RouterCoordinator(
             }
             if (_emergencyStopped || route is not { State: RouteState.Running } || source is null || preset is null || port is null
                 || !CanPlanProfileUpgrade(sourceId)
+                || ShouldHoldLiveOutput(route, owner)
                 || SourceMediaPolicy.Get(settings, sourceId).Override != SourceMediaOverride.Auto) continue;
             var policy = _mediaProfilePolicies.GetOrAdd(sourceId, _ => new());
             var session = policy.Attach(owner.SessionId, owner.SelectedMedia!);
@@ -1736,12 +1807,13 @@ public sealed class RouterCoordinator(
                     source = _sources.GetValueOrDefault(sourceId);
                     if (_emergencyStopped || !CanPlanProfileUpgrade(sourceId)
                         || route is not { State: RouteState.Running } || route.PortId != port.StableId
+                        || ShouldHoldLiveOutput(route)
                         || source is null || RecoveryConfigurationSignature(source, preset) != pending.Signature) continue;
                 }
                 if (OwnedSnapshot(sourceId) is not { Running: true } current || current.SessionId != pending.Session.SessionId
                     || _clock.Now - evidence.CompletedAt > RecoveryReadinessGate.ProofLifetime
                     || qualifiedProbe.FailureCategory is not null
-                    || !policy.TryClaim(pending.Session, evidence.Probe, evidence.Duration)) continue;
+                    || !policy.CanObserveGrowth) continue;
                 // This proof is already a sustained decoded observation, not a
                 // cached metadata hint. The normal handoff generation checks and
                 // exclusive lease remain mandatory after every asynchronous step.
@@ -1749,7 +1821,8 @@ public sealed class RouterCoordinator(
                 var proof = handoffGate.Poll(signature, true, true, () => Task.FromResult(qualifiedProbe));
                 if (proof is null) continue;
                 await StartRouteWithRecoveryAsync(route, source with { State = SourceState.Ready, Media = proof.Media }, port, preset,
-                    cancellationToken, new(source with { State = SourceState.Ready, Media = proof.Media }, handoffGate, proof, signature, pending.Session));
+                    cancellationToken, new(source with { State = SourceState.Ready, Media = proof.Media }, handoffGate, proof,
+                        signature, pending.Session, evidence.Duration));
             }
             finally { routeGate.Release(); }
         }
@@ -1970,6 +2043,7 @@ public sealed class RouterCoordinator(
                     && currentSource is not null && currentSource.State != SourceState.Disabled
                     && currentRoute?.PortId == port.StableId
                     && (handoff.PlannedUpgrade is null || CanPlanProfileUpgrade(source.Identity.Value)
+                        && !ShouldHoldLiveOutput(currentRoute)
                         && _mediaProfilePolicies[source.Identity.Value].IsCurrent(handoff.PlannedUpgrade))
                     && RecoveryConfigurationSignature(currentSource, currentPreset) == handoff.ConfigurationSignature
                     && _reservations.Snapshot().Any(lease => lease.PortId == port.StableId && lease.Source == source.Identity);
@@ -2004,6 +2078,12 @@ public sealed class RouterCoordinator(
                     decision?.Complete(OwnedSnapshot(route.SourceId), "ProofExpiredOrSourceChangedFallbackRetained", route.State.ToString());
                     return;
                 }
+                // Claim only after both serialization gates and the final hold
+                // check. A held owner is not an attempted handoff and must not
+                // spend its publisher-epoch budget.
+                if (handoff.PlannedUpgrade is { } planned
+                    && !_mediaProfilePolicies[source.Identity.Value].TryClaim(planned, handoff.Proof,
+                        handoff.PlannedObservationDuration)) return;
                 telemetry?.Record(route.SourceId, port.StableId, OwnedSnapshot(route.SourceId), "MediaQualificationAccepted",
                     SupervisionTelemetry.Evidence(OwnedSnapshot(route.SourceId), _clock, route.State.ToString()),
                     new(Qualification: new(handoff.Proof.Media!.DetectedProfile, handoff.Proof.Media.SelectedOverride,
@@ -2722,26 +2802,17 @@ public sealed class RouterCoordinator(
     {
         if (source.State == SourceState.Disabled) return null;
         var gate = _recoveryReadiness.GetOrAdd(source.Identity.Value, _ => new RecoveryReadinessGate(_clock));
-        var expectation = SourceMediaPolicy.Get(_settings, source.Identity.Value);
         var signature = RecoveryConfigurationSignature(source, preset);
         var settings = _settings;
-        var includeAudio = preset.IncludeAudio;
-        var proof = gate.Poll(signature, null, null,
-            async () =>
-            {
-                using var decision = telemetry?.BeginDecision(route.SourceId, route.PortId, OwnedSnapshot(route.SourceId),
-                    "RecoveryReadinessDue", "Automatic decoded-track detection; 1/2/5/10/20/30 second backoff",
-                    5000, ["Stop fallback", "Open DeckLink"], "ProbeRecoveryMedia", route.State.ToString());
-                var qualifiedResult = await DetectMediaAsync(source, settings, expectation.Override, cancellationToken);
-                if (SourcePresetCompatibility.Warning(qualifiedResult.Media, includeAudio, expectation.Override) is { } warning)
-                    qualifiedResult = qualifiedResult with { FailureCategory = "Unknown",
-                        Detail = warning };
-                decision?.Complete(OwnedSnapshot(route.SourceId), qualifiedResult.FailureCategory ?? "ProbeSampleReceived", route.State.ToString());
-                return qualifiedResult;
-            });
+        var proof = PollMediaReadiness(gate, source, preset, settings, cancellationToken);
         if (gate.LastObservation is { } observed)
-            SetQualificationDetail(observed.FailureCategory is null ? null
-                : LogRedactor.RedactForDiagnostics(observed.Detail ?? "Expected media has not qualified. Standby retained."));
+        {
+            var incompatibility = SourcePresetCompatibility.Warning(observed.Media, preset.IncludeAudio,
+                SourceMediaPolicy.Get(settings, source.Identity.Value).Override);
+            SetQualificationDetail(incompatibility ?? (observed.FailureCategory is null ? null
+                : LogRedactor.RedactForDiagnostics(observed.Detail ?? "Expected media has not qualified. Standby retained.")));
+            if (incompatibility is not null) return null;
+        }
         if (proof is null) return null;
         var qualified = source with { State = SourceState.Ready, Media = proof.Media, LastObservedAt = _clock.Now,
             MediaQualificationDetail = null };
@@ -2758,14 +2829,42 @@ public sealed class RouterCoordinator(
         }
     }
 
+    private StreamProbeResult? PollMediaReadiness(RecoveryReadinessGate gate, DiscoveredSource source,
+        OutputPresetProfile preset, OperatorSettings settings, CancellationToken cancellationToken)
+    {
+        var signature = RecoveryConfigurationSignature(source, preset);
+        return gate.Poll(signature, null, null,
+            async () =>
+            {
+                RuntimeRoute? route;
+                lock (_gate) route = _routes.GetValueOrDefault(source.Identity.Value);
+                using var decision = telemetry?.BeginDecision(source.Identity.Value, route?.PortId, OwnedSnapshot(source.Identity.Value),
+                    "RecoveryReadinessDue", "Automatic decoded-track detection; 1/2/5/10/20/30 second backoff",
+                    5000, ["Stop fallback", "Open DeckLink"], "ProbeRecoveryMedia", route?.State.ToString());
+                var qualifiedResult = await DetectMediaAsync(source, settings,
+                    SourceMediaPolicy.Get(settings, source.Identity.Value).Override, cancellationToken);
+                decision?.Complete(OwnedSnapshot(source.Identity.Value), qualifiedResult.FailureCategory ?? "ProbeSampleReceived", route?.State.ToString());
+                return qualifiedResult;
+            }, reuseUnconsumedProof: true);
+    }
+
     private async Task<StreamProbeResult> DetectMediaAsync(DiscoveredSource source, OperatorSettings settings,
         SourceMediaOverride mode, CancellationToken cancellationToken)
     {
+        // Polling must not turn the old discovery concurrency bound into an
+        // unbounded group of background helpers. Capacity pressure abstains and
+        // uses the same bounded retry gate; it is never source-failure authority.
+        if (!await _detectionProbeSlots.WaitAsync(0, cancellationToken))
+            return new(false, false, null, "Unknown", "Media detection capacity is busy; standby retained.");
+        try
+        {
         IStreamProbe probe = settings.SimulationMode ? new SimulationStreamProbe()
             : new FfprobeStreamProbe(settings.MediaTools.FfprobePath, AutomaticMediaDetection.DetectionWindow, TimeSpan.FromSeconds(1.1));
         // Reuse the source gate across configuration changes and helper cleanup.
         var detector = _mediaDetectors.GetOrAdd(source.Identity.Value, _ => new(probe, _clock));
         return (await detector.DetectAsync(source.RtspUri, mode, cancellationToken, probe)).Probe;
+        }
+        finally { _detectionProbeSlots.Release(); }
     }
 
     // Private in-memory equality token only; never log or persist URI/credentials.
@@ -2773,7 +2872,8 @@ public sealed class RouterCoordinator(
         $"{_settings.ConfigurationRevision}|{_settings.SimulationMode}|{source.RtspUri.AbsoluteUri}|{_settings.MediaTools.FfprobePath}|{_settings.MediaTools.FfmpegPath}|{JsonSerializer.Serialize(preset)}|{JsonSerializer.Serialize(SourceMediaPolicy.Get(_settings, source.Identity.Value))}";
 
     private sealed record RecoveryQualification(DiscoveredSource Source, RecoveryReadinessGate Gate,
-        StreamProbeResult Proof, string ConfigurationSignature, MediaSessionProfile? PlannedUpgrade = null);
+        StreamProbeResult Proof, string ConfigurationSignature, MediaSessionProfile? PlannedUpgrade = null,
+        TimeSpan PlannedObservationDuration = default);
 
     private async Task StartFallbackAsync(RuntimeRoute route, CancellationToken cancellationToken)
     {

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using BroadcastRouter.Domain;
+using BroadcastRouter.Application;
 using BroadcastRouter.Infrastructure;
 using Xunit;
 
@@ -237,7 +238,11 @@ public sealed class StrictWowzaTests
         finally
         {
             await File.WriteAllTextAsync(release, "continue");
-            await AutomaticMediaCoordinatorTests.Drive(lab, discovery);
+            await discovery;
+            var readiness = lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")["TEST/fixture/_default_/source-B"];
+            var pending = (Task)typeof(RecoveryReadinessGate).GetField("_pending", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(readiness)!;
+            await AutomaticMediaCoordinatorTests.Drive(lab, pending);
+            await lab.Invoke("PollPendingDiscoveryMediaAsync", CancellationToken.None);
         }
         var incoming = Assert.Single(lab.Sources.Values, source => source.Identity.StreamName == "source-B");
         Assert.Equal(SourceState.Ready, incoming.State);

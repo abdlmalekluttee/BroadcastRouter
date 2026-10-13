@@ -87,6 +87,12 @@
 
 ## Approved muted-preset behavior
 
+Implementation checkpoint: Tasks 1–3 and the Task 4 UI are implemented on the
+follow-up branch. The whole-branch review fix pass is complete, including shared
+nonblocking discovery/admission, operator-hold checks and truthful preset-save
+warnings. See `docs/phase2/P2-24-AUTO.md` and the stacked PR for execution evidence;
+the checklist above preserves the original plan, not hardware acceptance.
+
 The output preset's audio setting is authoritative. Auto detects and qualifies every present input track, while the selected graph and UI say "audio disabled by preset" when muted. An audio-only source with a muted preset retains standby and the visible alarm "incompatible preset: audio-only source on a muted output". Force overrides never defeat mute. Assignment saves and preset edits warn about incompatible combinations without blocking persistence. Collect a read-only, private inventory of all current muted presets and their output usages for owner confirmation before any deployment.
 
 ## Authorized follow-on work (not part of the automatic-detection PR)

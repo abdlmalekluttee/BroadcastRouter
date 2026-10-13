@@ -8,13 +8,18 @@ declaration design below. Default Auto, immutable selected graph, one planned
 richer-profile attempt per epoch, authoritative preset mute, non-blocking save
 warnings and advanced admin overrides are implemented. Production is unchanged.
 
-Local Release build: zero warnings/errors. Normal suite: **660/660** across three
-disjoint shards (645 remaining / 14 standby / 1 telemetry); slowest shard 4m29s.
+Local Release build: zero warnings/errors. The final suite passed **672/672**
+(657 remaining, 14 standby, 1 telemetry; longest local shard 4m20s).
+The final review added twelve cases covering nonblocking admission, slow discovery,
+proof reuse/expiry, probe capacity, operator hold and truthful mute-save reporting.
 Provenance tests **12/12**; CI contract tests **17/17**. Strict KnownDefect checks
 the exact two OPEN R18 failures (`DiagnosticActorIsRedacted`,
 `DiagnosticReasonIsRedacted`); they remain defects, not passing behavior tests.
-Final independent review, clean-package verification and exact-head GitHub CI
-are still required before this candidate is ready for review.
+A fresh independent review identified two important orchestration bugs; both
+were reproduced and fixed test-first in one fix pass. The save-warning finding
+was also treated as important because it misrepresented the current output.
+Final package and exact-head CI results are recorded in the stacked
+PR; hardware acceptance is not implied by those software checks.
 
 The private read-only mute inventory is retained outside the repository. No
 source declaration confirmation list is required. Local simulation browser

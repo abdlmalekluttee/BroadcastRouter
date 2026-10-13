@@ -197,4 +197,23 @@ public sealed class AutomaticMediaCoordinatorTests
         if (pending is not null) await Drive(lab, pending);
         await lab.RestartDue();
     }
+
+    internal static async Task<DiscoveredSource> ObserveQualifiedDiscovery(OfflineFallbackTests.RecoveryLab lab,
+        DiscoveredSource observation)
+    {
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            var task = lab.Invoke("ProbeObservationAsync", observation, lab.Settings, CancellationToken.None, null);
+            await task;
+            var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+            var source = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
+            if (source.State == SourceState.Ready && source.Media?.SelectedOverride ==
+                SourceMediaPolicy.Get(lab.Settings, source.Identity.Value).Override) return source;
+            var gate = lab.Get<ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[observation.Identity.Value];
+            if (typeof(RecoveryReadinessGate).GetField("_pending", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(gate) is Task pending) await Drive(lab, pending);
+            else lab.Time.Advance(TimeSpan.FromSeconds(30)); // existing bounded cadence, never relaxed
+        }
+        throw new InvalidOperationException("Healthy discovery failed to qualify after bounded polls.");
+    }
 }

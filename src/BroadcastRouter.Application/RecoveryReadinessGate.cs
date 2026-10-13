@@ -32,6 +32,8 @@ public sealed class RecoveryReadinessGate(SupervisionClock clock)
         get { lock (_gate) return _observationGeneration == _generation ? _lastObservation : null; }
     }
 
+    public bool HasPendingObservation { get { lock (_gate) return _pending is not null; } }
+
     public void ObservePublisher(bool connected)
     {
         lock (_gate)
@@ -74,7 +76,7 @@ public sealed class RecoveryReadinessGate(SupervisionClock clock)
     }
 
     public StreamProbeResult? Poll(string signature, bool? requireVideo, bool? requireAudio,
-        Func<Task<StreamProbeResult>> probe)
+        Func<Task<StreamProbeResult>> probe, bool reuseUnconsumedProof = false)
     {
         lock (_gate)
         {
@@ -83,6 +85,12 @@ public sealed class RecoveryReadinessGate(SupervisionClock clock)
                 _signature = signature;
                 _generation++;
             }
+            // Discovery and admission may observe the same proof, but only
+            // TryAuthorizeHandoff consumes it. Never extend freshness or reuse
+            // an authorized, invalidated, or expired proof.
+            if (reuseUnconsumedProof && _proof is not null && _proofGeneration == _generation
+                && clock.Now - _proofCompletedAt <= ProofLifetime)
+                return _proof;
             if (_pending is null)
             {
                 if (clock.Now < _nextProbe) return null;

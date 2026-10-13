@@ -20,6 +20,13 @@ An open failure before any track is observed preserves its classified failure
 (including RTSP 404), returns immediately, and uses the existing retry backoff.
 An observation/cleanup timeout retains standby and never opens overlapping probes.
 
+Discovery and admission poll one shared asynchronous observation. Reconciliation
+collects its completion independently of the management polling interval. The
+proof is valid for two seconds and can authorize only one handoff; discovery
+cannot start another five-second window ahead of consuming it. At most eight
+detection windows run concurrently; capacity pressure retains standby and uses
+bounded retry rather than blocking the coordinator.
+
 | Detected input | Selected graph (unmuted preset) |
 | --- | --- |
 | Video + audio | Real video + real audio |
@@ -36,6 +43,8 @@ seconds of advancing audio and video, with no video PTS gap over 250 ms. Growth
 checks are source-serialized, globally limited to two and spaced at least thirty
 seconds after a result. The attempt budget survives process replacement, failed
 start and API uncertainty. Only a confirmed publisher epoch resets it.
+"Hold while Wowza live" suppresses enrichment, including a hold enabled while
+the handoff waits for the output lock. Such a hold consumes no attempt budget.
 
 The handoff rechecks management certainty, epoch, settings revision, override,
 proof age, exact owner and port lease across asynchronous boundaries. It is
@@ -56,6 +65,8 @@ Audio-only plus muted preset keeps standby and displays:
 No force override defeats mute. Assignment and preset saves persist normally and
 return an advisory compatibility warning. Fresh admission enforces compatibility
 again; an offline source with no evidence is not invented to be audio-only.
+Saving a mute does not rewrite an already-running owner's immutable graph: its
+warning explicitly distinguishes that unchanged owner from the next qualification.
 
 An administrator can choose Auto, Force video + audio, Force video-only or Force
 audio-only under the initially closed **Advanced source details** disclosure.
@@ -80,6 +91,9 @@ after stopping an owner, selected-video loss and audio-only re-detection, preset
 mute across overrides, backend save warnings, authorization, revision conflicts,
 audit records, draft preservation, actual parent-page source identity binding,
 and selected-graph plus qualification telemetry.
+Full discovery/reconciliation fixtures cover multiple unassigned inputs, saved
+and automatic admission, default and ten-second discovery intervals, detection
+capacity, shared single-use proof expiry and held-owner handoff races.
 
 The earlier declaration tests are changed only where the owner superseded their
 requirements: declaration migration becomes no migration; explicit required
