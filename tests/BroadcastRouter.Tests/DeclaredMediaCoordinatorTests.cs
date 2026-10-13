@@ -9,6 +9,86 @@ namespace BroadcastRouter.Tests;
 
 public sealed class DeclaredMediaCoordinatorTests
 {
+    [Theory]
+    [InlineData("discovery")]
+    [InlineData("initial")]
+    [InlineData("recovery")]
+    public async Task UnselectedOptionalAudioCannotBlockQualifiedVideo(string path)
+    {
+        await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
+        if (path == "initial") await PrepareInitialStart(lab);
+        else await lab.InstallFakeMediaTools();
+        lab.Settings.Presets[0].IncludeAudio = false;
+        await WriteProbe(lab, MediaQualificationDurationTests.Json(MediaQualificationDurationTests.Video(), []));
+        if (path == "discovery")
+        {
+            lab.Routes.Remove(lab.Source.Value);
+            await lab.Supervisor.StopAsync(lab.Source, CancellationToken.None);
+            var observation = lab.Sources[lab.Source.Value] with { State = SourceState.PublisherActive, Media = null };
+            var task = (Task)typeof(BroadcastRouter.Web.Services.RouterCoordinator)
+                .GetMethod("ProbeObservationAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(lab.Coordinator, [observation, lab.Settings, CancellationToken.None, null])!;
+            await task;
+            var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+            var source = (DiscoveredSource)result.GetType().GetProperty("Source")!.GetValue(result)!;
+            Assert.Equal(SourceState.Ready, source.State);
+        }
+        else
+        {
+            if (path == "initial")
+            {
+                await StartInitial(lab);
+                await AwaitPending(lab);
+                await lab.Invoke("ReconcileSavedRouteAsync", lab.Source.Value, CancellationToken.None);
+            }
+            else await Poll(lab);
+            Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live));
+        }
+    }
+
+    [Theory]
+    [InlineData("owner-stop", "publisher")]
+    [InlineData("standby-stop", "settings")]
+    [InlineData("standby-stop", "disabled")]
+    [InlineData("persistence", "publisher")]
+    [InlineData("persistence", "settings")]
+    public async Task InvalidatedHandoffCannotLaunchAfterAsyncTeardown(string phase, string change)
+    {
+        await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
+        if (phase != "owner-stop") await PrepareInitialStart(lab);
+        else await lab.InstallFakeMediaTools();
+        typeof(BroadcastRouter.Web.Services.RouterCoordinator).GetMethod("PollRecoveryReadiness", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(lab.Coordinator, [lab.Route, lab.Sources[lab.Source.Value], lab.Settings.Presets[0], CancellationToken.None]);
+        await AwaitPending(lab);
+        var changed = false;
+        void Mutate()
+        {
+            changed = true;
+            if (change == "publisher") lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value].Invalidate();
+            else if (change == "settings") lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.AudioOnly;
+            else lab.Sources[lab.Source.Value] = lab.Sources[lab.Source.Value] with { State = SourceState.Disabled };
+        }
+        var persistence = lab.Get<SemaphoreSlim>("_routePersistenceGate");
+        if (phase == "persistence") await persistence.WaitAsync();
+        else lab.Supervisor.LifecycleChanged += e => { if (!changed && e.State == RouteProcessLifecycleState.StopRequested) Mutate(); };
+        var attempt = StartInitial(lab);
+        if (phase == "persistence")
+        {
+            try
+            {
+                await FaultHarnessTests.Eventually(() => lab.Events.Any(e => e.State == RouteProcessLifecycleState.StopRequested));
+                Assert.False(attempt.IsCompleted);
+                Mutate();
+            }
+            finally { persistence.Release(); }
+        }
+        await attempt;
+        Assert.True(changed);
+        Assert.False(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Live));
+        Assert.True(lab.Supervisor.IsRunning(lab.Source, RouteProcessPurpose.Fallback));
+        if (change == "disabled") Assert.Equal(SourceState.Disabled, lab.Sources[lab.Source.Value].State);
+    }
+
     [Fact]
     public async Task InitialStartWaitsThenHandsOffOnceWhenRequiredTracksQualify()
     {
