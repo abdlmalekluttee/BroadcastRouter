@@ -113,14 +113,37 @@ public sealed class AutomaticMediaCoordinatorTests
         };
         var probe = MediaQualificationDurationTests.Json(Enumerable.Range(0, 261).Select(i => i / 25d).ToArray(),
             Enumerable.Range(0, 490).Select(i => (i * 1024 / 48000d, 1024)).ToArray());
+        var release = Path.Combine(lab.Root, "growth-release");
+        var marker = Path.Combine(lab.Root, "probe-starts.log");
+        var starts = ProbeMarker.CountStarted(marker);
         await System.IO.File.WriteAllTextAsync(Path.Combine(lab.Root, "probe.json"), System.Text.Json.JsonSerializer.Serialize(new {
-            events = new[] { new { atMilliseconds = 0, channel = "stdout", text = probe } }, exitAfterMilliseconds = 2200 }));
+            events = new[] { new { atMilliseconds = 0, channel = "stdout", text = probe } },
+            continueFile = release, exitAfterMilliseconds = 0 }));
         var stops = lab.Events.Count(e => e.State == RouteProcessLifecycleState.StopRequested);
-        for (var i = 0; i < 350 && lab.Owner.SessionId == original; i++)
+        using var lifetime = new CancellationTokenSource();
+        await lab.Invoke("RecordMediaModeChangesAsync", lifetime.Token);
+        var growth = lab.Get<System.Collections.IDictionary>("_mediaGrowth")[lab.Source.Value]!;
+        var observation = (Task<MediaGrowthObservation>)growth.GetType().GetProperty("Task")!.GetValue(growth)!;
+        try
         {
-            await lab.Invoke("RecordMediaModeChangesAsync", CancellationToken.None);
-            await Task.Delay(10);
-            lab.Time.Advance(TimeSpan.FromMilliseconds(50));
+            // Child scheduling is real time; qualification is monotonic virtual
+            // time. Release an explicit barrier after exactly 10.5 s, rather
+            // than deriving virtual duration from Windows timer resolution.
+            using var started = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (ProbeMarker.CountStarted(marker) == starts)
+                await Task.Delay(20, started.Token);
+            lab.Time.Advance(TimeSpan.FromSeconds(10.5));
+            await System.IO.File.WriteAllTextAsync(release, "release");
+            var evidence = await observation.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(evidence.Probe);
+            Assert.Equal(TimeSpan.FromSeconds(10.5), evidence.Duration);
+            await lab.Invoke("RecordMediaModeChangesAsync", lifetime.Token);
+        }
+        finally
+        {
+            lifetime.Cancel();
+            try { await observation; }
+            catch (OperationCanceledException) { }
         }
         if (invalidateAfterStop)
         {

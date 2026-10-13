@@ -8,8 +8,12 @@ declaration design below. Default Auto, immutable selected graph, one planned
 richer-profile attempt per epoch, authoritative preset mute, non-blocking save
 warnings and advanced admin overrides are implemented. Production is unchanged.
 
+| Task | Review | Status |
+| --- | --- | --- |
+| Automatic media redesign | [#82](https://github.com/abdlmalekluttee/BroadcastRouter/pull/82), base #81 | Software review fixes complete; exact-head CI must pass before ready; hardware remains open |
+
 Local Release build: zero warnings/errors. The final suite passed **672/672**
-(657 remaining, 14 standby, 1 telemetry; longest local shard 4m20s).
+(657 remaining, 14 standby, 1 telemetry; latest local shards 3m24s/2m/4m9s).
 The final review added twelve cases covering nonblocking admission, slow discovery,
 proof reuse/expiry, probe capacity, operator hold and truthful mute-save reporting.
 Provenance tests **12/12**; CI contract tests **17/17**. Strict KnownDefect checks
@@ -20,6 +24,14 @@ were reproduced and fixed test-first in one fix pass. The save-warning finding
 was also treated as important because it misrepresented the current output.
 Final package and exact-head CI results are recorded in the stacked
 PR; hardware acceptance is not implied by those software checks.
+
+The first hosted run exposed a test-clock defect in both planned-handoff
+integration cases: the fixture converted real Windows scheduling delays into
+virtual qualification duration. Slowing its polling reproduced both assertion
+failures locally. An explicit child-release barrier now controls the 10.5-second
+virtual observation independently of real process startup. The same handoff,
+rollback and retry-count assertions remain; production deadlines and CI limits
+are unchanged. The full suite passed 672/672 again after this fixture correction.
 
 The private read-only mute inventory is retained outside the repository. No
 source declaration confirmation list is required. Local simulation browser
