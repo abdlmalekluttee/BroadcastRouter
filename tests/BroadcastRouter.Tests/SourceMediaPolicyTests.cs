@@ -11,7 +11,7 @@ public sealed class SourceMediaPolicyTests
     [InlineData(SourceMediaExpectation.ContinuousVideo, 0, true, "WaitingForKeyframe", false)]
     [InlineData(SourceMediaExpectation.SparseVideo, 0, true, "WaitingForKeyframe", false)]
     [InlineData(SourceMediaExpectation.SparseVideo, 1, true, null, true)]
-    [InlineData(SourceMediaExpectation.ContinuousVideo, 1, true, null, true)]
+    [InlineData(SourceMediaExpectation.ContinuousVideo, 1, true, "Unknown", true)]
     [InlineData(SourceMediaExpectation.AudioOnly, 1, true, null, false)]
     [InlineData(SourceMediaExpectation.AudioOnly, 0, true, null, false)]
     [InlineData(SourceMediaExpectation.AudioOnly, 1, false, "Unknown", false)]
@@ -20,7 +20,8 @@ public sealed class SourceMediaPolicyTests
     public void RequiredTracksAreQualifiedFromDecodedFacts(SourceMediaExpectation expectation, int frames,
         bool pcm, string? failure, bool selectedVideo)
     {
-        var probe = FfprobeStreamProbe.Parse($$"""{"streams":[{"codec_type":"video","codec_name":"h264","nb_read_frames":"{{frames}}"},{"codec_type":"audio","codec_name":"aac","nb_read_packets":"80","nb_read_frames":"{{(pcm ? 40 : 0)}}"}]}""");
+        var probe = MediaQualificationDurationTests.Probe(frames == 0 ? [] : [0], pcm ? MediaQualificationDurationTests.Audio() : [])
+            with { FramesReceived = frames > 0, Media = RecoveryReadinessTests.Av().Media! with { HasUsableVideo = frames > 0 }, DecodedAudioReceived = pcm };
         var qualified = SourceMediaPolicy.Apply(probe, new() { Expectation = expectation });
         Assert.Equal(failure, qualified.FailureCategory);
         Assert.Equal(selectedVideo, qualified.Media!.HasUsableVideo);
@@ -65,7 +66,7 @@ public sealed class SourceMediaPolicyTests
             var profile = SourceMediaPolicy.Get(loaded, "TEST/live/_definst_/synthetic");
             Assert.Equal(SourceMediaExpectation.SparseVideo, profile.Expectation);
             Assert.True(profile.RequireAudio);
-            Assert.Equal(SourceMediaExpectation.ContinuousVideo, SourceMediaPolicy.Get(loaded, "TEST/live/_definst_/other").Expectation);
+            Assert.Equal(SourceMediaExpectation.Undeclared, SourceMediaPolicy.Get(loaded, "TEST/live/_definst_/other").Expectation);
             profile.Expectation = SourceMediaExpectation.AudioOnly;
             Assert.Equal(SourceMediaExpectation.SparseVideo, SourceMediaPolicy.Get(loaded, "TEST/live/_definst_/synthetic").Expectation);
             loaded.SourceMediaProfiles.Add(new() { SourceId = "TEST/live/_definst_/synthetic" });
@@ -96,7 +97,7 @@ public sealed class SourceMediaPolicyTests
         var waiting = FfprobeStreamProbe.Parse("""{"streams":[{"codec_type":"video","codec_name":"h264","nb_read_frames":"0"},{"codec_type":"audio","codec_name":"aac","nb_read_frames":"48"}]}""");
         Assert.Null(gate.Poll("continuous", true, true, () => Task.FromResult(SourceMediaPolicy.Apply(waiting, new()))));
         gate.AccelerateForPublisherEpoch();
-        var late = waiting with { FramesReceived = true, Media = waiting.Media! with { HasUsableVideo = true } };
+        var late = RecoveryReadinessTests.Av();
         var proof = gate.Poll("continuous", true, true, () => Task.FromResult(SourceMediaPolicy.Apply(late, new())));
         Assert.NotNull(proof);
         gate.Poll("audio-only", false, true, () => Task.FromResult(waiting));

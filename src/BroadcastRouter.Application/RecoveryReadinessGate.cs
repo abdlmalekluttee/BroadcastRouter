@@ -19,8 +19,18 @@ public sealed class RecoveryReadinessGate(SupervisionClock clock)
     private bool _acceleratedProbePending;
     private DateTimeOffset _nextProbe = DateTimeOffset.MinValue;
     private StreamProbeResult? _proof;
+    private StreamProbeResult? _authorizedProof;
     private long _proofGeneration;
     private DateTimeOffset _proofCompletedAt;
+    private StreamProbeResult? _lastObservation;
+    private long _observationGeneration;
+
+    // Diagnostics only: never a handoff authorization. Invalidated generations
+    // cannot publish stale media reasons into a newer publisher/configuration.
+    public StreamProbeResult? LastObservation
+    {
+        get { lock (_gate) return _observationGeneration == _generation ? _lastObservation : null; }
+    }
 
     public void ObservePublisher(bool connected)
     {
@@ -52,8 +62,15 @@ public sealed class RecoveryReadinessGate(SupervisionClock clock)
             var valid = ReferenceEquals(_proof, proof) && _proofGeneration == _generation
                 && clock.Now - _proofCompletedAt <= ProofLifetime;
             _proof = null;
+            _authorizedProof = valid ? proof : null;
             return valid;
         }
+    }
+
+    public bool IsAuthorizedHandoffCurrent(StreamProbeResult proof)
+    {
+        lock (_gate) return ReferenceEquals(_authorizedProof, proof) && _proofGeneration == _generation
+            && clock.Now - _proofCompletedAt <= ProofLifetime;
     }
 
     public StreamProbeResult? Poll(string signature, bool? requireVideo, bool? requireAudio,
@@ -76,6 +93,11 @@ public sealed class RecoveryReadinessGate(SupervisionClock clock)
             var observation = _pending.GetAwaiter().GetResult(); // ObserveAsync captures all failures.
             _pending = null;
             var result = observation.Result;
+            if (_pendingGeneration == _generation && clock.Now - observation.CompletedAt <= ProofLifetime)
+            {
+                _lastObservation = result;
+                _observationGeneration = _generation;
+            }
             var videoExpected = requireVideo ?? result?.Media?.HasUsableVideo == true;
             var audioExpected = requireAudio ?? result?.Media?.AudioCodec is not null;
             var qualified = _pendingGeneration == _generation

@@ -160,8 +160,7 @@ public sealed class OfflineFallbackTests
                 case "publisher": lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, RecoveryReadinessGate>>("_recoveryReadiness")[lab.Source.Value].Invalidate(); break;
                 case "settings-revision": lab.Settings.ConfigurationRevision++; break;
                 case "simulation-mode": lab.Settings.SimulationMode = true; break;
-                case "media-declaration": lab.Settings.SourceMediaProfiles.Add(new() {
-                    SourceId = lab.Source.Value, Expectation = SourceMediaExpectation.AudioOnly }); break;
+                case "media-declaration": lab.Settings.SourceMediaProfiles[0].Expectation = SourceMediaExpectation.AudioOnly; break;
                 case "device-rediscovery":
                     var ports = lab.Get<Dictionary<string, DeckLinkPort>>("_ports");
                     ports["TEST-OUTPUT"] = ports["TEST-OUTPUT"] with { FfmpegName = "Remapped output" };
@@ -208,6 +207,7 @@ public sealed class OfflineFallbackTests
             // Keep the existing supervisor; no real executable can ever be launched.
             Set("_supervisorPath", executable);
             Settings.MediaTools.FfmpegPath = executable;
+            Settings.SourceMediaProfiles.Add(new() { SourceId = Source.Value });
             Set("_supervisorInputReadTimeoutMilliseconds", Settings.Routing.InputReadTimeoutMilliseconds);
             Settings.SimulationMode = false;
             Supervisor.LifecycleChanged += Events.Enqueue;
@@ -256,10 +256,8 @@ public sealed class OfflineFallbackTests
             Set("_validation", new MediaToolValidation(ToolValidationState.Valid, "fake", "fake", true, true, 1, [], Clock.Now));
             await File.WriteAllTextAsync(Path.Combine(Root, "probe.json"), JsonSerializer.Serialize(new
             {
-                events = new[] { new { atMilliseconds = 0, channel = "stdout", text = """
-                  {"streams":[{"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"25/1","nb_read_frames":"50"},
-                  {"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_frames":"94"}]}
-                  """ } }, exitAfterMilliseconds = 20
+                events = new[] { new { atMilliseconds = 0, channel = "stdout",
+                    text = MediaQualificationDurationTests.Json(MediaQualificationDurationTests.Video(), MediaQualificationDurationTests.Audio()) } }, exitAfterMilliseconds = 20
             }));
             await File.WriteAllTextAsync(Path.Combine(Root, "live.json"), JsonSerializer.Serialize(new
             { events = new[] { new { atMilliseconds = 0, channel = "stdout", text = "frame=1\nout_time_us=40000\nprogress=continue" } } }));

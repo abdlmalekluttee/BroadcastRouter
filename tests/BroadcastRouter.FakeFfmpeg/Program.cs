@@ -30,7 +30,14 @@ if (script.Events.Any(e => e.AtMilliseconds is < 0 or > 60000)
     || script.QuitDelayMilliseconds is < 0 or > 60000) return 65;
 using var complete = new CancellationTokenSource();
 var mediaWriters = new Dictionary<string, StreamWriter>(StringComparer.Ordinal);
-if (script.CaptureArguments) await File.WriteAllTextAsync(Path.Combine(AppContext.BaseDirectory, "arguments.json"), JsonSerializer.Serialize(args));
+if (script.CaptureArguments)
+{
+    // Existence is the test reader's ready signal. Publish only after the write
+    // handle closes, so a reader cannot see a partial or write-locked document.
+    var pendingArguments = Path.Combine(AppContext.BaseDirectory, $"arguments.{Guid.NewGuid():N}.pending");
+    await File.WriteAllTextAsync(pendingArguments, JsonSerializer.Serialize(args));
+    File.Move(pendingArguments, Path.Combine(AppContext.BaseDirectory, "arguments.json"), overwrite: true);
+}
 var timer = Stopwatch.StartNew();
 var quit = Task.Run(async () =>
 {

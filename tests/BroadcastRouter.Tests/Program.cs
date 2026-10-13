@@ -1684,7 +1684,7 @@ static void ProbeReadinessAcceptsAudioAndRejectsMetadataOnly()
 {
     var media = new MediaProperties("h264", "aac", 1920, 1080, 30, null, 48_000, 2, false);
     Equal(SourceState.Ready, SourceProbeReadinessPolicy.Resolve(SourceMediaPolicy.Apply(
-        new(true, false, media, null, null, true, true), new() { Expectation = SourceMediaExpectation.AudioOnly })));
+        new(true, false, media, null, null, true, true, AdvancingAudioSeconds: 1), new() { Expectation = SourceMediaExpectation.AudioOnly })));
     Equal(SourceState.WaitingForKeyframe, SourceProbeReadinessPolicy.Resolve(new(true, false, media, "NoVideoFrames", null)));
     Equal(SourceState.RtspUnavailable, SourceProbeReadinessPolicy.Resolve(new(false, false, null, "Network", null)));
 }

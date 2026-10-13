@@ -1,9 +1,19 @@
-<span data-observed-media="@Source.State">Observed: @Observed()</span>
+<span class="@(AmbiguousSparse ? "text-warning" : null)" data-observed-media="@(AmbiguousSparse ? "Unknown" : Source.State.ToString())">Observed: @Observed()</span>
+@if (AmbiguousSparse)
+{
+    <span class="secondary-text">Last observation: @(Source.LastObservedAt?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'") ?? "Not Available")</span>
+}
 <span class="secondary-text" data-selected-session="@Output?.SessionId.ToString("N")">Output graph: @Selected()</span>
+@if (!string.IsNullOrWhiteSpace(Source.MediaQualificationDetail))
+{
+    <span class="text-warning secondary-text" role="alert">@Source.MediaQualificationDetail</span>
+}
 @code {
     [Parameter, EditorRequired] public DiscoveredSource Source { get; set; } = null!;
     [Parameter] public OutputMediaSelection? Output { get; set; }
-    private string Observed() => Source.State switch
+    public static bool IsAmbiguousSparse(DiscoveredSource source) => source.Media is { Expectation: SourceMediaExpectation.SparseVideo, AudioCodec: null };
+    private bool AmbiguousSparse => IsAmbiguousSparse(Source);
+    private string Observed() => AmbiguousSparse ? "media status unknown · sparse video without audio cannot prove ongoing media health" : Source.State switch
     {
         SourceState.WaitingForKeyframe => "waiting for decoded video",
         SourceState.Unknown => "unknown / required tracks not qualified",

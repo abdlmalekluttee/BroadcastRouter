@@ -1,8 +1,46 @@
 # Gate C — software checkpoint, qualification OPEN
 
-This is not a gate pass or deployment approval. Local P2-24 verification is green;
-hosted checks and the unresolved hardware/full-matrix requirements remain open.
+This is not a gate pass or deployment approval. The corrected software checkpoint
+is documented below; unresolved hardware/full-matrix requirements remain open.
 Only the owner merges. No production changes were made for Phase C software.
+
+## 13 October correction checkpoint
+
+Owner merged #66–74 to main091f686. Feature PRs #75→#76→#77→#81 were rebased in
+that order after retaining their old tips, with owner-approved branch-specific
+force-with-lease. Main protection and required check names were not changed.
+Normal CI shards are exhaustive/disjoint and each retains a10min job timeout.
+Hosted #75/#76/#77 are green; longest jobs7m27s/7m15s/5m48s, respectively.
+The final #81 head needs its own hosted verification, recorded in the PR.
+
+Upgrade declarations now follow persisted behavior, retain explicit profiles,
+and never infer mandatory audio merely from metadata. Unknown sources keep
+standby with a visible reason. A private per-source evidence proposal awaits
+owner confirmation before deployment. Continuous video requires>=1s advancing
+decoded PTS; selected/required audio requires>=1s advancing samples. Sparse
+video-only shows timestamped media-status-unknown, not green. Async handoff
+invalidation is checked through teardown/persistence/launch and restores standby.
+
+Independent correction review:0Critical/3Important fixed in one test-first pass,
+9/9 intended RED assertions then9/9 GREEN and84/84 focused. Recovery warning gap:
+3assertion RED then24/24 GREEN. Two exact R18 KnownDefects remain OPEN. Original
+136 case functions retained; one older Phase C display label intentionally differs
+from main, but this correction changes no baseline case identities or labels.
+Normal full/head evidence is recorded in P2-24 and PR81; no rerun alone is a fix.
+
+Bench extension:400 additional standby stops on four assigned connectors,0forced/
+nonzero exits,worst520.4383ms; known-loop10tone+10silent captures,20cleanstops,
+max1366.019ms. All original assignments/port settings restored; service/protected
+outputs unchanged; maxCPU26%,no Windows driver errors; no bench helpers remained.
+Two dropped input frames were logged during capture startup. Physical fifth-port
+slate remains unverified. These are Phase B candidate results, NOT qualification
+of the newly corrected Phase C admission pipeline. Disk above reserve; full exact
+disk/Wowza-size/on-disk-retention report and physical evidence stay private.
+
+Phase D, deployment and merges are not authorized here. P2-31 must investigate
+the earlier Flush timeout before Gate D; P2-50 owns preview inference. No FFmpeg
+late-track patch. Dependabot #78–80 remain untouched. Older sections below retain
+the historical checkpoint, not the current merge/CI state.
 
 ## PRs and findings
 
@@ -23,7 +61,7 @@ known defects. A green KnownDefect job means those exact defects still reproduce
 |---|---|---|
 | Continuous AV, still/black+audio, audio-only, silence | Independent PCM/video observations; healthy-warning/duplicate fixtures retain owners; declared sparse/AudioOnly selection | Full representative decoder/SDI fixture matrix and duration |
 |0.5/1/3-second interruptions, publisher epoch | Complete publisher observations, evidence expiry, epoch acceleration and cached-state preservation | Real RTSP interruption and physical cutover timing |
-| Long GOP, late audio/video | Missing/metadata-only/packet-only qualification; one valid picture retained; healthy graph not restarted | Seamless new-track insertion; historical cause discrimination; complete timestamp reset pipeline |
+| Long GOP, late audio/video | Missing/metadata-only/packet-only qualification; continuous needs>=1s advancing PTS, sparse permits one valid picture; healthy graph not restarted | Seamless new-track insertion; historical cause discrimination; complete timestamp reset pipeline |
 | Corrupt packets then recovery | Failed matching-media and elapsed-window classification; qualified recovery clears only observed failure | Exact runtime/network corruption and physical AV recovery timing |
 | REST403/500/timeout/invalid200/partial app | Strict provider and healthy-owned-route retention tests | Production/load qualification, not additional schema inference |
 | RTSP404, child exit | One-hour bounded real fake-probe test; offline fallback retention; OS exit remains definitive | Busy/unavailable native matrix and on-air timing |

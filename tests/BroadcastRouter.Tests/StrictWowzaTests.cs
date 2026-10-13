@@ -219,6 +219,7 @@ public sealed class StrictWowzaTests
     {
         using var http = new InventoryHttp { Mode = "connected-mixed" };
         await using var lab = await LiveLab(http);
+        lab.Settings.SourceMediaProfiles.Add(new() { SourceId = "TEST/fixture/_default_/source-B" });
         var release = Path.Combine(lab.Root, "release-probe");
         var scriptPath = Path.Combine(lab.Root, "probe.json");
         var script = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(scriptPath))!;

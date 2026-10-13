@@ -15,12 +15,8 @@ public sealed class RecoveryReadinessTests
         return Activator.CreateInstance(type, clock)!;
     }
 
-    internal static StreamProbeResult Av() => FfprobeStreamProbe.Parse("""
-        {"streams":[
-          {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"25/1","nb_read_frames":"50"},
-          {"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"nb_read_frames":"94","nb_read_packets":"94"}
-        ]}
-        """);
+    internal static StreamProbeResult Av() => MediaQualificationDurationTests.Probe(
+        MediaQualificationDurationTests.Video(), MediaQualificationDurationTests.Audio());
 
     [Fact]
     public void OfflineDayUsesBoundedProbesAndNeverProducesHandoff()

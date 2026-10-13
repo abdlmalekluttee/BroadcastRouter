@@ -4,9 +4,26 @@ Gate A follow-up: [isolated direct/force-push rejection proof](phase2/P2-01-prot
 records both actual GH013 rejections, verified cleanup and unchanged main protection.
 No runtime changes or production access were needed for that proof.
 
-Production is read-only. No hardware tests in Phase A. Only the repository owner
-merges PRs; the agent never merges, force-pushes, or pushes directly to main.
+Production is read-only except explicitly approved assigned-connector bench sessions.
+No hardware tests in Phase A. Only the repository owner merges PRs; the agent
+never merges or pushes directly to main. The owner authorized force-with-lease
+only on #75/#76/#77/#81 feature branches for this requested rebase; saved tips retained.
 Deployment requires separate explicit approval and a maintenance window.
+
+## Current checkpoint — 13 October correction (supersedes historical rows below)
+
+| Task | Findings | Branch | PR | Status | Evidence link |
+|---|---|---|---|---|---|
+| Startup/P2-10–13/retention/disk/P2-23 | R01/R02/R07/R08/R10/R11 | merged task branches | #66–74 | Owner merged into main091f686; remote branches absent/pruned; no deployment | Historical task evidence below |
+| P2-22 + CI correction | R06; CI latency | fix/P2-22-media-health | #75 | Rebased; hosted38385926905 green, longest job7m27s; required names unchanged; hardware open | [P2-22](phase2/P2-22.md) |
+| P2-20 | R04 | fix/P2-20-audio-detector | #76 | Rebased; hosted38388611085 green, longest7m15s; hardware open | [P2-20](phase2/P2-20.md) |
+| P2-21 | R05 | fix/P2-21-video-detector | #77 | Rebased; hosted38388615022 green, longest5m48s; original Flush timeout deferred P2-31 | [P2-21](phase2/P2-21.md) |
+| P2-24 corrections | R13 partial; migration/admission | fix/P2-24-probe-media-policy | #81 | Nine review RED assertions fixed; focused84/84; final normal599/599, strict2R18OPEN, Python17+12; hosted final-head verification on PR | [P2-24](phase2/P2-24.md) |
+
+Only two strict R18 actor/reason KnownDefects remain OPEN at the stack tip.
+Dependabot #78–80 unchanged. Phase D not authorized. Gate C is not passed.
+
+## Historical task checkpoints
 
 | Task | Findings | Branch | PR | Status | Evidence link |
 |---|---|---|---|---|---|
@@ -141,3 +158,15 @@ Hardware Gate B remains OPEN: standby busy/unavailable matrix and historical
 failure-code root cause remain unproven. No 72-hour soak, all-port qualification,
 full-service Session 0 qualification or reboot test is claimed. Later-phase
 native-runtime and healthy-fixture requirements remain open.
+
+Second authorized bench session ended with all five original assignments and all
+port overrides restored and compared equal. Four additional100-cycle standby
+batches passed on the other assigned connectors, zero forced/nonzero exits,
+worst stop520.4383ms. The known loop added10 live-tone and10 bit-exact silent
+standby captures,20 clean stops,p99/max1366.019ms. Monitor1233samples,maxCPU26%,
+no Windows driver errors/protected changes; service unchanged; no bench helpers
+remained. Capture stderr reports two dropped startup input frames; do not claim
+warning-free capture. Physical fifth-connector slate remains unverified because
+it is not looped. These tests used the immutable Phase B candidate, not the new
+Phase C correction. The native busy/unavailable matrix and historical -5 cause
+remain OPEN; software proof cannot replace physical qualification.
