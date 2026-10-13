@@ -20,7 +20,8 @@ public sealed class FfmpegAudioFailureDetector
         DateTimeOffset processStartedAt,
         TimeSpan startupGrace,
         out string category,
-        out string detail)
+        out string detail,
+        BroadcastRouter.Domain.MediaEvidenceSnapshot? media = null)
     {
         category = "";
         detail = "";
