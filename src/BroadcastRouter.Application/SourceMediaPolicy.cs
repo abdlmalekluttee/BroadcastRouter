@@ -7,14 +7,17 @@ public static class SourceMediaPolicy
     public static SourceMediaProfile Get(OperatorSettings settings, string sourceId)
     {
         var profile = settings.SourceMediaProfiles.SingleOrDefault(p => p.SourceId == sourceId);
-        return new() { SourceId = sourceId, Expectation = profile?.Expectation ?? SourceMediaExpectation.ContinuousVideo,
+        return new() { SourceId = sourceId, Expectation = profile?.Expectation ?? SourceMediaExpectation.Undeclared,
             RequireAudio = profile?.RequireAudio ?? false };
     }
 
-    public static StreamProbeResult Apply(StreamProbeResult probe, SourceMediaProfile profile)
+    public static StreamProbeResult Apply(StreamProbeResult probe, SourceMediaProfile profile, bool includeOptionalAudio = true)
     {
         if (!Enum.IsDefined(profile.Expectation))
             return probe with { FailureCategory = "Unknown", Detail = "Invalid source media expectation." };
+        if (profile.Expectation == SourceMediaExpectation.Undeclared)
+            return probe with { Media = probe.Media is null ? null : probe.Media with { Expectation = SourceMediaExpectation.Undeclared },
+                FailureCategory = "Unknown", Detail = "Source media declaration is missing. Standby retained." };
         if (!probe.Opened || probe.Media is null) return probe;
         var audioOnly = profile.Expectation == SourceMediaExpectation.AudioOnly;
         var video = !audioOnly && probe.FramesReceived && probe.Media.HasUsableVideo;
@@ -24,12 +27,17 @@ public static class SourceMediaPolicy
                 FailureCategory = media.VideoCodec is null ? "Unknown" : "WaitingForKeyframe",
                 Detail = media.VideoCodec is null ? "Required video track has not been observed. Standby retained."
                     : "Video track declared but no decoded frame yet. Standby retained." };
+        if (profile.Expectation == SourceMediaExpectation.ContinuousVideo
+            && (!double.IsFinite(probe.AdvancingVideoSeconds) || probe.AdvancingVideoSeconds < 1))
+            return probe with { Media = media, FailureCategory = "Unknown",
+                Detail = "Required one second of advancing decoded video timestamps has not been observed. Standby retained." };
         // Optional audio may be absent, but when selected it must actually
         // decode. Never open an output graph using packet-only audio evidence.
-        if ((audioOnly || profile.RequireAudio || media.AudioCodec is not null)
-            && (!probe.DecodedAudioReceived || media.AudioCodec is null))
+        if ((audioOnly || profile.RequireAudio || includeOptionalAudio && media.AudioCodec is not null)
+            && (!probe.DecodedAudioReceived || media.AudioCodec is null
+                || !double.IsFinite(probe.AdvancingAudioSeconds) || probe.AdvancingAudioSeconds < 1))
             return probe with { FramesReceived = video, Media = media, FailureCategory = "Unknown",
-                Detail = "Required decoded audio has not been observed. Standby retained." };
+                Detail = "Required one second of advancing decoded audio samples has not been observed. Standby retained." };
         return probe with { FramesReceived = video, Media = media, FailureCategory = null,
             Detail = audioOnly ? "Declared audio-only source qualified; generated black selected for the next start."
                 : "Declared source video qualified for the next start; no existing output graph changed." };

@@ -16,7 +16,7 @@ public enum RouteState
 public enum AssignmentMode { None, Automatic, Rule, Fixed, Manual, Preconfigured }
 public enum FallbackMode { Black, TestPattern, FreezeLastFrame, StandbySource, File }
 public enum StandbyPattern { Black, SmpteBars, SmpteHdBars, TestSource }
-public enum SourceMediaExpectation { ContinuousVideo, SparseVideo, AudioOnly }
+public enum SourceMediaExpectation { ContinuousVideo, SparseVideo, AudioOnly, Undeclared }
 
 public sealed record WowzaServerConfiguration(
     string FriendlyName,
@@ -59,7 +59,8 @@ public sealed record DiscoveredSource(
     string? FixedPortId = null,
     bool AssignmentLocked = false,
     bool AutomaticRoutingEnabled = true,
-    DateTimeOffset? LastObservedAt = null);
+    DateTimeOffset? LastObservedAt = null,
+    string? MediaQualificationDetail = null);
 
 public sealed record VideoMode(int Width, int Height, int FrameRateNumerator, int FrameRateDenominator, string PixelFormat)
 {

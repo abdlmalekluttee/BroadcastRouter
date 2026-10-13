@@ -375,7 +375,24 @@ public sealed class RouterCoordinator(
     {
         await store.InitializeAsync(stoppingToken);
         _settings = await store.LoadSettingsAsync(stoppingToken);
-        foreach (var source in await store.LoadSourcesAsync(stoppingToken))
+        var persistedSources = await store.LoadSourcesAsync(stoppingToken);
+        if (_settings.SourceMediaMigrationVersion < 1)
+        {
+            var proposals = SourceMediaMigration.Propose(_settings, persistedSources);
+            foreach (var proposal in proposals)
+                _settings.SourceMediaProfiles.Add(new() { SourceId = proposal.SourceId,
+                    Expectation = proposal.Expectation, RequireAudio = proposal.RequireAudio });
+            _settings.SourceMediaMigrationVersion = 1;
+            _settings.ConfigurationRevision++;
+            _settings.LastAppliedAt = _clock.UtcNow;
+            _settings.LastAppliedBy = "system:source-media-upgrade";
+            await store.SaveSettingsAsync(_settings, stoppingToken);
+            foreach (var proposal in proposals)
+                await store.WriteConfigurationAuditAsync(new(0, _clock.UtcNow, "SourceMediaDeclarationMigration",
+                    proposal.SourceId, "", "", "Undeclared", proposal.Expectation.ToString(),
+                    "system:source-media-upgrade", proposal.Evidence, "Startup migration persisted", proposal.SourceId), stoppingToken);
+        }
+        foreach (var source in persistedSources)
             _sources[source.Identity.Value] = source with
             {
                 State = source.State == SourceState.Disabled ? SourceState.Disabled : SourceState.PublisherDisconnected,
@@ -1194,7 +1211,8 @@ public sealed class RouterCoordinator(
             && process.Running);
         var now = _clock.Now;
         var expectation = SourceMediaPolicy.Get(settings, source.Identity.Value);
-        if (ownedLive?.IndependentMedia is { Signals.Count: > 0 } independent
+        if (expectation.Expectation != SourceMediaExpectation.Undeclared
+            && ownedLive?.IndependentMedia is { Signals.Count: > 0 } independent
             && independent.Signals.Where(s => expectation.Expectation != SourceMediaExpectation.SparseVideo
                     || s.Kind != MediaSignalKind.InputVideo).All(s => s.State == MediaSignalState.Healthy)
             && previousSource?.Media?.Expectation == expectation.Expectation
@@ -1207,7 +1225,7 @@ public sealed class RouterCoordinator(
                 now,
                 TimeSpan.FromSeconds(Math.Clamp(settings.Routing.StallTimeoutSeconds, 2, 60))))
         {
-            return new(source with { State = SourceState.Ready, Media = previousSource!.Media }, null,
+            return new(source with { State = SourceState.Ready, Media = previousSource!.Media, MediaQualificationDetail = null }, null,
                 SourceMediaMode.Video, SourceMediaMode.Video, false, false);
         }
 
@@ -1247,7 +1265,9 @@ public sealed class RouterCoordinator(
                 && rawProbe.FramesReceived
                 && rawProbe.Media is { HasUsableVideo: true };
         }
-        var qualifiedProbe = SourceMediaPolicy.Apply(rawProbe, expectation);
+        // Discovery qualifies the source declaration; a later route handoff
+        // additionally qualifies optional audio actually selected by its preset.
+        var qualifiedProbe = SourceMediaPolicy.Apply(rawProbe, expectation, includeOptionalAudio: false);
         var mode = SourceProbeReadinessPolicy.Resolve(qualifiedProbe) != SourceState.Ready ? SourceMediaMode.Unknown
             : qualifiedProbe.Media!.HasUsableVideo ? SourceMediaMode.Video : SourceMediaMode.AudioLed;
         var decision = new SourceMediaModeDecision(new(mode, 0, 0,
@@ -1262,7 +1282,9 @@ public sealed class RouterCoordinator(
             }
         }
         var probe = decision.EffectiveProbe;
-        return new(source with { State = SourceProbeReadinessPolicy.Resolve(probe), Media = probe.Media }, probe,
+        return new(source with { State = SourceProbeReadinessPolicy.Resolve(probe), Media = probe.Media,
+            MediaQualificationDetail = probe.FailureCategory is "Unknown" or "WaitingForKeyframe"
+                ? LogRedactor.RedactForDiagnostics(probe.Detail ?? "Required media not qualified. Standby retained.") : null }, probe,
             previousMode.Mode, decision.State.Mode, decision.ModeChanged, extendedVideoConfirmed);
     }
 
@@ -1841,40 +1863,51 @@ public sealed class RouterCoordinator(
                     UpdatedAt = _clock.Now }, route.State, cancellationToken);
             return;
         }
-        source = qualification.Source;
+        RecoveryQualification handoff = qualification;
+        source = handoff.Source;
         var portGate = _portGates.GetOrAdd(port.StableId, static _ => new SemaphoreSlim(1, 1));
         await portGate.WaitAsync(cancellationToken);
         using var decision = telemetry?.BeginDecision(route.SourceId, port.StableId, OwnedSnapshot(route.SourceId),
             route.FailureCategory ?? "RouteEligible", "Existing readiness and exclusive reservation policy",
             null, ["Keep standby", "Wait"], "StartLiveOwner", route.State.ToString());
+        var restoreStandby = false;
+        bool OutputStillEligible()
+        {
+            lock (_gate)
+            {
+                var currentPort = _ports.GetValueOrDefault(port.StableId);
+                var currentSource = _sources.GetValueOrDefault(route.SourceId);
+                var currentRoute = _routes.GetValueOrDefault(route.SourceId);
+                var currentPreset = _settings.Presets.FirstOrDefault(value => value.Id == currentRoute?.PresetId);
+                return !_emergencyStopped
+                    && (_settings.SimulationMode || _validation.CanStartHardwareRoutes)
+                    && currentPort is { IsOutputPort: true } && currentPreset is not null
+                    && currentPort.FfmpegName == port.FfmpegName && currentPort.DeviceHandle == port.DeviceHandle
+                    && Compatible(currentPort, currentPreset, null)
+                    && currentSource is not null && currentSource.State != SourceState.Disabled
+                    && currentRoute?.PortId == port.StableId
+                    && RecoveryConfigurationSignature(currentSource, currentPreset) == handoff.ConfigurationSignature
+                    && _reservations.Snapshot().Any(lease => lease.PortId == port.StableId && lease.Source == source.Identity);
+            }
+        }
+        bool HandoffStillValid()
+        {
+            if (OutputStillEligible() && handoff.Gate.IsAuthorizedHandoffCurrent(handoff.Proof)) return true;
+            restoreStandby = true;
+            decision?.Complete(OwnedSnapshot(route.SourceId), "HandoffInvalidatedStandbyRestored", route.State.ToString());
+            return false;
+        }
         try
         {
             if (qualification is not null)
             {
-                bool eligible;
-                lock (_gate)
+                if (!OutputStillEligible())
                 {
-                    var currentPort = _ports.GetValueOrDefault(port.StableId);
-                    var currentSource = _sources.GetValueOrDefault(route.SourceId);
-                    var currentRoute = _routes.GetValueOrDefault(route.SourceId);
-                    var currentPreset = _settings.Presets.FirstOrDefault(value => value.Id == currentRoute?.PresetId);
-                    eligible = !_emergencyStopped
-                        && (_settings.SimulationMode || _validation.CanStartHardwareRoutes)
-                        && currentPort is { IsOutputPort: true } && currentPreset is not null
-                        && currentPort.FfmpegName == port.FfmpegName && currentPort.DeviceHandle == port.DeviceHandle
-                        && Compatible(currentPort, currentPreset, null)
-                        && currentSource is not null && currentSource.State != SourceState.Disabled
-                        && currentRoute?.PortId == port.StableId
-                        && RecoveryConfigurationSignature(currentSource, currentPreset) == qualification.ConfigurationSignature
-                        && _reservations.Snapshot().Any(lease => lease.PortId == port.StableId && lease.Source == source.Identity);
-                }
-                if (!eligible)
-                {
-                    qualification.Gate.Invalidate();
+                    handoff.Gate.Invalidate();
                     decision?.Complete(OwnedSnapshot(route.SourceId), "OutputOrConfigurationChangedFallbackRetained", route.State.ToString());
                     return;
                 }
-                if (!qualification.Gate.TryAuthorizeHandoff(qualification.Proof))
+                if (!handoff.Gate.TryAuthorizeHandoff(handoff.Proof))
                 {
                     decision?.Complete(OwnedSnapshot(route.SourceId), "ProofExpiredOrSourceChangedFallbackRetained", route.State.ToString());
                     return;
@@ -1884,7 +1917,7 @@ public sealed class RouterCoordinator(
                 await StopOwnedForDecisionAsync(source.Identity, port.StableId, "QualifiedRecoveryHandoff",
                     "Fresh decoded expected tracks; source generation unchanged; exclusive output gate",
                     true, cancellationToken);
-                lock (_gate) _sources[source.Identity.Value] = source;
+                if (!HandoffStillValid()) return;
             }
             var standbyOwner = StandbyIdentity(port.StableId);
             var standbyWasRunning = _supervisor?.Snapshot().Any(value => value.Source == standbyOwner && value.Running) == true;
@@ -1897,8 +1930,10 @@ public sealed class RouterCoordinator(
             {
                 await StopPortStandbyAsync(port.StableId, cancellationToken);
             }
+            if (!HandoffStillValid()) return;
             var starting = route with { State = RouteState.Starting, UpdatedAt = _clock.Now, FailureCategory = null, FailureMessage = null, RetryAt = null };
             await ReplaceRouteAsync(starting, route.State, cancellationToken);
+            if (!HandoffStillValid()) return;
             if (_settings.SimulationMode)
             {
                 ClearCutoverMeasurement(route.SourceId);
@@ -1908,9 +1943,26 @@ public sealed class RouterCoordinator(
             }
 
             EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
+            if (!HandoffStillValid()) return;
             var domainRoute = new RouteRecord(source.Identity, port.StableId, preset.Id, RouteState.Starting, starting.AssignmentMode, starting.Locked, starting.RestartCount);
             await _supervisor!.StartAsync(domainRoute, source, port, preset.ToDomain(), cancellationToken,
                 _validation.IndependentMediaStatsSupported);
+            if (!HandoffStillValid())
+            {
+                await StopOwnedForDecisionAsync(source.Identity, port.StableId, "HandoffInvalidatedDuringStart",
+                    "Publisher or output configuration changed during launch", false, CancellationToken.None);
+                return;
+            }
+            lock (_gate)
+            {
+                // Preserve newer discovery fields, including disable/epoch state.
+                if (OutputStillEligible() && handoff.Gate.IsAuthorizedHandoffCurrent(handoff.Proof))
+                {
+                    var currentSource = _sources[source.Identity.Value];
+                    _sources[source.Identity.Value] = currentSource with { State = SourceState.Ready,
+                        Media = source.Media, MediaQualificationDetail = null };
+                }
+            }
             decision?.Complete(OwnedSnapshot(route.SourceId), "ProcessStartedNotMediaQualified", RouteState.Starting.ToString());
             if (_emergencyStopped)
             {
@@ -1919,7 +1971,23 @@ public sealed class RouterCoordinator(
                 throw new InvalidOperationException("Emergency stop became active while FFmpeg was starting.");
             }
         }
-        finally { portGate.Release(); }
+        finally
+        {
+            portGate.Release();
+            if (restoreStandby)
+            {
+                RuntimeRoute? current;
+                lock (_gate) current = _routes.GetValueOrDefault(route.SourceId);
+                if (current?.PortId == port.StableId
+                    && current.State is RouteState.Reserved or RouteState.Starting or RouteState.Fallback or RouteState.Reconnecting)
+                {
+                    var waiting = current with { State = RouteState.Reconnecting, UpdatedAt = _clock.Now,
+                        FailureCategory = "MediaQualificationChanged", FailureMessage = "Handoff invalidated; standby retained while media is requalified." };
+                    await ReplaceRouteAsync(waiting, current.State, cancellationToken);
+                    await StartFallbackAsync(waiting, cancellationToken);
+                }
+            }
+        }
     }
 
     private async Task ReconcilePortStandbysAsync(CancellationToken cancellationToken)
@@ -2546,9 +2614,15 @@ public sealed class RouterCoordinator(
         var expectation = SourceMediaPolicy.Get(_settings, source.Identity.Value);
         var requireVideo = expectation.Expectation != SourceMediaExpectation.AudioOnly;
         var requireAudio = expectation.RequireAudio || expectation.Expectation == SourceMediaExpectation.AudioOnly;
-        if (requireAudio && !preset.IncludeAudio) return null;
         var probePath = _settings.MediaTools.FfprobePath;
         var signature = RecoveryConfigurationSignature(source, preset);
+        if (requireAudio && !preset.IncludeAudio)
+        {
+            SetQualificationDetail("Declared audio is required but the output preset disables audio. Standby retained.");
+            return null;
+        }
+        if (expectation.Expectation == SourceMediaExpectation.Undeclared)
+            SetQualificationDetail("Source media declaration is missing. Standby retained.");
         var proof = gate.Poll($"{signature}|{requireVideo}|{requireAudio}", requireVideo, requireAudio,
             async () =>
             {
@@ -2558,13 +2632,27 @@ public sealed class RouterCoordinator(
                 var result = _settings.SimulationMode
                     ? await new SimulationStreamProbe().ProbeAsync(source.RtspUri, cancellationToken)
                     : await new FfprobeStreamProbe(probePath, TimeSpan.FromSeconds(8)).ProbeAsync(source.RtspUri, cancellationToken);
-                var qualifiedResult = SourceMediaPolicy.Apply(result, expectation);
+                var qualifiedResult = SourceMediaPolicy.Apply(result, expectation, preset.IncludeAudio);
                 decision?.Complete(OwnedSnapshot(route.SourceId), qualifiedResult.FailureCategory ?? "ProbeSampleReceived", route.State.ToString());
                 return qualifiedResult;
             });
+        if (gate.LastObservation is { } observed)
+            SetQualificationDetail(observed.FailureCategory is null ? null
+                : LogRedactor.RedactForDiagnostics(observed.Detail ?? "Expected media has not qualified. Standby retained."));
         if (proof is null) return null;
-        var qualified = source with { State = SourceState.Ready, Media = proof.Media, LastObservedAt = _clock.Now };
+        var qualified = source with { State = SourceState.Ready, Media = proof.Media, LastObservedAt = _clock.Now,
+            MediaQualificationDetail = null };
         return new(qualified, gate, proof, signature);
+
+        void SetQualificationDetail(string? detail)
+        {
+            lock (_gate)
+            {
+                if (_sources.TryGetValue(source.Identity.Value, out var current)
+                    && RecoveryConfigurationSignature(current, preset) == signature)
+                    _sources[source.Identity.Value] = current with { MediaQualificationDetail = detail };
+            }
+        }
     }
 
     // Private in-memory equality token only; never log or persist URI/credentials.

@@ -30,7 +30,9 @@ public sealed class FfprobeStreamProbe(
         Add(start, "-v", "error", "-rtsp_transport", "tcp", "-rw_timeout",
             ((long)timeout.TotalMicroseconds).ToString(CultureInfo.InvariantCulture),
             "-read_intervals", interval, "-count_frames", "-count_packets",
-            "-show_streams", "-show_format", "-of", "json", rtspUri.AbsoluteUri);
+            "-show_streams", "-show_format", "-show_frames", "-show_entries",
+            "stream=index,codec_type,codec_name,width,height,nb_read_frames,nb_read_packets,avg_frame_rate,r_frame_rate,bit_rate,field_order,sample_rate,channels:format=bit_rate:frame=media_type,stream_index,best_effort_timestamp_time,pts_time,nb_samples",
+            "-of", "json", rtspUri.AbsoluteUri);
 
         using var process = Process.Start(start);
         if (process is null) return new(false, false, null, "ProcessStart", "FFprobe could not be started.");
@@ -101,12 +103,13 @@ public sealed class FfprobeStreamProbe(
         var audioCount = audio is null ? 0 : ReadCount(audio.Value);
         var audioReceived = audioCount > 0;
         var decodedAudioReceived = audio is not null && Integer64(audio.Value, "nb_read_frames") > 0;
+        var (videoSeconds, audioSeconds) = ReadAdvancement(document.RootElement, video, audio);
         if (video is null)
         {
             var audioMedia = new MediaProperties(null, audio is null ? null : Text(audio.Value, "codec_name"), null, null, null, null,
                 audio is null ? null : Integer(audio.Value, "sample_rate"), audio is null ? null : Integer(audio.Value, "channels"), false);
             return audioReceived
-                ? new(true, false, audioMedia, null, "Audio observed; video selection requires a declared source expectation.", true, decodedAudioReceived)
+                ? new(true, false, audioMedia, null, "Audio observed; video selection requires a declared source expectation.", true, decodedAudioReceived, videoSeconds, audioSeconds)
                 : new(true, false, audioMedia, "AudioOnly", "Audio metadata was detected, but no audio packets or frames were received.");
         }
 
@@ -137,10 +140,52 @@ public sealed class FfprobeStreamProbe(
             sustainedVideo,
             interlaced);
         return sustainedVideo
-            ? new(true, true, media, null, $"Received {frameCount} video frame(s) during validation.", audioReceived, decodedAudioReceived)
+            ? new(true, true, media, null, $"Received {frameCount} video frame(s) during validation.", audioReceived, decodedAudioReceived, videoSeconds, audioSeconds)
             : audioReceived
-                ? new(true, false, media, null, "Audio observed; waiting for a decoded video frame.", true, decodedAudioReceived)
+                ? new(true, false, media, null, "Audio observed; waiting for a decoded video frame.", true, decodedAudioReceived, videoSeconds, audioSeconds)
             : new(true, false, media, "NoVideoFrames", "Video metadata was detected but no decoded/read frames were reported.");
+    }
+
+    private static (double Video, double Audio) ReadAdvancement(JsonElement root, JsonElement? video, JsonElement? audio)
+    {
+        if (!root.TryGetProperty("frames", out var frames) || frames.ValueKind != JsonValueKind.Array)
+            return (0, 0);
+        var videoIndex = video is null ? null : Integer(video.Value, "index");
+        var audioIndex = audio is null ? null : Integer(audio.Value, "index");
+        var sampleRate = audio is null ? null : Integer(audio.Value, "sample_rate");
+        double? firstVideo = null, lastVideo = null, lastAudio = null, nextAudio = null;
+        var videoValid = true;
+        var audioValid = true;
+        double audioSamplesSeconds = 0;
+        foreach (var frame in frames.EnumerateArray())
+        {
+            if (frame.ValueKind != JsonValueKind.Object) return (0, 0);
+            var index = Integer(frame, "stream_index");
+            var pts = Rational(Text(frame, "best_effort_timestamp_time") ?? Text(frame, "pts_time"));
+            if (videoIndex.HasValue && index == videoIndex && Text(frame, "media_type") == "video")
+            {
+                if (!pts.HasValue || !double.IsFinite(pts.Value) || (lastVideo.HasValue && pts <= lastVideo))
+                    videoValid = false;
+                else { firstVideo ??= pts; lastVideo = pts; }
+            }
+            if (audioIndex.HasValue && index == audioIndex && Text(frame, "media_type") == "audio")
+            {
+                var samples = Integer(frame, "nb_samples");
+                if (!pts.HasValue || !double.IsFinite(pts.Value) || sampleRate is not > 0 || samples is not > 0
+                    || (lastAudio.HasValue && pts <= lastAudio)
+                    || (nextAudio.HasValue && Math.Abs(pts.Value - nextAudio.Value) > Math.Max(2d / sampleRate.Value, 0.00001)))
+                    audioValid = false;
+                else
+                {
+                    var duration = (double)samples.Value / sampleRate.Value;
+                    audioSamplesSeconds += duration;
+                    lastAudio = pts;
+                    nextAudio = pts + duration;
+                }
+            }
+        }
+        return (videoValid && firstVideo.HasValue && lastVideo.HasValue ? lastVideo.Value - firstVideo.Value : 0,
+            audioValid && lastAudio.HasValue ? audioSamplesSeconds : 0);
     }
 
     private static long ReadCount(JsonElement stream) => Math.Max(

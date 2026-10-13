@@ -11,6 +11,7 @@ public sealed class OperatorSettings
     public List<WowzaServerProfile> WowzaServers { get; set; } = [];
     public List<ManualSourceProfile> ManualSources { get; set; } = [];
     public List<SourceMediaProfile> SourceMediaProfiles { get; set; } = [];
+    public int SourceMediaMigrationVersion { get; set; }
     public List<OutputPresetProfile> Presets { get; set; } = OutputPresetProfile.CommonDefaults();
     public List<RoutingRuleProfile> Rules { get; set; } = [];
     public List<DeckLinkCardOverride> DeckLinkCardOverrides { get; set; } = [];

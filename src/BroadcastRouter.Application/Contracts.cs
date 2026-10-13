@@ -19,7 +19,9 @@ public sealed record StreamProbeResult(
     string? FailureCategory,
     string? Detail,
     bool AudioReceived = false,
-    bool DecodedAudioReceived = false);
+    bool DecodedAudioReceived = false,
+    double AdvancingVideoSeconds = 0,
+    double AdvancingAudioSeconds = 0);
 
 public interface IDeckLinkEnumerator
 {
