@@ -1448,7 +1448,8 @@ static void PostStartupDeckLinkMediaStarvationIsDetected()
     True(!detector.Observe("[decklink] There's no buffered audio. Audio will misbehave!",
         observedAt, startedAt, TimeSpan.FromSeconds(5), out _, out _));
     True(detector.Observe("[decklink] There's no buffered audio. Audio will misbehave!",
-        observedAt.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5), out var audioCategory, out _));
+        observedAt.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5), out var audioCategory, out _,
+        ConfirmedPcmLoss(observedAt.AddSeconds(1))));
     Equal("DeckLinkAudioStarved", audioCategory);
     True(!detector.Observe("[decklink] There are not enough buffered video frames. Video may misbehave!",
         observedAt, startedAt, TimeSpan.FromSeconds(5), out _, out _));
@@ -1538,17 +1539,21 @@ static void RepeatedAacCorruptionIsDetected()
     const string decodeError = "[aist#0:0/aac] [dec:aac] Error submitting packet to decoder: Invalid data found";
     True(!detector.Observe(decodeError, first, startedAt, TimeSpan.FromSeconds(5), out _, out _));
     True(detector.Observe(decodeError, first.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5),
-        out var category, out var detail));
+        out var category, out var detail, ConfirmedPcmLoss(first.AddSeconds(1))));
     Equal("AudioDecoderCorrupt", category);
-    True(detail.Contains("repeatedly rejected AAC packets", StringComparison.Ordinal));
+    True(detail.Contains("decoded PCM advancement was confirmed failed", StringComparison.Ordinal));
 
     var timestampDetector = new FfmpegAudioFailureDetector();
     const string timestampError = "[aist#0:0/aac] PTS 999, next:1 invalid dropping";
     True(!timestampDetector.Observe(timestampError, first, startedAt, TimeSpan.FromSeconds(5), out _, out _));
     True(timestampDetector.Observe(timestampError, first.AddSeconds(1), startedAt, TimeSpan.FromSeconds(5),
-        out category, out _));
+        out category, out _, ConfirmedPcmLoss(first.AddSeconds(1))));
     Equal("AudioTimestampDiscontinuous", category);
 }
+
+static MediaEvidenceSnapshot ConfirmedPcmLoss(DateTimeOffset now) =>
+    new(MediaSignalState.Healthy, MediaSignalState.Healthy,
+        [new(MediaSignalKind.InputAudio, MediaSignalState.Failed, now.AddSeconds(-4))], false, false);
 
 static void FfprobeMediaIsParsed()
 {

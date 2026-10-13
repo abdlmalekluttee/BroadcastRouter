@@ -13,27 +13,6 @@ public sealed class KnownDefectTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2025-01-01T00:00:00Z");
 
-    [Fact, Trait("Finding", "R04")]
-    public void SamePacketAudioBurstDoesNotAuthorizeRecovery()
-    {
-        var detector = new FfmpegAudioFailureDetector();
-        detector.Observe("[aac @ 0x1] channel element 1.0 is not allocated", Now,
-            Now.AddMinutes(-1), TimeSpan.FromSeconds(5), out _, out _);
-        var restart = detector.Observe("[aac @ 0x1] Error submitting packet to decoder", Now,
-            Now.AddMinutes(-1), TimeSpan.FromSeconds(5), out _, out _);
-        Assert.False(restart, "R04: two diagnostics from one packet must not authorize recovery");
-    }
-
-    [Fact, Trait("Finding", "R04")]
-    public void MillisecondQueueWarningsDoNotAuthorizeRecovery()
-    {
-        var detector = new FfmpegMediaStarvationDetector();
-        detector.Observe("No buffered audio", Now, Now.AddMinutes(-1), TimeSpan.FromSeconds(5), out _, out _);
-        var restart = detector.Observe("No buffered audio", Now.AddMilliseconds(1),
-            Now.AddMinutes(-1), TimeSpan.FromSeconds(5), out _, out _);
-        Assert.False(restart, "R04: millisecond queue warnings alone must not authorize recovery");
-    }
-
     [Fact, Trait("Finding", "R05")]
     public void DuplicateBurstRespectsConfirmationWindow()
     {

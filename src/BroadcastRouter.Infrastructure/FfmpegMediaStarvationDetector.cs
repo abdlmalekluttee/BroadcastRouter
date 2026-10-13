@@ -3,15 +3,14 @@ namespace BroadcastRouter.Infrastructure;
 /// <summary>
 /// Detects DeckLink starvation emitted when an FFmpeg session is still alive
 /// but is no longer delivering usable video or audio. Startup warnings are
-/// ignored while DeckLink primes its queues; after that grace period either
-/// starvation warning is an actionable physical-output failure.
+/// ignored while DeckLink primes its queues. Audio warnings additionally require
+/// independently failed PCM; the legacy video warning policy is P2-21 scope.
+/// A diagnostic category alone never authorizes the coordinator to stop a route.
 /// </summary>
 public sealed class FfmpegMediaStarvationDetector
 {
     private static readonly TimeSpan ConfirmationWindow = TimeSpan.FromSeconds(3);
-    private DateTimeOffset? _firstAudioStarvationAt;
     private DateTimeOffset? _firstVideoStarvationAt;
-    private int _audioStarvationCount;
     private int _videoStarvationCount;
 
     public bool Observe(string line, DateTimeOffset observedAt, DateTimeOffset processStartedAt,
@@ -32,9 +31,9 @@ public sealed class FfmpegMediaStarvationDetector
         }
         if (line.Contains("no buffered audio", StringComparison.OrdinalIgnoreCase))
         {
-            if (!Confirmed(ref _firstAudioStarvationAt, ref _audioStarvationCount, observedAt)) return false;
+            if (!FfmpegAudioFailureDetector.HasFailedPcm(media, observedAt)) return false;
             category = "DeckLinkAudioStarved";
-            detail = "DeckLink repeatedly reported that its audio queue starved after startup.";
+            detail = "DeckLink reported an empty audio queue while decoded PCM advancement was confirmed failed.";
             return true;
         }
 
