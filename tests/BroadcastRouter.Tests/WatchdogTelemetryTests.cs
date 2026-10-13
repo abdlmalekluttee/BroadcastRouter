@@ -11,6 +11,23 @@ namespace BroadcastRouter.Tests;
 
 public sealed class WatchdogTelemetryTests
 {
+    [Fact]
+    public async Task StallRecoveryPreservesExactHealthyOutputAndPublishesAlarm()
+    {
+        await using var lab = await OfflineFallbackTests.RecoveryLab.Create();
+        var owner = lab.Owner;
+        using var watchdog = new RouterCoordinatorWatchdog(lab.Coordinator, null!, NullLogger<RouterCoordinatorWatchdog>.Instance)
+        {
+            PersistRecoveryRecordForTesting = _ => Task.CompletedTask,
+            TerminateProcess = _ => throw new InvalidOperationException("Host termination would kill a healthy output")
+        };
+        await watchdog.TerminateForStallAsync("synthetic control stall", "CoordinatorStall", new(),
+            TimeSpan.FromMinutes(2), CancellationToken.None);
+        Assert.True(lab.Supervisor.TryGetRunning(lab.Source, out var current));
+        Assert.Equal(owner.SessionId, current.SessionId);
+        Assert.Equal(owner.ProcessId, current.ProcessId);
+    }
+
     [Theory]
     [InlineData("healthy")]
     [InlineData("healthy-slow-disk")]

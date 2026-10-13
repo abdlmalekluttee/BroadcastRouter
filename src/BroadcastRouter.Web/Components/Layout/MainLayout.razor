@@ -48,6 +48,17 @@
         </header>
         <main class="br-page-wrapper page-wrapper">
             <section class="content br-content container-xl">
+                @if (Coordinator.HasOutputControllerAlarm)
+                {
+                    <div class="notice danger" role="alert" data-controller-alarm>
+                        <strong>Output controller needs investigation.</strong>
+                        <span>Existing output owners were preserved. Check Logs &amp; Diagnostics before attempting recovery.</span>
+                        @if (Coordinator.ControllerAlarm is { } alarm)
+                        {
+                            <span>@alarm.Reason Observed @alarm.ObservedAt.ToLocalTime().ToString("g").</span>
+                        }
+                    </div>
+                }
                 @if (!Telemetry.Status.Initialized)
                 {
                     <div class="notice" role="status">Checking diagnostic storage…</div>
