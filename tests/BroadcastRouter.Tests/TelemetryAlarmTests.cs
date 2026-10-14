@@ -17,6 +17,37 @@ namespace BroadcastRouter.Tests;
 public sealed class TelemetryAlarmTests
 {
     [Fact]
+    public async Task DiagnosticQueueLossIsVisibleEvenWhenFileTelemetryIsHealthy()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "router-diagnostic-ui-" + Guid.NewGuid().ToString("N"));
+        var store = new SqliteDataStore(Path.Combine(root, "router.db"), readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
+        try
+        {
+            await store.InitializeAsync();
+            Assert.False(store.EnqueueDiagnostic("Warning", "Fixture", new string('x', 10000)));
+            await using var telemetry = new SupervisionTelemetry(Path.Combine(root, "telemetry"), readVolumeSpace: TelemetryTestVolume.Read);
+            await telemetry.FlushAsync();
+            Assert.True(telemetry.Status.IsHealthy);
+            using var coordinator = new RouterCoordinator(store, null!, null!, NullLogger<RouterCoordinator>.Instance);
+            var services = new ServiceCollection();
+            services.AddLogging(); services.AddAuthorizationCore();
+            services.AddSingleton(coordinator); services.AddSingleton(telemetry);
+            services.AddSingleton<NavigationManager>(new TestNavigation()); services.AddSingleton<IJSRuntime>(new NoScript());
+            await using var provider = services.BuildServiceProvider();
+            await using var renderer = new HtmlRenderer(provider, provider.GetRequiredService<ILoggerFactory>());
+            var html = await renderer.Dispatcher.InvokeAsync(async () => (await renderer.RenderComponentAsync<TestRoot>()).ToHtmlString());
+            Assert.Contains("data-diagnostic-persistence-alarm", html);
+            Assert.Contains("role=\"alert\"", html);
+            Assert.Contains("Diagnostic summaries are incomplete", html);
+        }
+        finally
+        {
+            await store.StopDiagnosticsAsync();
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public void EarlyEvictionDegradesTheHealthSignal()
     {
         var status = new TelemetryStatus(100, 100, 0, 0, 0, 1, 0, null);

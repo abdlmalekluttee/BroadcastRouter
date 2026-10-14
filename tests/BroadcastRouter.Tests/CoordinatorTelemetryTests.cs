@@ -17,10 +17,11 @@ public sealed class CoordinatorTelemetryTests
     {
         var root = Path.Combine(Path.GetTempPath(), "router-coordinator-evidence-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        SqliteDataStore? store = null;
         try
         {
             var clock = new SupervisionClock(new ManualTimeProvider());
-            var store = new SqliteDataStore(Path.Combine(root, "test.db"));
+            store = new SqliteDataStore(Path.Combine(root, "test.db"), readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
             await store.InitializeAsync();
             await using var telemetry = new SupervisionTelemetry(Path.Combine(root, "logs"), clock, readVolumeSpace: TelemetryTestVolume.Read);
             await using var supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions("unused"), TimeSpan.FromSeconds(1), clock, telemetry);
@@ -74,6 +75,10 @@ public sealed class CoordinatorTelemetryTests
             }
             finally { foreach (var document in documents) document.Dispose(); }
         }
-        finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(root, true); }
+        finally
+        {
+            if (store is not null) await store.StopDiagnosticsAsync();
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(root, true);
+        }
     }
 }

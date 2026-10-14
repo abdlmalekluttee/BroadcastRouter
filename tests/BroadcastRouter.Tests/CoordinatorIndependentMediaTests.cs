@@ -79,6 +79,10 @@ public sealed class CoordinatorIndependentMediaTests
         await using var lab = await Lab.Create(fixture, true, captureTelemetry: true);
         await lab.Qualify();
         await FaultHarnessTests.Eventually(() => lab.Owner.RecentErrors.Any(e => e.Contains("Synthetic audio observation batch complete")));
+        // Stderr and PCM use independent readers. The child's stderr marker
+        // proves it sent the final sample, not that the PCM reader consumed it.
+        // Finish that real-pipe boundary before stepping the fake clock.
+        await lab.WaitForInputAudioSamples(30 * 1024);
         lab.Time.Advance(TimeSpan.FromSeconds(25));
         for (var i = 0; i <= 4; i++)
         {
@@ -260,7 +264,7 @@ public sealed class CoordinatorIndependentMediaTests
         {
             _fixture=fixture;
             Clock=new(Time);
-            Store=new(Path.Combine(fixture.Root,"test.db"));
+            Store=new(Path.Combine(fixture.Root,"test.db"), readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
             if (captureTelemetry) Telemetry = new(Path.Combine(fixture.Root,"logs"),Clock, readVolumeSpace: TelemetryTestVolume.Read);
             Supervisor=new(new(fixture.Executable,UseIndependentMediaStats:instrumented),TimeSpan.FromSeconds(1),Clock,Telemetry);
             Coordinator=new(Store,null!,null!,NullLogger<RouterCoordinator>.Instance,Clock,Telemetry);
@@ -285,6 +289,19 @@ public sealed class CoordinatorIndependentMediaTests
             }
         }
         internal Task Monitor()=>(Task)typeof(RouterCoordinator).GetMethod("MonitorProcessesAsync",Flags)!.Invoke(Coordinator,[CancellationToken.None])!;
+        internal Task WaitForInputAudioSamples(long expected) => FaultHarnessTests.Eventually(() =>
+        {
+            var owners = typeof(FfmpegProcessSupervisor).GetField("_running", Flags)!.GetValue(Supervisor)!;
+            var managed = owners.GetType().GetProperty("Item")!.GetValue(owners, [_fixture.Source.Identity.Value])!;
+            var media = managed.GetType().GetProperty("Media")!.GetValue(managed)!;
+            var tracker = media.GetType().GetField("_evidence", Flags)!.GetValue(media)!;
+            lock (tracker.GetType().GetField("_gate", Flags)!.GetValue(tracker)!)
+            {
+                var signals = (System.Collections.IDictionary)tracker.GetType().GetField("_signals", Flags)!.GetValue(tracker)!;
+                var audio = signals[MediaSignalKind.InputAudio]!;
+                return (long?)audio.GetType().GetField("HighWater")!.GetValue(audio) == expected;
+            }
+        });
         internal async Task Progress(long frame, long? duplicates = null)
         {
             var owners = typeof(FfmpegProcessSupervisor).GetField("_running", Flags)!.GetValue(Supervisor)!;
@@ -330,6 +347,7 @@ public sealed class CoordinatorIndependentMediaTests
         {
             await Supervisor.DisposeAsync();
             Coordinator.Dispose();
+            await Store.StopDiagnosticsAsync();
             if (Telemetry is not null) await Telemetry.DisposeAsync();
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         }

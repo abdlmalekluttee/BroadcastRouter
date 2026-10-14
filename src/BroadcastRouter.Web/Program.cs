@@ -103,6 +103,7 @@ builder.Services.AddHttpClient<DeckLinkSoftwareInformationProvider>(client =>
 builder.Services.AddSingleton<RouterCoordinator>();
 builder.Services.AddSingleton<BrowserPreviewSupervisor>();
 builder.Services.AddSingleton<DatabaseIntegrityMonitor>();
+builder.Services.AddHostedService<DiagnosticPersistenceWorker>();
 builder.Services.AddHostedService<ServiceLifecycleReporter>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<RouterCoordinator>());
 builder.Services.AddHostedService<RouterCoordinatorWatchdog>();
@@ -261,7 +262,8 @@ app.MapGet("/health", (DatabaseIntegrityMonitor databaseIntegrity, RouterCoordin
         AuxiliaryLoopLivenessPolicy.IsResponsive(snapshot, now,
             RouterCoordinatorWatchdog.MaximumSilenceFor(snapshot.Name)));
     return Results.Ok(new { status = integrity.IsHealthy && coordinatorResponsive && auxiliaryResponsive
-        && !coordinator.HasOutputControllerAlarm && telemetry.Status.IsHealthy ? "healthy" : "degraded" });
+        && !coordinator.HasOutputControllerAlarm && telemetry.Status.IsHealthy
+        && coordinator.DiagnosticPersistence?.IsHealthy != false ? "healthy" : "degraded" });
 }).AllowAnonymous();
 
 app.MapPost("/auth/login", async (HttpContext context, IAntiforgery antiforgery) =>

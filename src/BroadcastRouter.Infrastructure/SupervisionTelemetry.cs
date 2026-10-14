@@ -84,7 +84,11 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     private readonly long _maxTotalBytes;
     private readonly Func<string, TelemetryVolumeSpace> _readVolumeSpace;
     private readonly Func<string, Stream> _openAppend;
+    private readonly Action<FileStream> _flushDurable;
     private long _retainedBytes, _diskPressureEvents;
+    // Only the single writer touches these durable checkpoints. After a crash
+    // counts may be a lower bound, but the first loss is never forgotten.
+    private long _durableEvictions, _durablePressure;
     private bool _markerProvisioned;
     private bool _inventoryKnown;
     private int _unrecordedHistory;
@@ -114,7 +118,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
     public SupervisionTelemetry(string root, SupervisionClock? clock = null,
         int maxFileBytes = DefaultSegmentBytes, int maxFiles = DefaultMaxSegments, int queueCapacity = 4096,
         long maxTotalBytes = DefaultMaxTotalBytes, Func<string, TelemetryVolumeSpace>? readVolumeSpace = null,
-        Func<string, Stream>? openAppend = null)
+        Func<string, Stream>? openAppend = null, Action<FileStream>? flushDurable = null)
     {
         if (maxFileBytes < 16384 || maxFiles < 2 || queueCapacity < 1) throw new ArgumentOutOfRangeException(nameof(maxFileBytes));
         if (maxTotalBytes < StorageHeadroomBytes + 16384 || maxTotalBytes > DefaultMaxTotalBytes)
@@ -129,6 +133,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
         _maxTotalBytes = maxTotalBytes;
         _readVolumeSpace = readVolumeSpace ?? ReadVolumeSpace;
         _openAppend = openAppend ?? (path => new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read));
+        _flushDurable = flushDurable ?? (stream => stream.Flush(flushToDisk: true));
         RejectReparsePath(_root);
         Directory.CreateDirectory(_root);
         RejectReparsePath(_root);
@@ -288,7 +293,7 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
             {
                 if (_shutdown.IsCancellationRequested)
                 { item.Flush?.TrySetCanceled(); continue; }
-                if (item.Flush is not null) { Prune(); item.Flush.TrySetResult(); continue; }
+                if (item.Flush is not null) { Prune(); CheckpointRetentionLoss(); item.Flush.TrySetResult(); continue; }
                 if (BeforeWriteForTesting is { } beforeWrite) await beforeWrite().ConfigureAwait(false);
                 _shutdown.Token.ThrowIfCancellationRequested();
                 RejectReparsePath(_root);
@@ -325,6 +330,11 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
                 item.Flush?.TrySetException(new IOException("Telemetry storage is degraded; inspect disk access/capacity."));
             }
             finally { if (item.Flush is null) Interlocked.Decrement(ref _pendingRecords); }
+        }
+        if (!_shutdown.IsCancellationRequested)
+        {
+            try { CheckpointRetentionLoss(); }
+            catch { Interlocked.Increment(ref _writeFailures); }
         }
     }
 
@@ -430,6 +440,8 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
                 throw new IOException("Invalid retention state.");
             Interlocked.Exchange(ref _capacityEvictions, state.CapacityEvictions);
             Interlocked.Exchange(ref _diskPressureEvents, state.DiskPressureEvents);
+            _durableEvictions = state.CapacityEvictions;
+            _durablePressure = state.DiskPressureEvents;
             Volatile.Write(ref _unrecordedHistory, state.UnrecordedHistory ? 1 : 0);
         }
         _retentionStateLoaded = true;
@@ -455,9 +467,24 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
 
     private void SaveRetentionLoss(long count, bool diskPressure = false)
     {
+        var pressure = diskPressure ? 1 : Interlocked.Read(ref _diskPressureEvents);
+        // Persist each new loss category before its first destructive action.
+        // Repeated losses cannot make the sticky alarm more true; checkpoint
+        // their counters at flush/shutdown rather than fsync every eviction.
+        if ((count == 0 || _durableEvictions > 0) && (pressure == 0 || _durablePressure > 0)) return;
         var path = Path.Combine(_root, "retention-loss.json");
         RejectReparsePath(path);
-        WriteRetentionMarker(path, FileMode.Open, count, diskPressure ? 1 : Interlocked.Read(ref _diskPressureEvents));
+        WriteRetentionMarker(path, FileMode.Open, Math.Max(count, _durableEvictions), Math.Max(pressure, _durablePressure));
+    }
+
+    private void CheckpointRetentionLoss()
+    {
+        var evictions = Math.Max(Interlocked.Read(ref _capacityEvictions), _durableEvictions);
+        var pressure = Math.Max(Interlocked.Read(ref _diskPressureEvents), _durablePressure);
+        if (evictions == _durableEvictions && pressure == _durablePressure) return;
+        var path = Path.Combine(_root, "retention-loss.json");
+        RejectReparsePath(path);
+        WriteRetentionMarker(path, FileMode.Open, evictions, pressure);
     }
 
     private void WriteRetentionMarker(string path, FileMode mode, long evictions, long pressure)
@@ -469,7 +496,9 @@ public sealed class SupervisionTelemetry : IAsyncDisposable
         using var stream = new FileStream(path, mode, FileAccess.Write, FileShare.Read);
         stream.Write(padded);
         stream.SetLength(RetentionMarkerBytes);
-        stream.Flush(flushToDisk: true);
+        _flushDurable(stream);
+        _durableEvictions = evictions;
+        _durablePressure = pressure;
         // A torn marker is invalid and therefore fails closed on the next start.
     }
 

@@ -16,22 +16,22 @@ public sealed class ServiceLifecycleReporter(
 {
     private readonly string _runId = (telemetry?.ServiceRunId ?? Guid.NewGuid()).ToString("N");
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public Task StartAsync(CancellationToken cancellationToken)
     {
         var mode = WindowsServiceHelpers.IsWindowsService() ? "Windows Service" : "interactive process";
         var version = Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "unknown";
         using var process = Process.GetCurrentProcess();
         var message = $"BroadcastRouter {version} started as {mode}; PID {process.Id}, session {process.SessionId}, run {_runId}.";
         logger.LogInformation("{Category}: {Message}", "ServiceLifecycle", message);
-        await store.WriteLogAsync("Information", "ServiceLifecycle", message,
-            correlationId: _runId, cancellationToken: cancellationToken);
+        store.EnqueueDiagnostic("Information", "ServiceLifecycle", message, correlationId: _runId);
+        return Task.CompletedTask;
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    public Task StopAsync(CancellationToken cancellationToken)
     {
         var message = $"BroadcastRouter run {_runId} completed orderly shutdown after owned media processes were stopped.";
         logger.LogInformation("{Category}: {Message}", "ServiceLifecycle", message);
-        await store.WriteLogAsync("Information", "ServiceLifecycle", message,
-            correlationId: _runId, cancellationToken: CancellationToken.None);
+        store.EnqueueDiagnostic("Information", "ServiceLifecycle", message, correlationId: _runId);
+        return Task.CompletedTask;
     }
 }
