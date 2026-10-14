@@ -82,3 +82,9 @@ The first #85 diagnostic filter also selected the two R18 KnownDefect cases;
 they failed at their expected assertions. The corrected normal-only filter above
 passed without changing tests or implementation. Strict KnownDefect verification
 is still a separate final-head requirement.
+
+Fresh-context conflict review found no Critical or Important integration defect.
+Its one documentation finding corrected the old P2-33 post-merge qualification
+wording: this integration must qualify BEFORE merge. Execution results, native
+hardware evidence and the three accepted residual minors remain separate gates;
+the review itself is not a test pass.
