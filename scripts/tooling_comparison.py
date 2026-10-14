@@ -1,11 +1,13 @@
 """Private-to-CI diagnostic helpers; never imported by the application."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 
 PACKAGES = {
@@ -49,6 +51,8 @@ def prepare(project, variant):
 
 
 def summarize(trx_path, exit_code, expected):
+    identities = expected if isinstance(expected, dict) else None
+    expected = len(identities) if identities is not None else expected
     result = {'classification': 'incomplete', 'exit_code': exit_code, 'expected': expected}
     if not trx_path.is_file():
         return {**result, 'reason': 'No completed TRX; inspect retained job/process logs.'}
@@ -60,8 +64,14 @@ def summarize(trx_path, exit_code, expected):
         cases = [dict(case.attrib, error='\n'.join(case.itertext()).strip())
                  for case in root.findall('t:Results/t:UnitTestResult', NS)]
         result.update(counts, cases=cases)
+        case_ids = {case['testId'] for case in cases}
+        if identities is not None:
+            result['missing_ids'] = sorted(set(identities) - case_ids)
+            result['unexpected_ids'] = sorted(case_ids - set(identities))
+            if result['missing_ids'] or result['unexpected_ids']:
+                return {**result, 'reason': 'Case identities differ from the verified baseline.'}
         if (counts['total'] != expected or len(cases) != expected or
-                len({case['testName'] for case in cases}) != expected or
+                len(case_ids) != expected or
                 counts['executed'] != expected or counts['notExecuted'] != 0 or
                 counts['passed'] + counts['failed'] != expected or
                 sum(case.get('outcome') == 'Passed' for case in cases) != counts['passed'] or
@@ -69,7 +79,8 @@ def summarize(trx_path, exit_code, expected):
             return {**result, 'reason': 'Missing, skipped, duplicate or inconsistent cases.'}
         infos = root.findall('t:ResultSummary/t:RunInfos/t:RunInfo', NS)
         summary = root.find('t:ResultSummary', NS)
-        if summary.get('outcome') not in ('Completed', 'Passed', 'Failed') or infos:
+        if (summary.get('outcome') not in ('Completed', 'Passed', 'Failed') or infos or
+                (summary.get('outcome') == 'Failed' and counts['failed'] == 0)):
             return {**result, 'classification': 'runner-failure', 'reason': 'Run-level diagnostics or aborted execution.'}
         result['classification'] = ('test-failure' if counts['failed'] else
                                     'runner-failure' if exit_code != 0 else 'passed')
@@ -80,11 +91,30 @@ def summarize(trx_path, exit_code, expected):
 
 def capture(command, destination):
     started = utc_now()
-    write_json(destination / 'start.json', {'started_utc': started, 'command': command})
+    provisional = {'started_utc': started, 'command': command, 'classification': 'incomplete'}
+    write_json(destination / 'start.json', provisional)
+    print('CAPTURE_START ' + json.dumps(provisional), flush=True)
+
+    def tee(source, saved, console):
+        for line in iter(source.readline, b''):
+            saved.write(line)
+            saved.flush()
+            print(line.decode('utf-8', errors='replace'), end='', file=console, flush=True)
+        source.close()
+
     with (destination / 'stdout.txt').open('wb') as stdout, (destination / 'stderr.txt').open('wb') as stderr:
-        process = subprocess.run(command, stdout=stdout, stderr=stderr, check=False)
+        # Live hosted logs survive cancellation even when the later artifact step
+        # cannot run. Separate files retain the original bytes when it does run.
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+            with ThreadPoolExecutor(max_workers=2) as readers:
+                out = readers.submit(tee, process.stdout, stdout, sys.stdout)
+                err = readers.submit(tee, process.stderr, stderr, sys.stderr)
+                process.wait()
+                out.result()
+                err.result()
     receipt = {'started_utc': started, 'ended_utc': utc_now(), 'exit_code': process.returncode}
     write_json(destination / 'end.json', receipt)
+    print('CAPTURE_END ' + json.dumps(receipt), flush=True)
     return receipt
 
 
@@ -111,13 +141,24 @@ def main():
     })
     (destination / 'dotnet-info.txt').write_bytes(subprocess.check_output(['dotnet', '--info']))
     (destination / 'project-diff.txt').write_bytes(subprocess.check_output(['git', 'diff', '--', str(project)]))
-    receipt = capture(['dotnet', 'test', str(project), '--configuration', 'Release',
+    baseline = json.loads((root / 'tests/tooling-comparison/original-remaining-cases.json').read_text(encoding='utf-8'))
+    print('COMPARISON_ENVIRONMENT ' + (destination / 'environment.json').read_text(), flush=True)
+    restore_dir = destination / 'restore'
+    restore_dir.mkdir()
+    restored = capture(['dotnet', 'restore', str(project), '-p:Configuration=Release'], restore_dir)
+    if restored['exit_code'] != 0:
+        write_json(destination / 'summary.json', {'classification': 'restore-failure', **restored})
+        return 1
+    assets = project.parent / 'obj/project.assets.json'
+    graph = json.loads(assets.read_text(encoding='utf-8'))
+    shutil.copyfile(assets, destination / 'project.assets.json')
+    # Emit the resolved graph before tests start: do not depend on a post-timeout
+    # artifact upload to establish which dependencies the failed test used.
+    print('RESOLVED_LIBRARIES ' + json.dumps(graph['libraries'], sort_keys=True), flush=True)
+    receipt = capture(['dotnet', 'test', str(project), '--configuration', 'Release', '--no-restore',
                        '--filter', FILTER, '--logger', 'trx;LogFileName=main.trx',
                        '--results-directory', str(destination)], destination)
-    assets = project.parent / 'obj/project.assets.json'
-    if assets.exists():
-        shutil.copyfile(assets, destination / 'project.assets.json')
-    summary = summarize(destination / 'main.trx', receipt['exit_code'], 854)
+    summary = summarize(destination / 'main.trx', receipt['exit_code'], dict.fromkeys(baseline['case_ids']))
     write_json(destination / 'summary.json', summary)
     print(json.dumps({key: value for key, value in summary.items() if key != 'cases'}))
     return 0 if summary['classification'] == 'passed' else 1
