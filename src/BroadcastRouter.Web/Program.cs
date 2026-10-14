@@ -260,7 +260,8 @@ app.MapGet("/health", (DatabaseIntegrityMonitor databaseIntegrity, RouterCoordin
     var auxiliaryResponsive = coordinator.GetAuxiliaryLiveness().All(snapshot =>
         AuxiliaryLoopLivenessPolicy.IsResponsive(snapshot, now,
             RouterCoordinatorWatchdog.MaximumSilenceFor(snapshot.Name)));
-    return Results.Ok(new { status = integrity.IsHealthy && coordinatorResponsive && auxiliaryResponsive && telemetry.Status.IsHealthy ? "healthy" : "degraded" });
+    return Results.Ok(new { status = integrity.IsHealthy && coordinatorResponsive && auxiliaryResponsive
+        && !coordinator.HasOutputControllerAlarm && telemetry.Status.IsHealthy ? "healthy" : "degraded" });
 }).AllowAnonymous();
 
 app.MapPost("/auth/login", async (HttpContext context, IAntiforgery antiforgery) =>

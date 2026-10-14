@@ -24,9 +24,10 @@ public sealed class TelemetryAlarmTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ApplicationLayoutShowsPersistentRetentionAlarmOnlyForIncompleteHistory(bool loseEvidence)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task ApplicationLayoutShowsPersistentRetentionAlarmOnlyForIncompleteHistory(bool loseEvidence, bool controllerStall)
     {
         var root = Path.Combine(Path.GetTempPath(), "router-alarm-ui-" + Guid.NewGuid().ToString("N"));
         try
@@ -36,6 +37,7 @@ public sealed class TelemetryAlarmTests
                 for (var index = 0; index < 50; index++) telemetry.Stderr(Guid.NewGuid(), new string('x', 2000));
             await telemetry.FlushAsync();
             using var coordinator = new RouterCoordinator(null!, null!, null!, NullLogger<RouterCoordinator>.Instance);
+            if (controllerStall) coordinator.RecoverIdleControllersAndAlarm("Synthetic controller operation stalled");
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddAuthorizationCore();
@@ -53,6 +55,15 @@ public sealed class TelemetryAlarmTests
                 Assert.Contains("role=\"alert\"", html);
             }
             else Assert.DoesNotContain("data-telemetry-alarm", html);
+            if (controllerStall)
+            {
+                Assert.True(coordinator.HasOutputControllerAlarm);
+                Assert.Contains("data-controller-alarm", html);
+                Assert.Contains("Existing output owners were preserved", html);
+                Assert.Contains("Synthetic controller operation stalled", html);
+                Assert.Contains("role=\"alert\"", html);
+            }
+            else Assert.DoesNotContain("data-controller-alarm", html);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }

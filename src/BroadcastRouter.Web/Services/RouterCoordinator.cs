@@ -80,6 +80,8 @@ public sealed class RouterCoordinator(
     private string _coordinatorStage = "Startup";
     private long _completedCycles;
     private FfmpegProcessSupervisor? _supervisor;
+    private readonly object _supervisorLifetime = new();
+    private bool _supervisorClosing;
     private string? _supervisorPath;
     private bool _supervisorUsesWindowsDeckLinkSafeTerminate;
     private int _supervisorInputReadTimeoutMilliseconds;
@@ -100,6 +102,25 @@ public sealed class RouterCoordinator(
     private const string FastPublisherLoop = "FastPublisherSupervision";
 
     public event Action? Changed;
+
+    private ControllerWatchdogAlarm? _controllerWatchdogAlarm;
+    public ControllerWatchdogAlarm? ControllerAlarm => Volatile.Read(ref _controllerWatchdogAlarm);
+    public bool HasOutputControllerAlarm => ControllerAlarm is not null
+        || _reservations.Controllers.Any(controller => controller.Status.Alarm is not null);
+
+    internal int RecoverIdleControllersAndAlarm(string message)
+    {
+        var recovered = _reservations.Controllers.Count(controller => controller.TryRecoverIdle());
+        Volatile.Write(ref _controllerWatchdogAlarm, new(_clock.UtcNow, message, recovered));
+        // Publishing the operator warning must not depend on a stalled main loop
+        // or allow an uncooperative UI subscriber to block watchdog evidence.
+        _ = Task.Run(() =>
+        {
+            try { Changed?.Invoke(); }
+            catch (Exception ex) { logger.LogError(ex, "Controller alarm notification failed."); }
+        });
+        return recovered;
+    }
 
     public RouterSnapshot Snapshot { get; private set; } = new([], [], [], [], [], MediaToolValidation.NotConfigured,
         (clock ?? SupervisionClock.System).UtcNow, (clock ?? SupervisionClock.System).UtcNow, 0, 0, true, false, "Starting");
@@ -829,8 +850,16 @@ public sealed class RouterCoordinator(
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_supervisor is not null) await _supervisor.DisposeAsync();
-        await base.StopAsync(cancellationToken);
+        FfmpegProcessSupervisor? supervisor;
+        lock (_supervisorLifetime)
+        {
+            _supervisorClosing = true;
+            supervisor = _supervisor;
+            supervisor?.CloseAdmission();
+        }
+        // Close admission before waiting on any possibly uncooperative producer.
+        try { await base.StopAsync(cancellationToken); }
+        finally { if (supervisor is not null) await supervisor.DisposeAsync(); }
     }
 
     private async Task RefreshToolsAndPortsAsync(CancellationToken cancellationToken)
@@ -3298,25 +3327,33 @@ public sealed class RouterCoordinator(
 
     private void EnsureSupervisor(string ffmpegPath, bool useWindowsDeckLinkSafeTerminate)
     {
-        var inputReadTimeoutMilliseconds = Math.Clamp(
-            _settings.Routing.InputReadTimeoutMilliseconds, 500, 30000);
-        if (_supervisor is not null
-            && string.Equals(_supervisorPath, ffmpegPath, StringComparison.OrdinalIgnoreCase)
-            && _supervisorUsesWindowsDeckLinkSafeTerminate == useWindowsDeckLinkSafeTerminate
-            && _supervisorInputReadTimeoutMilliseconds == inputReadTimeoutMilliseconds) return;
-        using var replacement = _supervisor is not null ? telemetry?.BeginDecision("HOST", null, null,
-            "SupervisorConfigurationGenerationChanged", "Executable, safe-terminate option or input timeout changed",
-            null, ["Keep supervisor"], "ReplaceSupervisor") : null;
-        if (_supervisor is not null) _supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        _supervisor = new FfmpegProcessSupervisor(new FfmpegRouteOptions(ffmpegPath, true,
-                TimeSpan.FromMilliseconds(inputReadTimeoutMilliseconds),
-                UseWindowsDeckLinkSafeTerminate: useWindowsDeckLinkSafeTerminate),
-            TimeSpan.FromSeconds(Math.Clamp(_settings.Routing.GracefulStopSeconds, 1, 30)), _clock, telemetry, benchGuard);
-        _supervisor.LifecycleChanged += OnProcessLifecycleChanged;
-        _supervisorPath = ffmpegPath;
-        _supervisorUsesWindowsDeckLinkSafeTerminate = useWindowsDeckLinkSafeTerminate;
-        _supervisorInputReadTimeoutMilliseconds = inputReadTimeoutMilliseconds;
-        replacement?.Complete(null, "SupervisorReplaced");
+        lock (_supervisorLifetime)
+        {
+            ObjectDisposedException.ThrowIf(_supervisorClosing, this);
+            var inputReadTimeoutMilliseconds = Math.Clamp(
+                _settings.Routing.InputReadTimeoutMilliseconds, 500, 30000);
+            var options = new FfmpegRouteOptions(ffmpegPath, true, TimeSpan.FromMilliseconds(inputReadTimeoutMilliseconds),
+                UseWindowsDeckLinkSafeTerminate: useWindowsDeckLinkSafeTerminate);
+            var stopTimeout = TimeSpan.FromSeconds(Math.Clamp(_settings.Routing.GracefulStopSeconds, 1, 30));
+            if (_supervisor is null)
+            {
+                _supervisor = new(options, stopTimeout, _clock, telemetry,
+                    benchGuard: benchGuard, reservations: _reservations);
+                _supervisor.LifecycleChanged += OnProcessLifecycleChanged;
+            }
+            else
+            {
+                var before = _supervisor.ConfigurationGeneration;
+                _supervisor.UpdateConfiguration(options, stopTimeout);
+                if (_supervisor.ConfigurationGeneration != before)
+                    telemetry?.Record("HOST", null, null, "SupervisorConfigurationGenerationChanged", new(), null,
+                        "Future starts only; existing sessions retain their generation and stop budget", null,
+                        ["Stop unrelated outputs", "Replace supervisor"], "PublishSupervisorConfiguration", "ExistingOwnersPreserved");
+            }
+            _supervisorPath = ffmpegPath;
+            _supervisorUsesWindowsDeckLinkSafeTerminate = useWindowsDeckLinkSafeTerminate;
+            _supervisorInputReadTimeoutMilliseconds = inputReadTimeoutMilliseconds;
+        }
     }
 
     private void OnProcessLifecycleChanged(RouteProcessLifecycleEvent value) =>

@@ -19,7 +19,8 @@ public sealed record RouteProcessSnapshot(
     Guid SessionId = default, DateTimeOffset? ProcessStartUtc = null, string? StderrLog = null,
     bool StopRequested = false,
     MediaEvidenceSnapshot? IndependentMedia = null,
-    MediaProperties? SelectedMedia = null);
+    MediaProperties? SelectedMedia = null,
+    long ConfigurationGeneration = 0);
 
 public enum RouteProcessPurpose { Live, Fallback, PortStandby }
 
@@ -36,15 +37,63 @@ public sealed class FfmpegProcessSupervisor(
     FfmpegRouteOptions options,
     TimeSpan gracefulStopTimeout,
     SupervisionClock? clock = null, SupervisionTelemetry? telemetry = null,
-    BenchOutputGuard? benchGuard = null) : IRouteProcessSupervisor, IAsyncDisposable
+    BenchOutputGuard? benchGuard = null,
+    PortReservationManager? reservations = null) : IRouteProcessSupervisor, IAsyncDisposable
 {
     private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
+    private readonly PortReservationManager _outputs = reservations ?? new();
+    private readonly object _lifetime = new();
+    private Configuration _configuration = new(options, gracefulStopTimeout, 1);
+    private Task? _disposeTask;
+    private int _closing;
+    private int _activeLaunches;
+    private TaskCompletionSource _launchesDrained = CompletedDrain();
+    private sealed record Configuration(FfmpegRouteOptions Options, TimeSpan StopTimeout, long Generation);
+
+    public long ConfigurationGeneration => Volatile.Read(ref _configuration).Generation;
+    public void UpdateConfiguration(FfmpegRouteOptions nextOptions, TimeSpan stopTimeout)
+    {
+        lock (_lifetime)
+        {
+            ThrowIfClosing();
+            var current = _configuration;
+            if (current.Options == nextOptions && current.StopTimeout == stopTimeout) return;
+            Volatile.Write(ref _configuration, new(nextOptions, stopTimeout, current.Generation + 1));
+        }
+    }
+
+    private void ThrowIfClosing() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _closing) != 0, this);
+    private static TaskCompletionSource CompletedDrain()
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        completion.SetResult();
+        return completion;
+    }
+    private void BeginLaunch()
+    {
+        lock (_lifetime)
+        {
+            ThrowIfClosing();
+            if (_activeLaunches++ == 0) _launchesDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+    }
+    private void EndLaunch()
+    { lock (_lifetime) if (--_activeLaunches == 0) _launchesDrained.TrySetResult(); }
     private static readonly TimeSpan ProcessReapTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan StreamDrainTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan QuitSignalTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan MediaStarvationStartupGrace = TimeSpan.FromSeconds(5);
     internal const int RetainedExitedOwners = 256;
     private readonly ConcurrentDictionary<string, ManagedProcess> _running = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, PendingLaunch> _pendingStarts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, PendingLaunch> _pendingStops = new(StringComparer.Ordinal);
+    private sealed class PendingLaunch
+    {
+        public readonly TaskCompletionSource Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManagedProcess? Owner;
+        // 0 queued, 1 transferred to controller worker, -1 rejected before transfer.
+        public int Transfer;
+    }
     private readonly ConcurrentDictionary<string, RouteProcessSnapshot> _last = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _ownerGates = new(StringComparer.Ordinal);
     private readonly WindowsKillOnCloseJob _containmentJob = WindowsKillOnCloseJob.Create();
@@ -52,69 +101,129 @@ public sealed class FfmpegProcessSupervisor(
     public event Action<RouteProcessLifecycleEvent>? LifecycleChanged;
 
     public Task StartAsync(RouteRecord route, DiscoveredSource source, DeckLinkPort port, OutputPreset preset, CancellationToken cancellationToken) =>
-        StartAsync(route, source, port, preset, cancellationToken, options.UseIndependentMediaStats);
+        StartAsync(route, source, port, preset, cancellationToken, Volatile.Read(ref _configuration).Options.UseIndependentMediaStats);
 
     public async Task StartAsync(RouteRecord route, DiscoveredSource source, DeckLinkPort port, OutputPreset preset,
         CancellationToken cancellationToken, bool useIndependentMediaStats)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var start = FfmpegCommandBuilder.Build(options, source, port, preset);
+        ThrowIfClosing();
+        var configuration = Volatile.Read(ref _configuration);
+        var start = FfmpegCommandBuilder.Build(configuration.Options, source, port, preset);
         var media = useIndependentMediaStats ? new FfmpegMediaSession(source.Media, preset.IncludeAudio, _clock) : null;
         try
         {
             if (media is not null) await media.AttachToAsync(start).ConfigureAwait(false);
-            await StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken, port.StableId, media,
-                source.Media is null ? null : source.Media with { AudioDisabledByPreset = !preset.IncludeAudio }, port).ConfigureAwait(false);
         }
         catch
         {
             if (media is not null) await media.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+        // The output operation owns observation pipes from this point, including
+        // late cleanup after its caller has timed out.
+        await StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken, port.StableId, media,
+            source.Media is null ? null : source.Media with { AudioDisabledByPreset = !preset.IncludeAudio }, configuration, port).ConfigureAwait(false);
     }
 
     public Task StartFallbackAsync(SourceIdentity source, DeckLinkPort port, OutputPreset preset, FallbackMode mode, string? value, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfClosing();
+        var configuration = Volatile.Read(ref _configuration);
         return StartProcessAsync(source, RouteProcessPurpose.Fallback,
-            FfmpegCommandBuilder.BuildFallback(options, port, preset, mode, value), cancellationToken, port.StableId, port: port);
+            FfmpegCommandBuilder.BuildFallback(configuration.Options, port, preset, mode, value), cancellationToken, port.StableId,
+            configuration: configuration, port: port);
     }
 
     public Task StartPortStandbyAsync(SourceIdentity owner, DeckLinkPort port, OutputPreset preset,
         PortStandbyConfiguration configuration, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfClosing();
+        var generation = Volatile.Read(ref _configuration);
         return StartProcessAsync(owner, RouteProcessPurpose.PortStandby,
-            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken, port.StableId, port: port);
+            FfmpegCommandBuilder.BuildPortStandby(generation.Options, port, preset, configuration), cancellationToken, port.StableId,
+            configuration: generation, port: port);
     }
 
     public Task StartRecoveryStandbyAsync(SourceIdentity source, DeckLinkPort port, OutputPreset preset,
         PortStandbyConfiguration configuration, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfClosing();
+        var generation = Volatile.Read(ref _configuration);
         return StartProcessAsync(source, RouteProcessPurpose.Fallback,
-            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken, port.StableId, port: port);
+            FfmpegCommandBuilder.BuildPortStandby(generation.Options, port, preset, configuration), cancellationToken, port.StableId,
+            configuration: generation, port: port);
     }
 
     public Task StopAsync(SourceIdentity source, CancellationToken cancellationToken) =>
-        StopOwnedAsync(source, gracefulStopTimeout, cancellationToken);
+        StopOwnedAsync(source, cancellationToken);
 
     public Task StopForOutputHandoffAsync(SourceIdentity source, CancellationToken cancellationToken) =>
         // Handoffs must allow the same qualified shutdown budget as normal stops.
         // An optimistic short deadline cannot make a device release gracefully.
-        StopOwnedAsync(source, gracefulStopTimeout, cancellationToken);
+        StopOwnedAsync(source, cancellationToken);
 
-    private async Task StopOwnedAsync(SourceIdentity source, TimeSpan stopTimeout, CancellationToken cancellationToken)
+    private async Task StopOwnedAsync(SourceIdentity source, CancellationToken cancellationToken)
     {
+        ManagedProcess? expected;
+        if (_pendingStarts.TryGetValue(source.Value, out var pending))
+        {
+            // Do not acknowledge a stop while its already-admitted launch can
+            // still publish. Never wait for a source gate while holding another
+            // output's gate, and never retarget this stop to a later session.
+            await pending.Completion.Task.WaitAsync(TimeSpan.FromSeconds(46), cancellationToken).ConfigureAwait(false);
+            expected = pending.Owner;
+        }
+        else _running.TryGetValue(source.Value, out expected);
+        if (expected is null) return;
+        var stop = new PendingLaunch { Owner = expected };
+        using var admission = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        admission.CancelAfter(TimeSpan.FromSeconds(46));
+        while (!_pendingStops.TryAdd(source.Value, stop))
+        {
+            if (_pendingStops.TryGetValue(source.Value, out var earlier))
+                await earlier.Completion.Task.WaitAsync(admission.Token).ConfigureAwait(false);
+            admission.Token.ThrowIfCancellationRequested();
+        }
+        var output = ControllerFor(expected);
+        try
+        {
+            await output.ExecuteAsync(async token =>
+            {
+                if (Interlocked.CompareExchange(ref stop.Transfer, 1, 0) != 0)
+                    throw new OperationCanceledException("The stop was cancelled before worker transfer.");
+                try { await StopOwnedOnOutputAsync(expected, output, token).ConfigureAwait(false); }
+                finally { CompletePendingStop(source, stop); }
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (Interlocked.CompareExchange(ref stop.Transfer, -1, 0) == 0) CompletePendingStop(source, stop);
+            throw;
+        }
+    }
+
+    private void CompletePendingStop(SourceIdentity source, PendingLaunch stop)
+    {
+        _pendingStops.TryRemove(new KeyValuePair<string, PendingLaunch>(source.Value, stop));
+        stop.Completion.TrySetResult();
+    }
+
+    private async Task StopOwnedOnOutputAsync(ManagedProcess expected, OutputController output, CancellationToken cancellationToken)
+    {
+        var source = expected.Source;
         var ownerGate = OwnerGate(source.Value);
         await ownerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!_running.TryGetValue(source.Value, out var managed)) return;
+            if (!_running.TryGetValue(source.Value, out var managed) || !ReferenceEquals(managed, expected)) return;
             Interlocked.Exchange(ref managed.StopRequested, 1);
             try
             {
-                await StopManagedAsync(managed, stopTimeout, cancellationToken).ConfigureAwait(false);
+                await StopManagedAsync(managed, managed.GracefulStopTimeout, cancellationToken).ConfigureAwait(false);
             }
             catch
             {
@@ -127,7 +236,10 @@ public sealed class FfmpegProcessSupervisor(
                 // source identity, even if stream draining, lifecycle reporting, or disposal
                 // failed during teardown.
                 if (HasExited(managed.Process))
+                {
                     _running.TryRemove(new KeyValuePair<string, ManagedProcess>(source.Value, managed));
+                    output.Exited(managed.SessionId);
+                }
             }
         }
         finally { ownerGate.Release(); }
@@ -166,14 +278,56 @@ public sealed class FfmpegProcessSupervisor(
     public bool IsRunning(SourceIdentity source, RouteProcessPurpose purpose) =>
         TryGetRunning(source, out var snapshot) && snapshot.Purpose == purpose;
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
+        lock (_lifetime)
+        {
+            Interlocked.Exchange(ref _closing, 1);
+            return new(_disposeTask ??= DisposeCoreAsync());
+        }
+    }
+
+    public void CloseAdmission()
+    {
+        lock (_lifetime) Interlocked.Exchange(ref _closing, 1);
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        // Admission is already closed. Observe admitted native launches before
+        // collecting children or disposing their containment handle.
+        try { await _launchesDrained.Task.WaitAsync(ProcessReapTimeout).ConfigureAwait(false); }
+        catch (TimeoutException)
+        {
+            foreach (var controller in _outputs.Controllers.Where(value => value.Status.OperationActive))
+                controller.Alarm("Shutdown launch drain timed out; output ownership remains uncertain.");
+        }
         var processes = _running.Values.ToArray();
-        await Task.WhenAll(processes.Select(value => StopOwnedAsync(value.Source, gracefulStopTimeout, CancellationToken.None))).ConfigureAwait(false);
-        await Task.WhenAll(processes.Select(value => value.ExitTask ?? Task.CompletedTask)).ConfigureAwait(false);
-        _containmentJob.Dispose();
-        foreach (var gate in _ownerGates.Values) gate.Dispose();
-        _ownerGates.Clear();
+        try
+        {
+            await Task.WhenAll(processes.Select(value => StopOwnedAsync(value.Source, CancellationToken.None)))
+                .WaitAsync(TimeSpan.FromSeconds(46)).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            foreach (var process in processes)
+            {
+                process.AddError($"Supervisor shutdown required owned-job cleanup: {ex.GetType().Name}");
+                ControllerFor(process).Alarm("Shutdown could not complete its output operation; owned-job cleanup requested.");
+            }
+        }
+        finally { _containmentJob.Dispose(); }
+        // Closing our job is the last-resort teardown of this supervisor only,
+        // not route recovery. Unrelated processes are never targeted.
+        try
+        {
+            await Task.WhenAll(processes.Select(value => value.ExitTask ?? Task.CompletedTask))
+                .WaitAsync(StreamDrainTimeout).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        { foreach (var process in processes) process.AddError($"Shutdown observation incomplete: {ex.GetType().Name}"); }
+        // Gates outlive every in-flight operation/observer. They have no native
+        // wait handles; do not dispose or replace them while users can remain.
     }
 
     internal Task StartOwnedProcessForTestingAsync(SourceIdentity source, ProcessStartInfo start,
@@ -182,16 +336,76 @@ public sealed class FfmpegProcessSupervisor(
 
     private async Task StartProcessAsync(SourceIdentity source, RouteProcessPurpose purpose, ProcessStartInfo start,
         CancellationToken cancellationToken, string? outputId = null, FfmpegMediaSession? media = null,
-        MediaProperties? selectedMedia = null, DeckLinkPort? port = null)
+        MediaProperties? selectedMedia = null, Configuration? configuration = null, DeckLinkPort? port = null)
+    {
+        PendingLaunch? pending = null;
+        try
+        {
+            ThrowIfClosing();
+            pending = new();
+            if (!_pendingStarts.TryAdd(source.Value, pending))
+            {
+                pending = null;
+                throw new InvalidOperationException("A start is already pending for this source.");
+            }
+            var output = _outputs.ControllerFor(outputId ?? "source:" + source.Value);
+            var generation = configuration ?? Volatile.Read(ref _configuration);
+            // A same-source restart follows its prior stop's full bounded
+            // graceful/reap lifetime, not unrelated-port contention admission.
+            if (_pendingStops.TryGetValue(source.Value, out var priorStop))
+                await priorStop.Completion.Task.WaitAsync(TimeSpan.FromSeconds(46), cancellationToken).ConfigureAwait(false);
+            await output.ExecuteAsync(async token =>
+            {
+                if (Interlocked.CompareExchange(ref pending.Transfer, 1, 0) != 0)
+                    throw new OperationCanceledException("The launch was cancelled before worker transfer.");
+                try
+                {
+                    await StartProcessOnOutputAsync(source, purpose, start, token,
+                    outputId, media, selectedMedia, generation, output, pending, port).ConfigureAwait(false);
+                }
+                catch { if (media is not null) await media.DisposeAsync().ConfigureAwait(false); throw; }
+                finally { CompletePendingLaunch(source, pending); }
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (pending is null || Interlocked.CompareExchange(ref pending.Transfer, -1, 0) == 0)
+            {
+                if (media is not null) await media.DisposeAsync().ConfigureAwait(false);
+                if (pending is not null) CompletePendingLaunch(source, pending);
+            }
+            throw;
+        }
+    }
+
+    private void CompletePendingLaunch(SourceIdentity source, PendingLaunch pending)
+    {
+        _pendingStarts.TryRemove(new KeyValuePair<string, PendingLaunch>(source.Value, pending));
+        pending.Completion.TrySetResult();
+    }
+
+    private async Task StartProcessOnOutputAsync(SourceIdentity source, RouteProcessPurpose purpose, ProcessStartInfo start,
+        CancellationToken cancellationToken, string? outputId, FfmpegMediaSession? media, MediaProperties? selectedMedia,
+        Configuration configuration, OutputController output, PendingLaunch pending, DeckLinkPort? port)
     {
         var ownerGate = OwnerGate(source.Value);
         await ownerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var launchAdmitted = false;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
             // Immutable bench authority, checked for every purpose after the gate and
             // after media instrumentation has finished modifying the actual argv.
             benchGuard?.ValidateLaunch(port, start);
+            BeginLaunch();
+            launchAdmitted = true;
+            if (output.Session is { } occupied)
+            {
+                if (!_running.TryGetValue(occupied.Source.Value, out var old) || old.SessionId != occupied.SessionId
+                    || !HasExited(old.Process))
+                    throw new InvalidOperationException("The physical output is owned by another session.");
+                output.Exited(occupied.SessionId);
+            }
             if (_running.TryGetValue(source.Value, out var existing))
             {
                 if (!HasExited(existing.Process))
@@ -200,6 +414,7 @@ public sealed class FfmpegProcessSupervisor(
                 if (existing.Media is not null) await existing.Media.DisposeAsync().ConfigureAwait(false);
                 RememberLast(CreateSnapshot(existing));
                 _running.TryRemove(new KeyValuePair<string, ManagedProcess>(source.Value, existing));
+                ControllerFor(existing).Exited(existing.SessionId);
                 try { existing.Process.Dispose(); }
                 catch { }
             }
@@ -209,6 +424,8 @@ public sealed class FfmpegProcessSupervisor(
             managed.Media = media;
             managed.SelectedMedia = selectedMedia;
             managed.OutputId = outputId;
+            managed.ConfigurationGeneration = configuration.Generation;
+            managed.GracefulStopTimeout = configuration.StopTimeout;
             managed.StderrLog = telemetry?.StderrReference(managed.SessionId);
             try
             {
@@ -217,12 +434,16 @@ public sealed class FfmpegProcessSupervisor(
                 try { managed.ProcessStartUtc = new DateTimeOffset(process.StartTime.ToUniversalTime()); }
                 catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
                 { } // Exact time unknown, never substitute an invented value or change launch policy for diagnostics.
-                ContainOrTerminate(process);
                 // Publish only a fully associated Process. Snapshot readers do
                 // not take the owner gate and must never observe the interval
                 // between Process construction and Process.Start().
                 if (!_running.TryAdd(source.Value, managed))
                     throw new InvalidOperationException($"An FFmpeg process is already owned for {source}.");
+                pending.Owner = managed;
+                output.Started(new(source, purpose.ToString(), managed.SessionId, managed.ProcessId, configuration.Generation));
+                ThrowIfClosing();
+                _containmentJob.Add(process);
+                cancellationToken.ThrowIfCancellationRequested();
                 managed.ProgressTask = PumpProgressAsync(managed);
                 managed.ErrorTask = PumpErrorsAsync(managed);
                 managed.ExitTask = ObserveExitAsync(managed);
@@ -230,38 +451,39 @@ public sealed class FfmpegProcessSupervisor(
             }
             catch
             {
-                _running.TryRemove(new KeyValuePair<string, ManagedProcess>(source.Value, managed));
-                try
+                if (managed.ProcessId > 0) await ReapFailedStartAsync(managed).ConfigureAwait(false);
+                if (HasExited(process))
                 {
-                    if (!HasExited(process))
-                    {
-                        process.Kill(entireProcessTree: true);
-                        process.WaitForExit();
-                    }
+                    _running.TryRemove(new KeyValuePair<string, ManagedProcess>(source.Value, managed));
+                    output.Exited(managed.SessionId);
+                    process.Dispose();
                 }
-                catch { }
-                process.Dispose();
+                else
+                {
+                    output.Alarm("Failed launch cleanup could not prove process exit; output ownership retained.");
+                    managed.ExitTask ??= ObserveExitAsync(managed);
+                }
                 throw;
             }
         }
-        finally { ownerGate.Release(); }
+        finally
+        {
+            if (launchAdmitted) EndLaunch();
+            ownerGate.Release();
+        }
     }
 
-    private void ContainOrTerminate(Process process)
+    private static async Task ReapFailedStartAsync(ManagedProcess managed)
     {
         try
         {
-            _containmentJob.Add(process);
+            if (!HasExited(managed.Process)) managed.Process.Kill(entireProcessTree: true);
+            using var deadline = new CancellationTokenSource(ProcessReapTimeout);
+            await managed.Process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
-            try
-            {
-                if (!process.HasExited) process.Kill(entireProcessTree: true);
-                process.WaitForExit();
-            }
-            catch { }
-            throw;
+            managed.AddError($"Bounded launch cleanup did not confirm exit: {ex.GetType().Name}");
         }
     }
 
@@ -272,17 +494,36 @@ public sealed class FfmpegProcessSupervisor(
             await managed.Process.WaitForExitAsync().ConfigureAwait(false);
             await DrainPumpsAsync(managed).ConfigureAwait(false);
             if (Volatile.Read(ref managed.StopRequested) != 0) return;
-            var ownerGate = OwnerGate(managed.Source.Value);
-            await ownerGate.WaitAsync().ConfigureAwait(false);
-            try
+            while (true)
             {
-                if (Volatile.Read(ref managed.StopRequested) != 0) return;
-                RememberLast(CreateSnapshot(managed));
-                _running.TryRemove(new KeyValuePair<string, ManagedProcess>(managed.Source.Value, managed));
-                ReportLifecycle(managed, RouteProcessLifecycleState.Exited, SafeExitCode(managed.Process));
-                managed.Process.Dispose();
+                var entered = false;
+                try
+                {
+                    await ControllerFor(managed).ExecuteAsync(async () =>
+                    {
+                        entered = true;
+                        var ownerGate = OwnerGate(managed.Source.Value);
+                        await ownerGate.WaitAsync().ConfigureAwait(false);
+                        try
+                        {
+                            if (Volatile.Read(ref managed.StopRequested) != 0) return;
+                            RememberLast(CreateSnapshot(managed));
+                            _running.TryRemove(new KeyValuePair<string, ManagedProcess>(managed.Source.Value, managed));
+                            ControllerFor(managed).Exited(managed.SessionId);
+                            ReportLifecycle(managed, RouteProcessLifecycleState.Exited, SafeExitCode(managed.Process));
+                            managed.Process.Dispose();
+                        }
+                        finally { ownerGate.Release(); }
+                    }, CancellationToken.None).ConfigureAwait(false);
+                    break;
+                }
+                catch (TimeoutException) when (!entered)
+                {
+                    // Admission is bounded, but exact-session cleanup is not
+                    // discarded. No replacement gate or owner is created.
+                    await Task.Delay(100).ConfigureAwait(false);
+                }
             }
-            finally { ownerGate.Release(); }
         }
         catch (Exception ex)
         {
@@ -449,6 +690,8 @@ public sealed class FfmpegProcessSupervisor(
     }
 
     private SemaphoreSlim OwnerGate(string owner) => _ownerGates.GetOrAdd(owner, static _ => new SemaphoreSlim(1, 1));
+    private OutputController ControllerFor(ManagedProcess owner) =>
+        _outputs.ControllerFor(owner.OutputId ?? "source:" + owner.Source.Value);
 
     private void RememberLast(RouteProcessSnapshot snapshot)
     {
@@ -504,7 +747,7 @@ public sealed class FfmpegProcessSupervisor(
         var failure = managed.RefreshInputFailure(observedFailure, media);
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
             managed.Errors.ToArray(), exitCode, failure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
-            Volatile.Read(ref managed.StopRequested) != 0, media, managed.SelectedMedia);
+            Volatile.Read(ref managed.StopRequested) != 0, media, managed.SelectedMedia, managed.ConfigurationGeneration);
     }
 
     private static RouteProcessSnapshot CreateRunningSnapshot(ManagedProcess managed)
@@ -517,7 +760,7 @@ public sealed class FfmpegProcessSupervisor(
         var failure = managed.RefreshInputFailure(observedFailure, media);
         return new(managed.Source, managed.Purpose, managed.ProcessId, managed.StartedAt, running, managed.Progress,
             Array.Empty<string>(), null, failure, managed.MediaHealth.Snapshot(), managed.SessionId, managed.ProcessStartUtc, managed.StderrLog,
-            Volatile.Read(ref managed.StopRequested) != 0, media, managed.SelectedMedia);
+            Volatile.Read(ref managed.StopRequested) != 0, media, managed.SelectedMedia, managed.ConfigurationGeneration);
     }
 
     private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, Process process,
@@ -528,6 +771,8 @@ public sealed class FfmpegProcessSupervisor(
         public DateTimeOffset? ProcessStartUtc { get; set; }
         public string? StderrLog { get; set; }
         public string? OutputId { get; set; }
+        public long ConfigurationGeneration { get; set; }
+        public TimeSpan GracefulStopTimeout { get; set; }
         public double? StopBudgetMilliseconds { get; set; }
         public SourceIdentity Source { get; } = source;
         public RouteProcessPurpose Purpose { get; } = purpose;
