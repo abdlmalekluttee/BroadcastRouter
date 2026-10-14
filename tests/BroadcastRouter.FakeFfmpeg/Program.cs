@@ -5,6 +5,20 @@ using System.IO.Pipes;
 using System.Text.RegularExpressions;
 
 // Test-only child: no network, media devices or application endpoints.
+if (args is ["--owned-child-contract", var exitCodeText, ..])
+{
+    Console.InputEncoding = new System.Text.UTF8Encoding(false);
+    Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+    if (long.TryParse(Environment.GetEnvironmentVariable("BROADCASTROUTER_SYNTHETIC_HANDLE"), out var otherHandle))
+        Native.SetEvent((IntPtr)otherHandle);
+    var input = await Console.In.ReadLineAsync();
+    await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new { Arguments = args.Skip(2).ToArray(),
+        Input = input, Directory = Environment.CurrentDirectory,
+        EnvironmentValue = Environment.GetEnvironmentVariable("BROADCASTROUTER_SYNTHETIC_VALUE"),
+        ConsoleWindow = OperatingSystem.IsWindows() ? Native.GetConsoleWindow().ToInt64() : 0 }));
+    await Console.Error.WriteLineAsync("synthetic stderr Ω");
+    return int.Parse(exitCodeText, System.Globalization.CultureInfo.InvariantCulture);
+}
 // In an isolated copied fixture directory, accept the application's real tokenized
 // media-tool arguments. This executable never opens URLs or hardware.
 var scriptPath = args.Length == 1 ? args[0]
@@ -28,6 +42,22 @@ var script = JsonSerializer.Deserialize<Script>(await File.ReadAllTextAsync(scri
 if (script.Events.Any(e => e.AtMilliseconds is < 0 or > 60000)
     || script.ExitAfterMilliseconds is < 0 or > 60000
     || script.QuitDelayMilliseconds is < 0 or > 60000) return 65;
+if (script.StartMarker is { } startMarker)
+{
+    using var self = Process.GetCurrentProcess();
+    var pending = startMarker + ".pending";
+    await File.WriteAllTextAsync(pending, JsonSerializer.Serialize(new
+        { id = Environment.ProcessId, startedUtc = self.StartTime.ToUniversalTime() }));
+    File.Move(pending, startMarker);
+}
+// Test-only descendant deliberately survives normal parent exit unless the real
+// OS job contains it. The owning test retains its exact handle for RED cleanup.
+using var descendant = script.SpawnChildScript is { } childScript
+    ? Process.Start(new ProcessStartInfo(Environment.ProcessPath!)
+    {
+        UseShellExecute = false, CreateNoWindow = true,
+        ArgumentList = { childScript }
+    }) : null;
 using var complete = new CancellationTokenSource();
 var mediaWriters = new Dictionary<string, StreamWriter>(StringComparer.Ordinal);
 if (script.CaptureArguments)
@@ -125,10 +155,12 @@ return 0;
 
 internal sealed record Script(Event[] Events, int? ExitAfterMilliseconds, int ExitCode, bool IgnoreQuit, bool Crash,
     int QuitDelayMilliseconds = 0, string[]? QuitStderr = null, bool ProgressCommands = false, string? ContinueFile = null,
-    bool CaptureArguments = false);
+    bool CaptureArguments = false, string? StartMarker = null, string? SpawnChildScript = null);
 internal sealed record Event(int AtMilliseconds, string Channel, string Text);
 internal static class Native
 {
+    [DllImport("kernel32.dll")] internal static extern IntPtr GetConsoleWindow();
+    [DllImport("kernel32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetEvent(IntPtr handle);
     [DllImport("kernel32.dll")]
     internal static extern uint SetErrorMode(uint mode);
 }

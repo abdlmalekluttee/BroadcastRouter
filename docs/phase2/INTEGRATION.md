@@ -37,6 +37,22 @@ open, not passing product behavior. Hardware rows remain open.
 - `MainLayout.razor` merged cleanly: both independent visible alarms remain.
 - `docs/PHASE2_PROGRESS.md`: append #85 evidence without dropping earlier histories.
 
+### #86: atomic native child containment
+
+- `FfmpegProcessSupervisor.cs`: keep #84's admission close, pending-launch drain,
+  per-output controllers, bounded shutdown and failed-start reap. Replace the
+  managed `Process` with #86's `OwnedChildProcess` and remove the old supervisor-
+  wide job assignment. Native creation is contained before execution; no second
+  post-start job assignment remains.
+- Final shutdown requests termination only through each retained helper's own
+  job. Keep handles/pipes until the bounded observer drain, then dispose wrappers.
+  Do not restore #86's older unbounded waits or dispose controller semaphores that
+  still have in-flight users. Delayed cleanup cannot create replacement ownership.
+- `CoordinatorIndependentMediaTests.cs` merged cleanly: retain #85's sample
+  high-water synchronization and #86's exact owned-wrapper reflection type.
+- `docs/PHASE2_PROGRESS.md`: preserve containment evidence and its open hardware,
+  Session 0 and combined-build qualifications.
+
 ## Verification
 
 Fresh main baseline: 672 normal tests passed, zero failed/skipped. Combined

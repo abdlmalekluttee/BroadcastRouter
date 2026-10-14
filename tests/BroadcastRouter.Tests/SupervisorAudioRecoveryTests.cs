@@ -129,7 +129,7 @@ public sealed class SupervisorAudioRecoveryTests
         private readonly SupervisionClock _clock;
         private readonly FfmpegProcessSupervisor _supervisor;
         private readonly Dictionary<string, StreamWriter> _writers = new();
-        private Process _process = null!;
+        private OwnedChildProcess _process = null!;
         private object _managed = null!;
         private int _sequence;
         internal RouteProcessSnapshot Owner => Assert.Single(_supervisor.RunningSnapshot());
@@ -167,7 +167,7 @@ public sealed class SupervisorAudioRecoveryTests
                 var owners = typeof(FfmpegProcessSupervisor).GetField("_running", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(lab._supervisor)!;
                 var managed = owners.GetType().GetProperty("Item")!.GetValue(owners, [lab._fixture.Source.Identity.Value])!;
                 lab._managed = managed;
-                lab._process = (Process)managed.GetType().GetProperty("Process")!.GetValue(managed)!;
+                lab._process = (OwnedChildProcess)managed.GetType().GetProperty("Process")!.GetValue(managed)!;
                 return lab;
             }
             catch { await lab.DisposeAsync(); throw; }

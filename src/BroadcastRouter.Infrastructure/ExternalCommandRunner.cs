@@ -37,20 +37,10 @@ public static class ExternalCommandRunner
 
         try
         {
-            using var process = Process.Start(start);
+            using var process = OwnedChildProcess.Start(start);
             if (process is null) return new(false, null, "", "", false, "Process.Start returned no process.");
-            using var containment = containOnWindows && OperatingSystem.IsWindows()
-                ? WindowsKillOnCloseJob.Create()
-                : null;
-            if (containment is not null)
-            {
-                try { containment.Add(process); }
-                catch
-                {
-                    await TerminateWithinAsync(process).ConfigureAwait(false);
-                    throw;
-                }
-            }
+            // All Windows helpers are now contained, including the historical
+            // default-false callers. Keep the parameter for source compatibility.
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(timeout);
             var stdoutTask = process.StandardOutput.ReadToEndAsync(deadline.Token);
@@ -87,7 +77,7 @@ public static class ExternalCommandRunner
         catch { return ""; }
     }
 
-    private static async Task TerminateWithinAsync(Process process)
+    private static async Task TerminateWithinAsync(OwnedChildProcess process)
     {
         try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
         using var reapDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -96,7 +86,7 @@ public static class ExternalCommandRunner
         catch { }
     }
 
-    private static int? SafeExitCode(Process process)
+    private static int? SafeExitCode(OwnedChildProcess process)
     {
         try { return process.HasExited ? process.ExitCode : null; }
         catch (InvalidOperationException) { return null; }
