@@ -35,7 +35,8 @@ public sealed record RouteProcessLifecycleEvent(
 public sealed class FfmpegProcessSupervisor(
     FfmpegRouteOptions options,
     TimeSpan gracefulStopTimeout,
-    SupervisionClock? clock = null, SupervisionTelemetry? telemetry = null) : IRouteProcessSupervisor, IAsyncDisposable
+    SupervisionClock? clock = null, SupervisionTelemetry? telemetry = null,
+    BenchOutputGuard? benchGuard = null) : IRouteProcessSupervisor, IAsyncDisposable
 {
     private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
     private static readonly TimeSpan ProcessReapTimeout = TimeSpan.FromSeconds(5);
@@ -63,7 +64,7 @@ public sealed class FfmpegProcessSupervisor(
         {
             if (media is not null) await media.AttachToAsync(start).ConfigureAwait(false);
             await StartProcessAsync(source.Identity, RouteProcessPurpose.Live, start, cancellationToken, port.StableId, media,
-                source.Media is null ? null : source.Media with { AudioDisabledByPreset = !preset.IncludeAudio }).ConfigureAwait(false);
+                source.Media is null ? null : source.Media with { AudioDisabledByPreset = !preset.IncludeAudio }, port).ConfigureAwait(false);
         }
         catch
         {
@@ -76,7 +77,7 @@ public sealed class FfmpegProcessSupervisor(
     {
         cancellationToken.ThrowIfCancellationRequested();
         return StartProcessAsync(source, RouteProcessPurpose.Fallback,
-            FfmpegCommandBuilder.BuildFallback(options, port, preset, mode, value), cancellationToken, port.StableId);
+            FfmpegCommandBuilder.BuildFallback(options, port, preset, mode, value), cancellationToken, port.StableId, port: port);
     }
 
     public Task StartPortStandbyAsync(SourceIdentity owner, DeckLinkPort port, OutputPreset preset,
@@ -84,7 +85,7 @@ public sealed class FfmpegProcessSupervisor(
     {
         cancellationToken.ThrowIfCancellationRequested();
         return StartProcessAsync(owner, RouteProcessPurpose.PortStandby,
-            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken, port.StableId);
+            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken, port.StableId, port: port);
     }
 
     public Task StartRecoveryStandbyAsync(SourceIdentity source, DeckLinkPort port, OutputPreset preset,
@@ -92,7 +93,7 @@ public sealed class FfmpegProcessSupervisor(
     {
         cancellationToken.ThrowIfCancellationRequested();
         return StartProcessAsync(source, RouteProcessPurpose.Fallback,
-            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken, port.StableId);
+            FfmpegCommandBuilder.BuildPortStandby(options, port, preset, configuration), cancellationToken, port.StableId, port: port);
     }
 
     public Task StopAsync(SourceIdentity source, CancellationToken cancellationToken) =>
@@ -180,13 +181,17 @@ public sealed class FfmpegProcessSupervisor(
         StartProcessAsync(source, purpose, start, cancellationToken);
 
     private async Task StartProcessAsync(SourceIdentity source, RouteProcessPurpose purpose, ProcessStartInfo start,
-        CancellationToken cancellationToken, string? outputId = null, FfmpegMediaSession? media = null, MediaProperties? selectedMedia = null)
+        CancellationToken cancellationToken, string? outputId = null, FfmpegMediaSession? media = null,
+        MediaProperties? selectedMedia = null, DeckLinkPort? port = null)
     {
         var ownerGate = OwnerGate(source.Value);
         await ownerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // Immutable bench authority, checked for every purpose after the gate and
+            // after media instrumentation has finished modifying the actual argv.
+            benchGuard?.ValidateLaunch(port, start);
             if (_running.TryGetValue(source.Value, out var existing))
             {
                 if (!HasExited(existing.Process))

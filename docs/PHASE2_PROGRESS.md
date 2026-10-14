@@ -216,3 +216,22 @@ warning-free capture. Physical fifth-connector slate remains unverified because
 it is not looped. These tests used the immutable Phase B candidate, not the new
 Phase C correction. The native busy/unavailable matrix and historical -5 cause
 remain OPEN; software proof cannot replace physical qualification.
+
+## Bench guard prerequisite after Section 1
+
+Section 1 and the preceding Phase C PRs are owner-merged. New work starts from
+main. The separate bench-guard PR adds an immutable exact-handle interlock to
+live/fallback/recovery-standby/idle-standby launches, plus a read-only release
+preflight before candidate startup. See [BENCH-SAFETY.md](BENCH-SAFETY.md).
+Focused guard tests: 74 passed, including negative launch, owner-inventory,
+incomplete-route, legacy-ID and linked-data metadata cases. Link tests simulate
+filesystem metadata; no symlink privilege was enabled on the development machine.
+One fresh review found three Important fail-closed gaps, each reproduced and
+fixed test-first. No minor findings were deferred. Exact-head full regression and
+CI results are recorded in the PR. R18's two known defects remain OPEN for Phase G.
+
+Hardware authorization remains separate: show green candidate/guard evidence
+before the approved session; if the readiness cutoff is missed, cancel rather
+than run late. No merge, deployment, hardware pass or physical slate claim is
+implied by these software tests. Recheck muted presets privately in the deployment
+runbook; an earlier inventory is not deployment-time evidence.
