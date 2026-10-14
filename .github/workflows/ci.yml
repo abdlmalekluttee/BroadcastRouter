@@ -22,6 +22,7 @@ jobs:
       - run: dotnet build .\BroadcastRouter.sln --configuration Release --no-restore
       - run: python -m unittest discover -s tests/provenance -v
       - run: python -m unittest discover -s tests/ci -v
+      - run: python -m unittest discover -s tools/ffmpeg-build -p test_recipe.py -v
       - name: Build and privacy-check release package
         shell: pwsh
         run: |
