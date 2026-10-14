@@ -147,7 +147,7 @@ public sealed class MonotonicSupervisionQualificationTests
     [Theory]
     [InlineData(2)]
     [InlineData(-2)]
-    public async Task UtcStepCannotExpireOrExtendAnOwnedHelperStopBudget(int step)
+    public async Task UtcStepDoesNotBypassStopGraceAndOwnedHelperTerminatesBoundedly(int step)
     {
         var time = new ManualTimeProvider();
         var clock = new SupervisionClock(time);
