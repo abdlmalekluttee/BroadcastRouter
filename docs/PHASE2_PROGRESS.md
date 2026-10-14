@@ -311,3 +311,15 @@ remainopen. Guard#83software passes do not replace integrated private runner,
 monitor, rollback and exact-window clearance. Do not bypass the guard with older
 direct-launch test tools. The private gate report carries detailed metrics,
 all failed experiments, acceptance-matrix open rows, rulings and deferred minors.
+
+## P2-40 source/build preparation (separate Phase E software-only PR)
+
+Exact historical four-file FFmpeg patch and full build recipe are available in
+tools/ffmpeg-build/. Pinned archive plus patch recreated 10,111 historical source
+files byte-for-byte; 15 offline preparation tests green after 9 initial precise RED
+assertions and 2 reproduced review defects. Main-based normal suite 672/672,
+zero failed/skipped (9m44s); provenance12/12, CI policy17/17.
+No app behavior change, SDK redistribution, production install or hardware test.
+Binary reproducibility and native R09 qualification remain OPEN; complete original
+package-archive provenance is unavailable. See docs/phase2/P2-40.md. R18 remains
+OPEN. Phase D integration and hardware gates are not closed by this preparation.

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "version": "16.0",
+  "midlFileVersion": "10.0.19041.685 (WinBuild.160101.0800)",
+  "files": {
+    "DeckLinkAPI_v10_11.idl": "7c956736e440d7617b60ef4cac3d19472c28c31cebecacc40d0bdb5c73ced3b8",
+    "DeckLinkAPI_v10_2.idl": "78ea0e5c1f6cacd7b3fa80214436e3e77d8bcd0ee0953578d0d7a3278a44ecae",
+    "DeckLinkAPI_v10_4.idl": "911dc71919ec2a5b7ecb85da6c8a0d929d151155cf4b379cc3305b866a23e9d0",
+    "DeckLinkAPI_v10_5.idl": "4cca2d5e16ca6a4bf12e611d761f0f9d3150be7b9260aa0e8a8ad77d70616a87",
+    "DeckLinkAPI_v10_6.idl": "275c226b6119bd0e17bd8bac845e73f65700868d78362fb8618372fdaab65302",
+    "DeckLinkAPI_v10_8.idl": "7b166a274462fa5dd94e1af307b0401043bc065c46107134221c6deb74aac848",
+    "DeckLinkAPI_v10_9.idl": "c4c294e9d6bbe3a623d84cb28e9593cc50912a2fc7529a8c3e4ae14bdb253d1f",
+    "DeckLinkAPI_v11_4.idl": "5025630fd626ba3a8d422d3d51a8f1e2d5f0e479e0725485f84145d5745bf2fa",
+    "DeckLinkAPI_v11_5_1.idl": "90d952c4f62e127df7a469e2754952ac30553ec1b17a474704e23757db02823e",
+    "DeckLinkAPI_v11_5.idl": "07a786c32d5f1379afea85a08df7c33bff94d0b4fdffb12dd57f6a97b2c50ae2",
+    "DeckLinkAPI_v14_2_1.idl": "8ed8136d5efafb56a4d38ec14333594756df9b6206d7299c9daec4337eae4f6c",
+    "DeckLinkAPI_v15_2.idl": "7d2d2af0d326e85b64aa35de7f860613f0c6430af4eb6dc6ebf4695d2d1f6193",
+    "DeckLinkAPI_v15_3_1.idl": "fe3820799c5edfa0f3e67fccd29afac3d55e089081dc3f27734accda47c10799",
+    "DeckLinkAPI.idl": "8eb61aee196451eb4719b86c7a92a3f4704beca992610f3a7326e06a011044ce",
+    "DeckLinkAPIConfiguration.idl": "86388e709cfe6f5240868dcf10ba915f82a5c57263dfdf20ec62071df1549ed4",
+    "DeckLinkAPIDeckControl.idl": "5993ac9a2dab264647f76473a0e25e32c2d6cb4e84b4a225951c29b84646a959",
+    "DeckLinkAPIDiscovery.idl": "5091a09a3cc1f46a261626fd569acf17cb7c6525f81c34bd3ca6c156ee3a1c77",
+    "DeckLinkAPIModes.idl": "abde36c5072ba58f62c85aa4ffbf542134096f7c50551b1330ff975dfcee5560",
+    "DeckLinkAPIStreaming_v10_8.idl": "be352f21b1d7b06b30e805d05815ff2282068b1d24cfdf70932d973d121c344d",
+    "DeckLinkAPIStreaming.idl": "7f327563f1ef23e9309e2e97e91ff533630fa47b1bded9bb280922ac5747023e",
+    "DeckLinkAPITypes.idl": "9a1d190f3d9242b25cf725d68a7bdb51e2dedc439669fef5e277bb808ecdd114",
+    "DeckLinkAPIVersion.h": "074dd64520cf26eb58334390fef661aef503af584244be50846321fc905ba4f4"
+  }
+}

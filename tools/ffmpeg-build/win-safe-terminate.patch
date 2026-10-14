@@ -1,0 +1,107 @@
+diff --git a/libavdevice/decklink_common.cpp b/libavdevice/decklink_common.cpp
+--- a/libavdevice/decklink_common.cpp
++++ b/libavdevice/decklink_common.cpp
+@@ -663,8 +663,19 @@ void ff_decklink_cleanup(AVFormatContext *avctx)
+         ctx->attr->Release();
+     if (ctx->cfg)
+         ctx->cfg->Release();
+-    if (ctx->dl)
++    if (ctx->dl) {
++#ifdef _WIN32
++        /* The opt-in Windows safe-termination path deliberately retains the
++         * final device reference. Desktop Video 16.1 can fault in its final
++         * IDeckLink::Release() after unloading MSVCP140.dll. The dedicated
++         * playout process terminates immediately after all other cleanup, so
++         * the OS reclaims this last process-local reference safely. */
++        if (!cctx->win_safe_terminate)
++            ctx->dl->Release();
++#else
+         ctx->dl->Release();
++#endif
++    }
+ }
+ 
+ int ff_decklink_init_device(AVFormatContext *avctx, const char* name)
+diff --git a/libavdevice/decklink_common_c.h b/libavdevice/decklink_common_c.h
+--- a/libavdevice/decklink_common_c.h
++++ b/libavdevice/decklink_common_c.h
+@@ -75,6 +75,7 @@ struct decklink_cctx {
+     int timing_offset;
+     int wait_for_tc;
+     DecklinkSignalLossAction signal_loss_action;
++    int win_safe_terminate;
+ };
+ 
+ #endif /* AVDEVICE_DECKLINK_COMMON_C_H */
+diff --git a/libavdevice/decklink_enc.cpp b/libavdevice/decklink_enc.cpp
+--- a/libavdevice/decklink_enc.cpp
++++ b/libavdevice/decklink_enc.cpp
+@@ -22,6 +22,10 @@
+ #include <atomic>
+ using std::atomic;
+ 
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
+ /* Include internal.h first to avoid conflict between winsock.h (used by
+  * DeckLink headers) and winsock2.h (used by libavformat) in MSVC++ builds */
+ extern "C" {
+@@ -409,10 +413,20 @@ av_cold int ff_decklink_write_trailer(AVFormatContext *avctx)
+             ctx->dlo->DisableAudioOutput();
+     }
+ 
+-    ff_decklink_cleanup(avctx);
+-
+-    if (ctx->output_callback)
++    /*
++     * Desktop Video can retain the scheduled-frame callback until it is
++     * explicitly cleared.  Releasing the output/device COM interfaces first
++     * can unload the driver runtime while a callback is still registered,
++     * producing an access violation during process teardown on Windows.
++     */
++    if (ctx->dlo && ctx->output_callback)
++        ctx->dlo->SetScheduledFrameCompletionCallback(NULL);
++    if (ctx->output_callback) {
+         delete ctx->output_callback;
++        ctx->output_callback = NULL;
++    }
++
++    ff_decklink_cleanup(avctx);
+ 
+     pthread_mutex_destroy(&ctx->mutex);
+     pthread_cond_destroy(&ctx->cond);
+@@ -425,6 +439,22 @@ av_cold int ff_decklink_write_trailer(AVFormatContext *avctx)
+     ff_ccfifo_uninit(&ctx->cc_fifo);
+     av_freep(&cctx->ctx);
+ 
++#ifdef _WIN32
++    /*
++     * Some Desktop Video releases leave a C++ runtime callback alive until
++     * DLL_PROCESS_DETACH.  The callback then executes after MSVCP140.dll has
++     * been unloaded and Windows records a 0xc0000005 application crash even
++     * though scheduled playback, callbacks, video, audio and COM interfaces
++     * have already been closed above.  This opt-in workaround is intended for
++     * a dedicated DeckLink playout process: preserve the successful exit code
++     * while skipping unsafe DLL detach handlers after device cleanup.
++     */
++    if (cctx->win_safe_terminate) {
++        fflush(NULL);
++        TerminateProcess(GetCurrentProcess(), 0);
++    }
++#endif
++
+     return 0;
+ }
+ 
+diff --git a/libavdevice/decklink_enc_c.c b/libavdevice/decklink_enc_c.c
+--- a/libavdevice/decklink_enc_c.c
++++ b/libavdevice/decklink_enc_c.c
+@@ -62,6 +62,7 @@ static const AVOption options[] = {
+     { "true"        ,  NULL                     , 0                   , AV_OPT_TYPE_CONST , { .i64 = 1   }, 0, 0, ENC, .unit = "level_a"},
+     { "timing_offset", "genlock timing pixel offset", OFFSET(timing_offset), AV_OPT_TYPE_INT,   { .i64 = INT_MIN }, INT_MIN, INT_MAX, ENC, .unit = "timing_offset"},
+     { "unset"       ,  NULL                     , 0                        , AV_OPT_TYPE_CONST, { .i64 = INT_MIN },       0,       0, ENC, .unit = "timing_offset"},
++    { "win_safe_terminate", "terminate without DLL detach after DeckLink cleanup (Windows driver workaround)", OFFSET(win_safe_terminate), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, ENC },
+     { NULL },
+ };
+ 

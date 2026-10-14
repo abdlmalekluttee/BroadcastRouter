@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "version": "8.1.2",
+  "sourceUrl": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
+  "sourceDirectory": "ffmpeg-8.1.2",
+  "sourceSha256": "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c",
+  "patchSha256": "1235c210740f9cebbe268a6837b92888c1b02cfb280a678b61458b472f110aaf",
+  "sdkVersion": "16.0",
+  "sdkIdlSha256": "8eb61aee196451eb4719b86c7a92a3f4704beca992610f3a7326e06a011044ce",
+  "sdkVersionHeaderSha256": "074dd64520cf26eb58334390fef661aef503af584244be50846321fc905ba4f4",
+  "referenceBinarySha256": "5c834d5b7e2e06d0d5f7aeaf3885eed2f9d3d2c5075088a386980595d14fb7da",
+  "referenceBinaryQualification": "historical-binary-hash-only; new source-build and hardware qualification pending"
+}
