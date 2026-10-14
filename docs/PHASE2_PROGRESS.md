@@ -279,3 +279,35 @@ certified by this checkpoint.
 Local normal suite689/689, no skips; all136legacy behavioral cases retained.
 Strict KnownDefect lists R18 actor and reason redaction as OPEN, not passing.
 This checkpoint does not close hardware, Session0, deployment or combined-PR gates.
+
+### Phase D — monotonic qualification checkpoint
+
+| Task | Findings | Branch | PR | Status | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| P2-33 | R24 | codex/p2-33-monotonic-qualification | #87 | Local qualification and fresh review correction complete; exact-head CI required before readiness | [P2-33](phase2/P2-33.md) |
+
+26 new cases; normal suite 698/698 with no skips. Temporary wall-clock mutation
+produced 21 specific assertion failures; exact restored source passes all32
+initial focused cases. Two actual audit/SQLite/startup consumer cases were added
+after fresh review; four independent boundary mutations each fail their precise
+assertions, and all41 clock/startup cases pass after exact source restoration.
+No production code or threshold changes. Two strict R18 assertion
+failures remain OPEN for Phase G. Actual OS/NTP, Session0, hardware and soak
+qualification remain separate; the full Phase D gate is not closed here.
+
+### Gate D — independent software PRs, awaiting owner review
+
+| Task | Findings | Branch | PR | Status | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| P2-30 | R03 | fix/P2-30-output-controller | #84 | Ready; 695 normal cases and one-real-hour synthetic qualification pass | PR #84 and its P2-30 document |
+| P2-31 | R12 | fix/P2-31-bounded-persistence | #85 | Ready; 715 normal cases and quiet 100k-child qualification pass | PR #85 and its P2-31 document |
+| P2-32 | R14 | fix/P2-32-helper-containment | #86 | Ready; 689 normal cases and actual synthetic-helper crash/cleanup tests pass | PR #86 and its P2-32 document |
+
+Counts are per main-based branch, not a combined candidate. Each retains136legacy
+cases. No merge, deployment, service restart, OS clock change or new hardware test
+is authorized by these results. The owner alone merges. R18 remainsOPEN forPhaseG;
+preview inference remainsPhaseF. GateB/C hardware and historic native-failure cause
+remainopen. Guard#83software passes do not replace integrated private runner,
+monitor, rollback and exact-window clearance. Do not bypass the guard with older
+direct-launch test tools. The private gate report carries detailed metrics,
+all failed experiments, acceptance-matrix open rows, rulings and deferred minors.
