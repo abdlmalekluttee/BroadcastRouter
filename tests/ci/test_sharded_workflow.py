@@ -17,12 +17,13 @@ class ShardedWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(match, f"Missing CI job {name}")
         return match.group(1)
 
-    def test_normal_suite_has_three_parallel_bounded_shards(self):
+    def test_normal_suite_has_four_parallel_bounded_shards(self):
         job = self.job("normal-shards")
         self.assertIn("timeout-minutes: 10", job)
         self.assertIn("fail-fast: false", job)
         self.assertIn("name: Normal suite (${{ matrix.shard }})", job)
-        self.assertEqual(3, len(re.findall(r"- shard: ", job)))
+        self.assertEqual(["telemetry-day", "standby-day", "remaining-media", "remaining-core"],
+                         re.findall(r"- shard: ([\w-]+)", job))
         self.assertNotIn("continue-on-error", job)
 
     def test_filters_are_an_exhaustive_disjoint_partition(self):
@@ -31,9 +32,17 @@ class ShardedWorkflowTests(unittest.TestCase):
         common = "Category!=KnownDefect"
         telemetry = "FullyQualifiedName~BroadcastRouter.Tests.PhaseBTelemetryMeasurementTests."
         standby = "FullyQualifiedName~BroadcastRouter.Tests.StandbyLifecycleTests."
+        # Whole classes are assigned from observed runtimes. The core shard is
+        # the exact complement, so new classes still run without editing a list.
+        media = [f"FullyQualifiedName~BroadcastRouter.Tests.{name}." for name in (
+            "StrictWowzaTests", "DeclaredMediaCoordinatorTests", "OfflineFallbackTests",
+            "AutomaticMediaCoordinatorTests", "AutomaticMediaHandoffGuardTests", "GracefulStopTests",
+        )]
+        remaining = f"{common}&{telemetry.replace('~', '!~')}&{standby.replace('~', '!~')}"
         self.assertEqual([
             f"{common}&{telemetry}", f"{common}&{standby}",
-            f"{common}&{telemetry.replace('~', '!~')}&{standby.replace('~', '!~')}",
+            f"{remaining}&({'|'.join(media)})",
+            f"{remaining}&{'&'.join(term.replace('~', '!~') for term in media)}",
         ], filters)
         self.assertIn('--filter "${{ matrix.filter }}"', job)
         self.assertIn("dotnet test", job)
