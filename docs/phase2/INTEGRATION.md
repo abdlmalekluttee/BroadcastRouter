@@ -24,6 +24,19 @@ open, not passing product behavior. Hardware rows remain open.
 - `Program.cs` merged cleanly; review both startup release preflight and controller
   health reporting as shared boundaries despite no textual conflict.
 
+### #85: bounded diagnostic persistence
+
+- `RouterCoordinator.cs`: retain the existing six-argument activation overload
+  and the guarded constructor, and expose diagnostic persistence health. Lifecycle
+  callbacks enqueue into the store-owned queue; essential route persistence remains
+  awaited. The long-lived supervisor configuration method from #84 is retained.
+- `Program.cs`: health requires BOTH a healthy output-controller state and healthy
+  diagnostic persistence, in addition to the existing liveness/telemetry conditions.
+  The diagnostic worker is registered before coordinator/lifecycle services so its
+  shutdown drain occurs after their final events.
+- `MainLayout.razor` merged cleanly: both independent visible alarms remain.
+- `docs/PHASE2_PROGRESS.md`: append #85 evidence without dropping earlier histories.
+
 ## Verification
 
 Fresh main baseline: 672 normal tests passed, zero failed/skipped. Combined

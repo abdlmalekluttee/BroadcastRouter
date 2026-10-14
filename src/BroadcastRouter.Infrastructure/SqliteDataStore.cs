@@ -7,15 +7,24 @@ using Microsoft.Data.Sqlite;
 
 namespace BroadcastRouter.Infrastructure;
 
-public sealed class SqliteDataStore
+public sealed partial class SqliteDataStore
 {
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private readonly SupervisionClock _diagnosticClock;
+    private readonly Func<string, TelemetryVolumeSpace> _readDiagnosticVolumeSpace;
 
-    public SqliteDataStore(string databasePath)
+    public SqliteDataStore(string databasePath, SupervisionClock? clock = null,
+        Func<string, TelemetryVolumeSpace>? readDiagnosticVolumeSpace = null)
     {
         DatabasePath = Path.GetFullPath(databasePath);
+        _diagnosticClock = clock ?? SupervisionClock.System;
+        _readDiagnosticVolumeSpace = readDiagnosticVolumeSpace ?? (path =>
+        {
+            var drive = new DriveInfo(Path.GetPathRoot(path)!);
+            return new(drive.TotalSize, drive.AvailableFreeSpace);
+        });
         Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
         _connectionString = new SqliteConnectionStringBuilder
         {
@@ -24,6 +33,8 @@ public sealed class SqliteDataStore
             Cache = SqliteCacheMode.Shared,
             Pooling = true
         }.ToString();
+        _diagnostics = new DiagnosticPersistenceQueue(WriteDiagnosticBatchAsync, clock,
+            coalescingInterval: TimeSpan.FromMilliseconds(100));
     }
 
     public string DatabasePath { get; }
@@ -97,7 +108,33 @@ public sealed class SqliteDataStore
             CREATE INDEX IF NOT EXISTS ix_logs_category ON logs(category);
             CREATE INDEX IF NOT EXISTS ix_history_source ON route_history(source_id, timestamp_utc DESC);
             CREATE INDEX IF NOT EXISTS ix_configuration_audit_timestamp ON configuration_audit(timestamp_utc DESC);
+            CREATE TABLE IF NOT EXISTS diagnostic_retention (
+                id INTEGER PRIMARY KEY CHECK(id=1), early_evictions INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO diagnostic_retention(id,early_evictions) VALUES(1,0);
+            CREATE INDEX IF NOT EXISTS ix_logs_retention ON logs(timestamp_utc,id);
+            CREATE TABLE IF NOT EXISTS diagnostic_log_count (
+                id INTEGER PRIMARY KEY CHECK(id=1), row_count INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO diagnostic_log_count(id,row_count) VALUES(1,-1);
+            UPDATE diagnostic_log_count SET row_count=(SELECT COUNT(*) FROM logs) WHERE row_count<0;
+            CREATE TRIGGER IF NOT EXISTS diagnostic_log_insert AFTER INSERT ON logs BEGIN
+                UPDATE diagnostic_log_count SET row_count=row_count+1 WHERE id=1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS diagnostic_log_delete AFTER DELETE ON logs BEGIN
+                UPDATE diagnostic_log_count SET row_count=row_count-1 WHERE id=1;
+            END;
+            CREATE TABLE IF NOT EXISTS diagnostic_session (
+                id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL,
+                dirty INTEGER NOT NULL, incomplete INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO diagnostic_session(id,owner,dirty,incomplete) VALUES(1,'',0,0);
             """, cancellationToken);
+        await using var retention = connection.CreateCommand();
+        retention.CommandText = "SELECT early_evictions FROM diagnostic_retention WHERE id=1";
+        Interlocked.Exchange(ref _diagnosticRetentionEvictions,
+            Convert.ToInt64(await retention.ExecuteScalarAsync(cancellationToken)));
+        await BeginDiagnosticSessionAsync(connection, cancellationToken);
     }
 
     public async Task<OperatorSettings> LoadSettingsAsync(CancellationToken cancellationToken = default)
@@ -295,6 +332,13 @@ public sealed class SqliteDataStore
 
     public async Task<IReadOnlyList<StructuredLogEntry>> ReadLogsAsync(string? search = null, int limit = 500, CancellationToken cancellationToken = default)
     {
+        // Readers can briefly drain admitted summaries, but a stalled writer
+        // must not make the operator log page wait indefinitely.
+        using var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        drain.CancelAfter(TimeSpan.FromSeconds(1));
+        try { await _diagnostics.FlushAsync(drain.Token); }
+        catch (IOException) { } // Status remains degraded; return rows actually committed.
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = string.IsNullOrWhiteSpace(search)

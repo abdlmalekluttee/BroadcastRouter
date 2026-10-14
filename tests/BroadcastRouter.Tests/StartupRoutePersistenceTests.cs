@@ -165,16 +165,23 @@ public sealed class StartupRoutePersistenceTests
     {
         var root = Path.Combine(Path.GetTempPath(), "router-startup-test-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        SqliteDataStore? store = null;
         try
         {
             var file = Path.Combine(root, "test.db");
-            var store = new SqliteDataStore(file);
+            store = new SqliteDataStore(file, readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
             await store.InitializeAsync();
             await using var connection = new SqliteConnection($"Data Source={file};Pooling=False");
             await connection.OpenAsync();
             await run(store, connection);
         }
-        finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, true); }
+        finally
+        {
+            // This fixture owns the store, unlike the coordinator which borrows
+            // it from the host. Drain its diagnostic writer before deleting it.
+            if (store is not null) await store.StopDiagnosticsAsync();
+            SqliteConnection.ClearAllPools(); Directory.Delete(root, true);
+        }
     }
 
     private static async Task CountFutureWrites(SqliteConnection connection)

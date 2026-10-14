@@ -154,7 +154,7 @@ internal static class PublisherLiveHoldTests
         public RouteProcessSnapshot Process => Supervisor.Snapshot().Single(value => value.Source == Source);
         public Lab()
         {
-            Store = new(Path.Combine(directory, "qa.db"));
+            Store = new(Path.Combine(directory, "qa.db"), readDiagnosticVolumeSpace: BroadcastRouter.Tests.TelemetryTestVolume.Read);
             Store.InitializeAsync().GetAwaiter().GetResult();
             Coordinator = new(Store, Http, null!, NullLogger<RouterCoordinator>.Instance);
             typeof(RouterCoordinator).GetField("_nextDeckLinkReferenceStatusCheck", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(Coordinator, DateTimeOffset.MaxValue);
@@ -196,6 +196,7 @@ internal static class PublisherLiveHoldTests
         {
             Supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
             Coordinator.Dispose();
+            Store.StopDiagnosticsAsync().AsTask().GetAwaiter().GetResult();
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             Directory.Delete(directory, true);
         }
