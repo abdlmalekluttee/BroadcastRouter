@@ -216,3 +216,16 @@ warning-free capture. Physical fifth-connector slate remains unverified because
 it is not looped. These tests used the immutable Phase B candidate, not the new
 Phase C correction. The native busy/unavailable matrix and historical -5 cause
 remain OPEN; software proof cannot replace physical qualification.
+
+### Phase D — persistence checkpoint
+
+| Task | Findings | Branch | PR | Status | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| P2-31 | R12 | fix/P2-31-bounded-persistence | #85 | Local software and 100k-child qualification passed; owner review | [P2-31](phase2/P2-31.md) |
+
+Normal suite 715/715, no skips; all 136 legacy cases retained. The final immutable
+100k run passed in 28m10.680s with maximum route-control latency 1,272.723ms,
+zero diagnostic drops/write-failures/abandonment. Earlier failed attempts remain
+disclosed. Two strict R18 assertion failures remain OPEN for Phase G. Combined
+candidate, production, hardware and physical-storage worst-case bounds are not
+certified by this checkpoint.
