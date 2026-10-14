@@ -269,3 +269,13 @@ zero diagnostic drops/write-failures/abandonment. Earlier failed attempts remain
 disclosed. Two strict R18 assertion failures remain OPEN for Phase G. Combined
 candidate, production, hardware and physical-storage worst-case bounds are not
 certified by this checkpoint.
+
+### Phase D — helper containment checkpoint
+
+| Task | Findings | Branch | PR | Status | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| P2-32 | R14 | fix/P2-32-helper-containment | #86 | Local software qualification complete; corrected-head CI pending | [P2-32](phase2/P2-32.md) |
+
+Local normal suite689/689, no skips; all136legacy behavioral cases retained.
+Strict KnownDefect lists R18 actor and reason redaction as OPEN, not passing.
+This checkpoint does not close hardware, Session0, deployment or combined-PR gates.

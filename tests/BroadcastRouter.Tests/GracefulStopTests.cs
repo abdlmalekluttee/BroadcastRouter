@@ -41,7 +41,7 @@ public sealed class GracefulStopTests(ITestOutputHelper output)
         // Real drain algorithm, with controllable pending readers. A regression
         // that cancels on entry deterministically loses their buffered final data.
         var managedType = typeof(FfmpegProcessSupervisor).GetNestedType("ManagedProcess", BindingFlags.NonPublic)!;
-        using var process = new Process();
+        using var process = new OwnedChildProcess();
         var managed = Activator.CreateInstance(managedType, new SourceIdentity("TEST", "fixture", "_default_", "drain"),
             RouteProcessPurpose.Live, process, DateTimeOffset.UnixEpoch)!;
         var cancellation = (CancellationTokenSource)managedType.GetProperty("PumpCancellation")!.GetValue(managed)!;
@@ -61,7 +61,7 @@ public sealed class GracefulStopTests(ITestOutputHelper output)
     public async Task FailedReaderIsRecordedWithoutAbandoningExitedOwnerCleanup()
     {
         var managedType = typeof(FfmpegProcessSupervisor).GetNestedType("ManagedProcess", BindingFlags.NonPublic)!;
-        using var process = new Process();
+        using var process = new OwnedChildProcess();
         var managed = Activator.CreateInstance(managedType, new SourceIdentity("TEST", "fixture", "_default_", "drain"),
             RouteProcessPurpose.Live, process, DateTimeOffset.UnixEpoch)!;
         var cancellation = (CancellationTokenSource)managedType.GetProperty("PumpCancellation")!.GetValue(managed)!;
@@ -83,7 +83,7 @@ public sealed class GracefulStopTests(ITestOutputHelper output)
     public async Task TimedOutDrainNeverBecomesEofWhenCancelledReadersFinish()
     {
         var managedType = typeof(FfmpegProcessSupervisor).GetNestedType("ManagedProcess", BindingFlags.NonPublic)!;
-        using var process = new Process();
+        using var process = new OwnedChildProcess();
         var managed = Activator.CreateInstance(managedType, new SourceIdentity("TEST", "fixture", "_default_", "drain"),
             RouteProcessPurpose.Live, process, DateTimeOffset.UnixEpoch)!;
         using var cancellation = (CancellationTokenSource)managedType.GetProperty("PumpCancellation")!.GetValue(managed)!;

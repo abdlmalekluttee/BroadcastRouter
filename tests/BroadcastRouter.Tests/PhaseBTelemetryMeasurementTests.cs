@@ -103,7 +103,7 @@ public sealed class PhaseBTelemetryMeasurementTests(ITestOutputHelper output)
     {
         var owners = typeof(FfmpegProcessSupervisor).GetField("_running", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(lab.Supervisor)!;
         var managed = owners.GetType().GetProperty("Item")!.GetValue(owners, [source.Value])!;
-        var process = (Process)managed.GetType().GetProperty("Process")!.GetValue(managed)!;
+        var process = (OwnedChildProcess)managed.GetType().GetProperty("Process")!.GetValue(managed)!;
         await process.StandardInput.WriteLineAsync($"progress {second * 25L} {second * 1000000L}");
         await process.StandardInput.FlushAsync();
         await FaultHarnessTests.Eventually(() => lab.Supervisor.Snapshot().Single(p => p.Source == source).Progress?.Frame == second * 25L);

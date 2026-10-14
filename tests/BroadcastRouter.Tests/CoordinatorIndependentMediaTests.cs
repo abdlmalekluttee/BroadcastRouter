@@ -306,7 +306,7 @@ public sealed class CoordinatorIndependentMediaTests
         {
             var owners = typeof(FfmpegProcessSupervisor).GetField("_running", Flags)!.GetValue(Supervisor)!;
             var managed = owners.GetType().GetProperty("Item")!.GetValue(owners, [_fixture.Source.Identity.Value])!;
-            var process = (Process)managed.GetType().GetProperty("Process")!.GetValue(managed)!;
+            var process = (OwnedChildProcess)managed.GetType().GetProperty("Process")!.GetValue(managed)!;
             await process.StandardInput.WriteLineAsync(duplicates is { } count
                 ? $"progress-duplicates {frame} {frame * 40000} {count}"
                 : $"progress {frame} {frame * 40000}");

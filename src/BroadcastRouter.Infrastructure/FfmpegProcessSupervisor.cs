@@ -96,7 +96,6 @@ public sealed class FfmpegProcessSupervisor(
     }
     private readonly ConcurrentDictionary<string, RouteProcessSnapshot> _last = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _ownerGates = new(StringComparer.Ordinal);
-    private readonly WindowsKillOnCloseJob _containmentJob = WindowsKillOnCloseJob.Create();
 
     public event Action<RouteProcessLifecycleEvent>? LifecycleChanged;
 
@@ -316,9 +315,22 @@ public sealed class FfmpegProcessSupervisor(
                 ControllerFor(process).Alarm("Shutdown could not complete its output operation; owned-job cleanup requested.");
             }
         }
-        finally { _containmentJob.Dispose(); }
-        // Closing our job is the last-resort teardown of this supervisor only,
-        // not route recovery. Unrelated processes are never targeted.
+        finally
+        {
+            // Each helper now has its own job from native creation. Terminate
+            // only retained owners; keep their pipes/handles for exit observers.
+            foreach (var managed in processes)
+            {
+                try { if (!HasExited(managed.Process)) managed.Process.Kill(entireProcessTree: true); }
+                catch (Exception ex)
+                {
+                    managed.AddError($"Owned-job shutdown cleanup failed: {ex.GetType().Name}");
+                    ControllerFor(managed).Alarm("Shutdown could not confirm owned-job cleanup.");
+                }
+            }
+        }
+        // This is final supervisor teardown, not route recovery. Unrelated
+        // processes are never targeted and observer waits remain bounded.
         try
         {
             await Task.WhenAll(processes.Select(value => value.ExitTask ?? Task.CompletedTask))
@@ -326,6 +338,7 @@ public sealed class FfmpegProcessSupervisor(
         }
         catch (Exception ex)
         { foreach (var process in processes) process.AddError($"Shutdown observation incomplete: {ex.GetType().Name}"); }
+        finally { foreach (var managed in processes) managed.Process.Dispose(); }
         // Gates outlive every in-flight operation/observer. They have no native
         // wait handles; do not dispose or replace them while users can remain.
     }
@@ -419,7 +432,7 @@ public sealed class FfmpegProcessSupervisor(
                 catch { }
             }
 
-            var process = new Process { StartInfo = start, EnableRaisingEvents = true };
+            var process = new OwnedChildProcess { StartInfo = start, EnableRaisingEvents = true };
             var managed = new ManagedProcess(source, purpose, process, _clock.Now);
             managed.Media = media;
             managed.SelectedMedia = selectedMedia;
@@ -442,7 +455,6 @@ public sealed class FfmpegProcessSupervisor(
                 pending.Owner = managed;
                 output.Started(new(source, purpose.ToString(), managed.SessionId, managed.ProcessId, configuration.Generation));
                 ThrowIfClosing();
-                _containmentJob.Add(process);
                 cancellationToken.ThrowIfCancellationRequested();
                 managed.ProgressTask = PumpProgressAsync(managed);
                 managed.ErrorTask = PumpErrorsAsync(managed);
@@ -638,7 +650,7 @@ public sealed class FfmpegProcessSupervisor(
         if (cancellationRequested) cancellationToken.ThrowIfCancellationRequested();
     }
 
-    private static async Task SignalQuitAsync(Process process)
+    private static async Task SignalQuitAsync(OwnedChildProcess process)
     {
         await process.StandardInput.WriteLineAsync("q").ConfigureAwait(false);
         await process.StandardInput.FlushAsync(CancellationToken.None).ConfigureAwait(false);
@@ -720,13 +732,13 @@ public sealed class FfmpegProcessSupervisor(
         catch { }
     }
 
-    private static int? SafeExitCode(Process process)
+    private static int? SafeExitCode(OwnedChildProcess process)
     {
         try { return process.HasExited ? process.ExitCode : null; }
         catch (InvalidOperationException) { return null; }
     }
 
-    private static bool HasExited(Process process)
+    private static bool HasExited(OwnedChildProcess process)
     {
         try { return process.HasExited; }
         catch (InvalidOperationException) { return true; }
@@ -763,7 +775,7 @@ public sealed class FfmpegProcessSupervisor(
             Volatile.Read(ref managed.StopRequested) != 0, media, managed.SelectedMedia, managed.ConfigurationGeneration);
     }
 
-    private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, Process process,
+    private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, OwnedChildProcess process,
         DateTimeOffset startedAt)
     {
         private const int ErrorLimit = 100;
@@ -776,7 +788,7 @@ public sealed class FfmpegProcessSupervisor(
         public double? StopBudgetMilliseconds { get; set; }
         public SourceIdentity Source { get; } = source;
         public RouteProcessPurpose Purpose { get; } = purpose;
-        public Process Process { get; } = process;
+        public OwnedChildProcess Process { get; } = process;
         public int ProcessId { get; set; }
         public DateTimeOffset StartedAt { get; } = startedAt;
         public FfmpegProgressParser Parser { get; } = new();
