@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Reflection;
 using BroadcastRouter.Domain;
 using BroadcastRouter.Infrastructure;
 using Xunit;
@@ -8,6 +9,67 @@ namespace BroadcastRouter.Tests;
 
 public sealed class HelperPipeCleanupTests
 {
+    [Fact]
+    public async Task PreviewReapDeadlineReleasesResourcesWithoutClaimingConfirmedExit()
+    {
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposed = 0;
+        CancellationToken processCancellation = default;
+        var cleanup = PreviewCleanup.RunAsync(token =>
+        {
+            processCancellation = token;
+            return pending.Task; // Models a native reap that ignores cancellation.
+        }, Task.CompletedTask, () => disposed++);
+        try
+        {
+            Assert.Same(cleanup, await Task.WhenAny(cleanup, Task.Delay(TimeSpan.FromSeconds(6))));
+            Assert.Contains("exit", (await cleanup)!, StringComparison.OrdinalIgnoreCase);
+            Assert.True(processCancellation.IsCancellationRequested);
+            Assert.Equal(1, disposed);
+        }
+        finally
+        {
+            pending.TrySetResult();
+            await cleanup.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PendingOrFaultedPreviewReaderCannotHoldStopGateOrReportCleanStop(bool faulted)
+    {
+        using var fixture = new Fixture();
+        await File.WriteAllTextAsync(Path.Combine(fixture.Root, "live.json"), JsonSerializer.Serialize(new
+            { events = Array.Empty<object>(), ignoreQuit = true }));
+        await using var preview = new BrowserPreviewSupervisor();
+        await preview.StartAsync(new(new("TEST", "fixture", "default", "pending-reader"), "Synthetic",
+            new Uri("rtsp://localhost/fixture/synthetic"), SourceState.Ready, 0,
+            new("h264", null, 1920, 1080, 25, null, null, null, true)),
+            new() { FfmpegPath = fixture.Executable });
+        var session = typeof(BrowserPreviewSupervisor).GetField("_current", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(preview)!;
+        var reader = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        session.GetType().GetProperty("ProducerErrors")!.SetValue(session, reader.Task);
+        using var exactOwner = Process.GetProcessById(preview.Snapshot.ProducerProcessId!.Value);
+        _ = exactOwner.SafeHandle;
+        if (faulted) reader.SetException(new IOException("synthetic reader failure"));
+        var stop = preview.StopAsync();
+        try
+        {
+            Assert.Same(stop, await Task.WhenAny(stop, Task.Delay(TimeSpan.FromSeconds(4))));
+            await stop;
+            Assert.Equal(PreviewState.Failed, preview.Snapshot.State);
+            Assert.Contains("drain", preview.Snapshot.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+            Assert.True(exactOwner.HasExited);
+            await preview.StopAsync().WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            reader.TrySetResult();
+            await stop.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
     [Theory]
     [InlineData("auxiliary", true)]
     [InlineData("probe", true)]

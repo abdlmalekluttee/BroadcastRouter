@@ -112,7 +112,8 @@ public sealed class BrowserPreviewSupervisor(SupervisionClock? clock = null) : I
         PreviewSession? candidate = null;
         try
         {
-            await StopCurrentCoreAsync().ConfigureAwait(false);
+            if (await StopCurrentCoreAsync().ConfigureAwait(false) is { } cleanupError)
+                throw new InvalidOperationException(cleanupError);
             if (!File.Exists(tools.FfmpegPath))
                 throw new FileNotFoundException("Configured FFmpeg executable was not found.");
 
@@ -130,13 +131,16 @@ public sealed class BrowserPreviewSupervisor(SupervisionClock? clock = null) : I
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            if (candidate is not null) await StopSessionAsync(candidate).ConfigureAwait(false);
-            SetSnapshot(PreviewSnapshot.Stopped);
+            var cleanupError = candidate is null ? null : await StopSessionAsync(candidate).ConfigureAwait(false);
+            if (ReferenceEquals(_current, candidate)) _current = null;
+            SetSnapshot(cleanupError is null ? PreviewSnapshot.Stopped :
+                CreateSnapshot(candidate!, PreviewState.Failed, "Preview cleanup incomplete.", cleanupError));
             throw;
         }
         catch (Exception exception)
         {
             if (candidate is not null) await StopSessionAsync(candidate).ConfigureAwait(false);
+            if (ReferenceEquals(_current, candidate)) _current = null;
             var safe = LogRedactor.Redact(exception.Message);
             SetSnapshot(new(PreviewState.Failed, source.Identity.Value, source.FriendlyName,
                 VideoSummary(source), AudioSummary(source), HasAudio(source), null, null, null,
@@ -208,10 +212,11 @@ public sealed class BrowserPreviewSupervisor(SupervisionClock? clock = null) : I
                 if (!ReferenceEquals(_current, session)) return;
                 _current = null;
                 var success = HasExitedSuccessfully(session.Producer);
-                await StopSessionAsync(session).ConfigureAwait(false);
+                var cleanupError = await StopSessionAsync(session).ConfigureAwait(false);
+                success &= cleanupError is null;
                 SetSnapshot(CreateSnapshot(session, success ? PreviewState.Stopped : PreviewState.Failed,
                     success ? "Browser preview ended." : "Browser preview ended unexpectedly.",
-                    success ? null : session.LastError));
+                    cleanupError ?? (success ? null : session.LastError)));
             }
             finally { _gate.Release(); }
         }
@@ -230,25 +235,28 @@ public sealed class BrowserPreviewSupervisor(SupervisionClock? clock = null) : I
             _current = null;
             var exited = HasExited(session.Producer);
             var success = !exited || HasExitedSuccessfully(session.Producer);
-            await StopSessionAsync(session).ConfigureAwait(false);
+            var cleanupError = await StopSessionAsync(session).ConfigureAwait(false);
+            success &= cleanupError is null;
             SetSnapshot(CreateSnapshot(session, success ? PreviewState.Stopped : PreviewState.Failed,
                 success ? "Browser preview closed." : "Browser preview ended unexpectedly.",
-                success ? null : session.LastError));
+                cleanupError ?? (success ? null : session.LastError)));
         }
         finally { _gate.Release(); }
     }
 
-    private async Task StopCurrentCoreAsync()
+    private async Task<string?> StopCurrentCoreAsync()
     {
         var session = _current;
         _current = null;
         if (session is null)
         {
             if (Snapshot.State != PreviewState.Failed) SetSnapshot(PreviewSnapshot.Stopped);
-            return;
+            return null;
         }
-        await StopSessionAsync(session).ConfigureAwait(false);
-        SetSnapshot(CreateSnapshot(session, PreviewState.Stopped, "Preview stopped by the operator.", null));
+        var error = await StopSessionAsync(session).ConfigureAwait(false);
+        SetSnapshot(CreateSnapshot(session, error is null ? PreviewState.Stopped : PreviewState.Failed,
+            error is null ? "Preview stopped by the operator." : "Preview cleanup incomplete.", error));
+        return error;
     }
 
     private async Task PumpErrorsAsync(PreviewSession session, StreamReader reader)
@@ -274,33 +282,28 @@ public sealed class BrowserPreviewSupervisor(SupervisionClock? clock = null) : I
         catch (InvalidOperationException) { }
     }
 
-    private async Task StopSessionAsync(PreviewSession session)
-    {
-        session.Cancellation.Cancel();
-        await StopOwnedProcessAsync(session.Producer).ConfigureAwait(false);
-        await IgnoreFailure(session.ProducerErrors).ConfigureAwait(false);
-        session.Producer.Dispose();
-        session.Cancellation.Dispose();
-    }
+    private static Task<string?> StopSessionAsync(PreviewSession session) => PreviewCleanup.RunAsync(
+        token =>
+        {
+            session.Cancellation.Cancel();
+            return StopOwnedProcessAsync(session.Producer, token);
+        }, session.ProducerErrors, () =>
+        {
+            try { session.Producer.Dispose(); }
+            finally { session.Cancellation.Dispose(); }
+        });
 
-    private static async Task StopOwnedProcessAsync(OwnedChildProcess process)
+    private static async Task StopOwnedProcessAsync(OwnedChildProcess process, CancellationToken cancellationToken)
     {
         try
         {
             if (!process.HasExited)
             {
                 process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync().ConfigureAwait(false);
             }
         }
-        catch (InvalidOperationException) { }
-        catch (System.ComponentModel.Win32Exception) { }
-    }
-
-    private static async Task IgnoreFailure(Task? task)
-    {
-        if (task is null) return;
-        try { await task.ConfigureAwait(false); } catch { }
+        catch (InvalidOperationException) { return; } // no process was started
+        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private void UpdateStatistics(PreviewSession session)

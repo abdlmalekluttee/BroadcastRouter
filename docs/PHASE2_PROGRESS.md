@@ -216,3 +216,13 @@ warning-free capture. Physical fifth-connector slate remains unverified because
 it is not looped. These tests used the immutable Phase B candidate, not the new
 Phase C correction. The native busy/unavailable matrix and historical -5 cause
 remain OPEN; software proof cannot replace physical qualification.
+
+### Phase D — helper containment checkpoint
+
+| Task | Findings | Branch | PR | Status | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| P2-32 | R14 | fix/P2-32-helper-containment | #86 | Local software qualification complete; corrected-head CI pending | [P2-32](phase2/P2-32.md) |
+
+Local normal suite689/689, no skips; all136legacy behavioral cases retained.
+Strict KnownDefect lists R18 actor and reason redaction as OPEN, not passing.
+This checkpoint does not close hardware, Session0, deployment or combined-PR gates.
