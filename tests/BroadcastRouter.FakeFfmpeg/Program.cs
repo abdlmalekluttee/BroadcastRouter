@@ -5,6 +5,20 @@ using System.IO.Pipes;
 using System.Text.RegularExpressions;
 
 // Test-only child: no network, media devices or application endpoints.
+if (args is ["--owned-child-contract", var exitCodeText, ..])
+{
+    Console.InputEncoding = new System.Text.UTF8Encoding(false);
+    Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+    if (long.TryParse(Environment.GetEnvironmentVariable("BROADCASTROUTER_SYNTHETIC_HANDLE"), out var otherHandle))
+        Native.SetEvent((IntPtr)otherHandle);
+    var input = await Console.In.ReadLineAsync();
+    await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new { Arguments = args.Skip(2).ToArray(),
+        Input = input, Directory = Environment.CurrentDirectory,
+        EnvironmentValue = Environment.GetEnvironmentVariable("BROADCASTROUTER_SYNTHETIC_VALUE"),
+        ConsoleWindow = OperatingSystem.IsWindows() ? Native.GetConsoleWindow().ToInt64() : 0 }));
+    await Console.Error.WriteLineAsync("synthetic stderr Ω");
+    return int.Parse(exitCodeText, System.Globalization.CultureInfo.InvariantCulture);
+}
 // In an isolated copied fixture directory, accept the application's real tokenized
 // media-tool arguments. This executable never opens URLs or hardware.
 var scriptPath = args.Length == 1 ? args[0]
@@ -145,6 +159,8 @@ internal sealed record Script(Event[] Events, int? ExitAfterMilliseconds, int Ex
 internal sealed record Event(int AtMilliseconds, string Channel, string Text);
 internal static class Native
 {
+    [DllImport("kernel32.dll")] internal static extern IntPtr GetConsoleWindow();
+    [DllImport("kernel32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetEvent(IntPtr handle);
     [DllImport("kernel32.dll")]
     internal static extern uint SetErrorMode(uint mode);
 }

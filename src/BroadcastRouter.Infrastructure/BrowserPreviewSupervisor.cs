@@ -117,7 +117,7 @@ public sealed class BrowserPreviewSupervisor(SupervisionClock? clock = null) : I
                 throw new FileNotFoundException("Configured FFmpeg executable was not found.");
 
             var plan = BrowserPreviewCommandBuilder.Build(tools, source);
-            candidate = new PreviewSession(source, new Process { StartInfo = plan.Producer }, (clock ?? SupervisionClock.System).UtcNow);
+            candidate = new PreviewSession(source, new OwnedChildProcess { StartInfo = plan.Producer }, (clock ?? SupervisionClock.System).UtcNow);
             SetSnapshot(CreateSnapshot(candidate, PreviewState.Starting, "Preparing the embedded browser stream...", null));
 
             if (!candidate.Producer.Start())
@@ -283,7 +283,7 @@ public sealed class BrowserPreviewSupervisor(SupervisionClock? clock = null) : I
         session.Cancellation.Dispose();
     }
 
-    private static async Task StopOwnedProcessAsync(Process process)
+    private static async Task StopOwnedProcessAsync(OwnedChildProcess process)
     {
         try
         {
@@ -353,9 +353,9 @@ public sealed class BrowserPreviewSupervisor(SupervisionClock? clock = null) : I
         : "No audio track detected";
 
     private static bool HasAudio(DiscoveredSource source) => !string.IsNullOrWhiteSpace(source.Media?.AudioCodec);
-    private static int? SafeProcessId(Process process) { try { return process.Id; } catch { return null; } }
-    private static bool HasExited(Process process) { try { return process.HasExited; } catch { return true; } }
-    private static bool HasExitedSuccessfully(Process process) { try { return process.HasExited && process.ExitCode == 0; } catch { return false; } }
+    private static int? SafeProcessId(OwnedChildProcess process) { try { return process.Id; } catch { return null; } }
+    private static bool HasExited(OwnedChildProcess process) { try { return process.HasExited; } catch { return true; } }
+    private static bool HasExitedSuccessfully(OwnedChildProcess process) { try { return process.HasExited && process.ExitCode == 0; } catch { return false; } }
 
     private static readonly HashSet<string> ProgressKeys = new(StringComparer.Ordinal)
     {
@@ -363,11 +363,11 @@ public sealed class BrowserPreviewSupervisor(SupervisionClock? clock = null) : I
         "out_time", "dup_frames", "drop_frames", "speed", "progress"
     };
 
-    private sealed class PreviewSession(DiscoveredSource source, Process producer, DateTimeOffset startedAt)
+    private sealed class PreviewSession(DiscoveredSource source, OwnedChildProcess producer, DateTimeOffset startedAt)
     {
         private readonly ConcurrentQueue<string> _errors = new();
         public DiscoveredSource Source { get; } = source;
-        public Process Producer { get; } = producer;
+        public OwnedChildProcess Producer { get; } = producer;
         public string StreamToken { get; } = Guid.NewGuid().ToString("N");
         public DateTimeOffset StartedAt { get; } = startedAt;
         public CancellationTokenSource Cancellation { get; } = new();

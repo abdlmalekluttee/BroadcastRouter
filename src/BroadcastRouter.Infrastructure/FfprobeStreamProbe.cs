@@ -34,7 +34,7 @@ public sealed class FfprobeStreamProbe(
             "stream=index,codec_type,codec_name,width,height,nb_read_frames,nb_read_packets,avg_frame_rate,r_frame_rate,bit_rate,field_order,sample_rate,channels:format=bit_rate:frame=media_type,stream_index,best_effort_timestamp_time,pts_time,nb_samples",
             "-of", "json", rtspUri.AbsoluteUri);
 
-        using var process = Process.Start(start);
+        using var process = OwnedChildProcess.Start(start);
         if (process is null) return new(false, false, null, "ProcessStart", "FFprobe could not be started.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -215,7 +215,7 @@ public sealed class FfprobeStreamProbe(
         var line = stderr.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "FFprobe failed.";
         return line.Length <= 500 ? line : line[..500];
     }
-    private static async Task TerminateAsync(Process process, Task<string> stdoutTask, Task<string> stderrTask)
+    private static async Task TerminateAsync(OwnedChildProcess process, Task<string> stdoutTask, Task<string> stderrTask)
     {
         try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
         using var reapDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));

@@ -46,7 +46,6 @@ public sealed class FfmpegProcessSupervisor(
     private readonly ConcurrentDictionary<string, ManagedProcess> _running = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RouteProcessSnapshot> _last = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _ownerGates = new(StringComparer.Ordinal);
-    private readonly WindowsKillOnCloseJob _containmentJob = WindowsKillOnCloseJob.Create();
 
     public event Action<RouteProcessLifecycleEvent>? LifecycleChanged;
 
@@ -170,7 +169,7 @@ public sealed class FfmpegProcessSupervisor(
         var processes = _running.Values.ToArray();
         await Task.WhenAll(processes.Select(value => StopOwnedAsync(value.Source, gracefulStopTimeout, CancellationToken.None))).ConfigureAwait(false);
         await Task.WhenAll(processes.Select(value => value.ExitTask ?? Task.CompletedTask)).ConfigureAwait(false);
-        _containmentJob.Dispose();
+        foreach (var managed in processes) managed.Process.Dispose();
         foreach (var gate in _ownerGates.Values) gate.Dispose();
         _ownerGates.Clear();
     }
@@ -199,7 +198,7 @@ public sealed class FfmpegProcessSupervisor(
                 catch { }
             }
 
-            var process = new Process { StartInfo = start, EnableRaisingEvents = true };
+            var process = new OwnedChildProcess { StartInfo = start, EnableRaisingEvents = true };
             var managed = new ManagedProcess(source, purpose, process, _clock.Now);
             managed.Media = media;
             managed.SelectedMedia = selectedMedia;
@@ -212,7 +211,6 @@ public sealed class FfmpegProcessSupervisor(
                 try { managed.ProcessStartUtc = new DateTimeOffset(process.StartTime.ToUniversalTime()); }
                 catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
                 { } // Exact time unknown, never substitute an invented value or change launch policy for diagnostics.
-                ContainOrTerminate(process);
                 // Publish only a fully associated Process. Snapshot readers do
                 // not take the owner gate and must never observe the interval
                 // between Process construction and Process.Start().
@@ -240,24 +238,6 @@ public sealed class FfmpegProcessSupervisor(
             }
         }
         finally { ownerGate.Release(); }
-    }
-
-    private void ContainOrTerminate(Process process)
-    {
-        try
-        {
-            _containmentJob.Add(process);
-        }
-        catch
-        {
-            try
-            {
-                if (!process.HasExited) process.Kill(entireProcessTree: true);
-                process.WaitForExit();
-            }
-            catch { }
-            throw;
-        }
     }
 
     private async Task ObserveExitAsync(ManagedProcess managed)
@@ -392,7 +372,7 @@ public sealed class FfmpegProcessSupervisor(
         if (cancellationRequested) cancellationToken.ThrowIfCancellationRequested();
     }
 
-    private static async Task SignalQuitAsync(Process process)
+    private static async Task SignalQuitAsync(OwnedChildProcess process)
     {
         await process.StandardInput.WriteLineAsync("q").ConfigureAwait(false);
         await process.StandardInput.FlushAsync(CancellationToken.None).ConfigureAwait(false);
@@ -472,13 +452,13 @@ public sealed class FfmpegProcessSupervisor(
         catch { }
     }
 
-    private static int? SafeExitCode(Process process)
+    private static int? SafeExitCode(OwnedChildProcess process)
     {
         try { return process.HasExited ? process.ExitCode : null; }
         catch (InvalidOperationException) { return null; }
     }
 
-    private static bool HasExited(Process process)
+    private static bool HasExited(OwnedChildProcess process)
     {
         try { return process.HasExited; }
         catch (InvalidOperationException) { return true; }
@@ -515,7 +495,7 @@ public sealed class FfmpegProcessSupervisor(
             Volatile.Read(ref managed.StopRequested) != 0, media, managed.SelectedMedia);
     }
 
-    private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, Process process,
+    private sealed class ManagedProcess(SourceIdentity source, RouteProcessPurpose purpose, OwnedChildProcess process,
         DateTimeOffset startedAt)
     {
         private const int ErrorLimit = 100;
@@ -526,7 +506,7 @@ public sealed class FfmpegProcessSupervisor(
         public double? StopBudgetMilliseconds { get; set; }
         public SourceIdentity Source { get; } = source;
         public RouteProcessPurpose Purpose { get; } = purpose;
-        public Process Process { get; } = process;
+        public OwnedChildProcess Process { get; } = process;
         public int ProcessId { get; set; }
         public DateTimeOffset StartedAt { get; } = startedAt;
         public FfmpegProgressParser Parser { get; } = new();

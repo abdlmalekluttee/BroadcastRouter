@@ -68,6 +68,17 @@ internal sealed class WindowsKillOnCloseJob : IDisposable
 
     public void Dispose() => _handle.Dispose();
 
+    internal void Terminate()
+    {
+        if (_handle.IsClosed) return;
+        if (!NativeMethods.TerminateJobObject(_handle, uint.MaxValue))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not terminate the owned helper job.");
+    }
+
+    // Caller owns this job throughout CreateProcess; SECURITY_ATTRIBUTES was null,
+    // so the job handle itself is never inheritable by its members.
+    internal IntPtr NativeHandle => _handle.DangerousGetHandle();
+
     private sealed class SafeJobHandle : SafeHandleZeroOrMinusOneIsInvalid
     {
         public SafeJobHandle() : base(true) { }
@@ -133,6 +144,10 @@ internal sealed class WindowsKillOnCloseJob : IDisposable
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool AssignProcessToJobObject(SafeJobHandle job, SafeProcessHandle process);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool TerminateJobObject(SafeJobHandle job, uint exitCode);
 
         [DllImport("kernel32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
