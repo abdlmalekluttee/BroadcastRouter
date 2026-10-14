@@ -129,6 +129,58 @@ public sealed class StartupRoutePersistenceTests
         });
     }
 
+    [Theory]
+    [InlineData(2)]
+    [InlineData(-2)]
+    public async Task ClockStepKeepsActualAuditUtcAndPersistedRetryRemainingTime(int step)
+    {
+        await WithStore(async (store, connection) =>
+        {
+            var provider = new ManualTimeProvider();
+            var clock = new SupervisionClock(provider);
+            var original = Route(AssignmentMode.Automatic, RouteState.Reconnecting) with
+            {
+                StartedAt = clock.Now,
+                UpdatedAt = clock.Now,
+                RetryAt = clock.Now.AddSeconds(30),
+                HoldOutputWhilePublisherLive = true
+            };
+            await store.SaveRouteAsync(original, original.State);
+            using var coordinator = new RouterCoordinator(store, null!, null!,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<RouterCoordinator>.Instance, clock);
+            var routes = (Dictionary<string, RuntimeRoute>)typeof(RouterCoordinator)
+                .GetField("_routes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(coordinator)!;
+            routes.Add(original.SourceId, original);
+            provider.Advance(TimeSpan.FromSeconds(5));
+            provider.StepUtc(TimeSpan.FromSeconds(step));
+
+            // Real command, atomic audit/route transaction and public snapshot;
+            // no network, child or hardware loop is started by this command.
+            await coordinator.CommandAsync("disable-live-hold", original.SourceId, actor: "synthetic-admin");
+            var audit = Assert.Single(await store.ReadConfigurationAuditAsync());
+            Assert.Equal("PublisherLiveRecoveryHold", audit.EventType);
+            Assert.Equal(provider.GetUtcNow(), audit.Timestamp);
+            Assert.Equal(provider.GetUtcNow(), coordinator.Snapshot.UpdatedAt);
+            var saved = Assert.Single(await store.LoadRoutesAsync());
+            Assert.False(saved.HoldOutputWhilePublisherLive);
+            Assert.Equal(provider.GetUtcNow(), saved.UpdatedAt);
+            Assert.Equal(provider.GetUtcNow().AddSeconds(25), saved.RetryAt);
+            Assert.Equal(TimeSpan.FromSeconds(25), routes[original.SourceId].RetryAt - clock.Now);
+
+            await CountFutureWrites(connection);
+            var nextClock = new SupervisionClock(provider);
+            provider.Advance(TimeSpan.FromSeconds(3));
+            // An additional adjustment between clock construction and startup
+            // makes an omitted RouteFromUtc consumer conversion observable.
+            provider.StepUtc(TimeSpan.FromSeconds(step));
+            var loaded = Assert.Single(await RunStartupOnly(store, nextClock));
+            Assert.Equal(TimeSpan.FromSeconds(22 - step), loaded.RetryAt - nextClock.Now);
+            Assert.Equal(0L, await Scalar(connection, "SELECT COUNT(*) FROM startup_writes"));
+            Assert.Equal(0L, await Scalar(connection, "SELECT COUNT(*) FROM route_history"));
+            Assert.Equal(saved, Assert.Single(await store.LoadRoutesAsync()));
+        });
+    }
+
     private static RuntimeRoute Route(AssignmentMode assignment, RouteState state)
     {
         var when = DateTimeOffset.Parse("2024-12-31T23:59:00Z");
@@ -137,7 +189,7 @@ public sealed class StartupRoutePersistenceTests
             when, when, null, null, RetryAt: when.AddMinutes(2));
     }
 
-    private static async Task RunStartupOnly(SqliteDataStore store, SupervisionClock clock)
+    private static async Task<RuntimeRoute[]> RunStartupOnly(SqliteDataStore store, SupervisionClock clock)
     {
         // The real startup path loads/migrates/persists before its Host log. Stop at
         // that boundary, before any discovery, process, network or hardware loop.
@@ -145,6 +197,8 @@ public sealed class StartupRoutePersistenceTests
         var method = typeof(RouterCoordinator).GetMethod("ExecuteAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         await Assert.ThrowsAsync<StartupCompleteException>(() =>
             (Task)method.Invoke(coordinator, [CancellationToken.None])!);
+        return ((Dictionary<string, RuntimeRoute>)typeof(RouterCoordinator)
+            .GetField("_routes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(coordinator)!).Values.ToArray();
     }
 
     private sealed class StartupCompleteException : Exception;

@@ -53,7 +53,32 @@ open, not passing product behavior. Hardware rows remain open.
 - `docs/PHASE2_PROGRESS.md`: preserve containment evidence and its open hardware,
   Session 0 and combined-build qualifications.
 
+### #87: actual monotonic-clock consumers
+
+- `docs/PHASE2_PROGRESS.md`: preserve all independent branch results and clearly
+  distinguish them from combined qualification.
+- The test changes merged without text conflicts. Explicitly retain the #85
+  store-owned diagnostic drain and sample high-water synchronization alongside
+  #87's actual UTC audit, SQLite retry round-trip and media clock-step assertions.
+  Keep #86's native process wrapper in shared media fixtures. No runtime thresholds
+  or policy were changed by the clock-test integration.
+
 ## Verification
 
 Fresh main baseline: 672 normal tests passed, zero failed/skipped. Combined
 qualification is pending; no merge-ready claim is made by this document.
+
+Incremental conflict checks (not substitutes for final-head qualification):
+
+| Integrated step | Focused normal cases | Result |
+| --- | ---: | --- |
+| #83 | 88 | Passed |
+| #84 | 119 | Passed |
+| #85 | 73 | Passed |
+| #86 | 87 | Passed |
+| #87 | 67 | Passed |
+
+The first #85 diagnostic filter also selected the two R18 KnownDefect cases;
+they failed at their expected assertions. The corrected normal-only filter above
+passed without changing tests or implementation. Strict KnownDefect verification
+is still a separate final-head requirement.

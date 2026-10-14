@@ -246,7 +246,7 @@ public sealed class CoordinatorIndependentMediaTests
         Assert.All(evidence.GetProperty("Signals").EnumerateArray(), signal => Assert.Equal("Failed", signal.GetProperty("State").GetString()));
     }
 
-    private sealed class Lab : IAsyncDisposable
+    internal sealed class Lab : IAsyncDisposable
     {
         private const BindingFlags Flags = BindingFlags.Instance|BindingFlags.NonPublic;
         private readonly SupervisorMediaEvidenceTests.MediaChildFixture _fixture;
@@ -280,12 +280,13 @@ public sealed class CoordinatorIndependentMediaTests
             try { await lab.Store.InitializeAsync(); await fixture.Start(lab.Supervisor); return lab; }
             catch { await lab.DisposeAsync(); throw; }
         }
-        internal async Task Qualify()
+        internal async Task Qualify(bool includeInputVideo = true)
         {
             for (var i=0;i<=4;i++)
             {
                 if(i>0)Time.Advance(TimeSpan.FromMilliseconds(500));
-                await FaultHarnessTests.Eventually(()=>Owner.IndependentMedia!.Signals.All(s=>s.LastAdvancedAt==Clock.Now));
+                await FaultHarnessTests.Eventually(()=>Owner.IndependentMedia!.Signals
+                    .Where(s => includeInputVideo || s.Kind != MediaSignalKind.InputVideo).All(s=>s.LastAdvancedAt==Clock.Now));
             }
         }
         internal Task Monitor()=>(Task)typeof(RouterCoordinator).GetMethod("MonitorProcessesAsync",Flags)!.Invoke(Coordinator,[CancellationToken.None])!;

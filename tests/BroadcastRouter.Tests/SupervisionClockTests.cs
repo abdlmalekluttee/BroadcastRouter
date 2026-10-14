@@ -24,6 +24,8 @@ public sealed class SupervisionClockTests
     [Theory]
     [InlineData(10)]
     [InlineData(-10)]
+    [InlineData(2)]
+    [InlineData(-2)]
     public void PublishingAfterWallStepDoesNotMakeFreshStatusStale(int seconds)
     {
         var provider = new ManualTimeProvider();
@@ -44,6 +46,8 @@ public sealed class SupervisionClockTests
     [Theory]
     [InlineData(10)]
     [InlineData(-10)]
+    [InlineData(2)]
+    [InlineData(-2)]
     public void PersistedDeadlineRebasesIntoNextServiceRun(int wallStep)
     {
         var provider = new ManualTimeProvider();
