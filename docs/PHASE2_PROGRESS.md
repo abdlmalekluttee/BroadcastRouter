@@ -216,3 +216,15 @@ warning-free capture. Physical fifth-connector slate remains unverified because
 it is not looped. These tests used the immutable Phase B candidate, not the new
 Phase C correction. The native busy/unavailable matrix and historical -5 cause
 remain OPEN; software proof cannot replace physical qualification.
+
+### Phase D — monotonic qualification checkpoint
+
+| Task | Findings | Branch | PR | Status | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| P2-33 | R24 | codex/p2-33-monotonic-qualification | Pending | Local qualification passed; independent review and hosted CI pending | [P2-33](phase2/P2-33.md) |
+
+24 new cases; normal suite 696/696 with no skips. Temporary wall-clock mutation
+produced 21 specific assertion failures; exact restored source passes all32
+focused cases. No production code or threshold changes. Two strict R18 assertion
+failures remain OPEN for Phase G. Actual OS/NTP, Session0, hardware and soak
+qualification remain separate; the full Phase D gate is not closed here.

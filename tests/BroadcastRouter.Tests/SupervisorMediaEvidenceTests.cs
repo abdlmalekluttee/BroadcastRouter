@@ -113,9 +113,13 @@ public sealed class SupervisorMediaEvidenceTests
             new Uri("rtsp://example.invalid/fixture"), SourceState.Ready, 0,
             new("h264", "aac", 1920, 1080, 25, null, 48000, 2, true));
         internal MediaChildFixture(bool exitImmediately = false, string? stderr = null,
-            SourceIdentity? identity = null, int? stopPcmAfterBatch = null)
+            SourceIdentity? identity = null, int? stopPcmAfterBatch = null,
+            SourceMediaExpectation? expectation = null, int? stopInputVideoAfterBatch = null)
         {
             if (identity is not null) Source = Source with { Identity = identity };
+            if (expectation is { } declared) Source = Source with { Media = Source.Media! with
+                { Expectation = declared, HasUsableVideo = declared != SourceMediaExpectation.AudioOnly,
+                    VideoCodec = declared == SourceMediaExpectation.AudioOnly ? null : "h264" } };
             Directory.CreateDirectory(Root);
             var child = Path.Combine(FaultHarnessTests.RepositoryRoot(), "tests", "BroadcastRouter.FakeFfmpeg", "bin", "Release", "net8.0");
             foreach (var file in Directory.GetFiles(child, "BroadcastRouter.FakeFfmpeg.*")) File.Copy(file, Path.Combine(Root, Path.GetFileName(file)));
@@ -123,7 +127,10 @@ public sealed class SupervisorMediaEvidenceTests
             if (stderr is not null) events.Add(new { atMilliseconds=0, channel="stderr", text=stderr });
             for (var i = 0; i < (exitImmediately ? 0 : 150); i++)
             {
-                events.Add(new { atMilliseconds=i*20, channel="-stats_enc_pre:v:0", text=$"brmedia|pre|v|{i}|{i}|1/25|{i}" });
+                if (stopInputVideoAfterBatch is null || i < stopInputVideoAfterBatch)
+                    events.Add(new { atMilliseconds=i*20, channel="-stats_enc_pre:v:0", text=$"brmedia|pre|v|{i}|{i}|1/25|{i}" });
+                if (i == stopInputVideoAfterBatch)
+                    events.Add(new { atMilliseconds=i*20, channel="stderr", text="Synthetic input video batch complete" });
                 if (stopPcmAfterBatch is null || i < stopPcmAfterBatch)
                     events.Add(new { atMilliseconds=i*20, channel="pcm", text=$"frame:{i} pts:{i*1024} pts_time:0\nlavfi.astats.Overall.Number_of_samples={(i+1)*1024}.000000" });
                 if (i == stopPcmAfterBatch)
