@@ -235,3 +235,24 @@ before the approved session; if the readiness cutoff is missed, cancel rather
 than run late. No merge, deployment, hardware pass or physical slate claim is
 implied by these software tests. Recheck muted presets privately in the deployment
 runbook; an earlier inventory is not deployment-time evidence.
+
+## P2-30 software correction (draft qualification)
+
+Built from merged main; separate PR, owner-only merge. Physical-output controllers
+now retain exact ownership across configuration generations, bounded operations,
+shutdown and watchdog escalation. The independent review found pending-start stop
+and coordinator shutdown-admission races plus insufficient physical-key contention
+in the long-run fixture. Those findings were reproduced and corrected test-first.
+Delayed exit cleanup was also graded Important because it stranded an idle output;
+its regression failed before the cleanup-admission retry was implemented.
+
+Corrected verification: 695 normal tests passed (680 remaining, 14 standby-day,
+1 telemetry-day), zero skips/failures; Release build zero warnings/errors; CI contract
+17/17 and provenance12/12. Strict KnownDefect verifies two exact R18 failures; both
+remain OPEN for Phase G, not passing product behavior. Repeated verification exposed
+a same-source stop/restart regression in original baseline 69; a deterministic
+slow-stop test failed first, then pending-stop intent restored the correct ordering.
+The original 136 tests are unchanged and green. The first long qualification failed
+on a documented busy refusal and a later run was superseded; both remain evidence,
+not passes. A fresh final-build hour is required and is NOT yet a completed row.
+No deployment, hardware claim, host restart or production edit.

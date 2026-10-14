@@ -5,9 +5,8 @@ namespace BroadcastRouter.Web.Services;
 
 /// <summary>
 /// The HTTP host can remain responsive when the routing worker is blocked in a
-/// native media operation. Fail fast only after a sustained coordinator stall
-/// so the Windows Service Control Manager can restart the process and the Job
-/// Object can remove the exact owned media children.
+/// native media operation. Recover only provably idle controllers; never kill
+/// unrelated media owners to recover a control-plane stall.
 /// </summary>
 public sealed class RouterCoordinatorWatchdog(
     RouterCoordinator coordinator,
@@ -36,27 +35,27 @@ public sealed class RouterCoordinatorWatchdog(
             var coordinatorResponsive = CoordinatorLivenessPolicy.IsResponsive(liveness, now, MaximumSilence);
             var stalledAuxiliary = coordinator.GetAuxiliaryLiveness().FirstOrDefault(snapshot =>
                 !AuxiliaryLoopLivenessPolicy.IsResponsive(snapshot, now, MaximumSilenceFor(snapshot.Name)));
-            if (coordinatorResponsive && stalledAuxiliary is null) continue;
-            if (Interlocked.Exchange(ref _recoveryStarted, 1) != 0) return;
+            if (coordinatorResponsive && stalledAuxiliary is null)
+            { Interlocked.Exchange(ref _recoveryStarted, 0); continue; }
+            if (Interlocked.Exchange(ref _recoveryStarted, 1) != 0) continue;
 
             string message;
             if (!coordinatorResponsive)
             {
                 var silence = now - liveness.LastProgressAt;
                 message = $"Coordinator made no progress for {silence.TotalSeconds:F0} seconds "
-                    + $"while in stage '{liveness.Stage}'. The host will terminate so Windows Service recovery can restore routing.";
+                    + $"while in stage '{liveness.Stage}'. Existing output owners are preserved; operator investigation is required.";
             }
             else
             {
                 var silence = now - stalledAuxiliary!.LastProgressAt;
                 message = $"Critical auxiliary loop '{stalledAuxiliary.Name}' made no progress for "
                     + $"{silence.TotalSeconds:F0} seconds after {stalledAuxiliary.RestartCount} restart attempt(s). "
-                    + "The host will terminate so Windows Service recovery can restore routing.";
+                    + "Existing output owners are preserved; operator investigation is required.";
             }
             await TerminateForStallAsync(message, coordinatorResponsive ? "AuxiliaryLoopStall" : "CoordinatorStall",
                 new(ProgressAgeMilliseconds: (now - (coordinatorResponsive ? stalledAuxiliary!.LastProgressAt : liveness.LastProgressAt)).TotalMilliseconds),
                 coordinatorResponsive ? MaximumSilenceFor(stalledAuxiliary!.Name) : MaximumSilence, stoppingToken);
-            return;
         }
     }
 
@@ -64,19 +63,17 @@ public sealed class RouterCoordinatorWatchdog(
         TimeSpan window, CancellationToken stoppingToken)
     {
         logger.LogCritical("{Category}: {Message}", "CoordinatorWatchdog", message);
+        var recovered = coordinator.RecoverIdleControllersAndAlarm(message);
         telemetry?.Record("HOST", null, null, trigger, evidence, null,
-            "Existing sustained coordinator/auxiliary silence policy", window.TotalMilliseconds,
-            ["Wait", "Route-only recovery (not implemented until P2-30)"], "HostFailFast", "TerminationRequestedNotConfirmed");
-        foreach (var process in coordinator.OwnedProcessesForDiagnostics())
-            telemetry?.Record(process.Source.Value, null, process, trigger,
-                SupervisionTelemetry.Evidence(process, _clock), null, "Host termination affects all exact owned sessions",
-                window.TotalMilliseconds, ["Leave child running"], "HostFailFastChildImpact", "TerminationRequestedNotConfirmed");
+            "Recover only quiescent controllers without an owned session; preserve uncertain ownership", window.TotalMilliseconds,
+            ["Recover proven idle controller", "Preserve active owners"], "ControllerStallAlarm",
+            recovered > 0 ? "IdleControllersRecoveredHostPreserved" : "OwnershipNotProvenSafeHostPreserved");
 
         using var logDeadline = new CancellationTokenSource(LogBudget);
         if (telemetry is not null)
         {
             try { await telemetry.FlushAsync(logDeadline.Token).ConfigureAwait(false); }
-            catch (Exception ex) { logger.LogError(ex, "Watchdog telemetry drain failed; termination evidence may be incomplete."); }
+            catch (Exception ex) { logger.LogError(ex, "Watchdog telemetry drain failed; stall evidence may be incomplete."); }
         }
         try
         {
@@ -92,9 +89,8 @@ public sealed class RouterCoordinatorWatchdog(
         catch (Exception ex) when (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
         { logger.LogError(ex, "Coordinator watchdog could not persist its recovery record."); }
 
-        // Keep the existing destructive policy unchanged in Phase A. No claim that it is safe:
-        // P2-30 replaces whole-host recovery. The seam prevents tests from terminating a host.
-        TerminateProcess(message);
+        // No process termination: a control-plane stall is not proof that any
+        // media owner is faulty. The legacy delegate remains a negative-test seam.
     }
 
     internal static TimeSpan MaximumSilenceFor(string loopName) =>
@@ -102,3 +98,5 @@ public sealed class RouterCoordinatorWatchdog(
             ? MaximumFastInputSilence
             : MaximumFastPublisherSilence;
 }
+
+public sealed record ControllerWatchdogAlarm(DateTimeOffset ObservedAt, string Reason, int IdleControllersRecovered);
