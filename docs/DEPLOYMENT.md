@@ -1,5 +1,13 @@
 # Windows deployment
 
+Prepared standby slates use a bounded `standby-slates` directory under the data
+folder. The service account needs read/write access there and read access to its
+configured logos and font. Do not clear this cache while outputs are running.
+Published entries are immutable; a full cache refuses new preparation and keeps
+the prior valid owner. Clean unused entries only during approved maintenance.
+The required prepared-slate FFmpeg filters/codecs must pass Media Tools validation
+before standby is enabled. See [P2-43](phase2/P2-43.md) for qualification boundaries.
+
 ## Recommended: dedicated broadcast Windows Service
 
 1. Install the matching Blackmagic Desktop Video release and verify each output in Desktop Video Setup/Media Express.

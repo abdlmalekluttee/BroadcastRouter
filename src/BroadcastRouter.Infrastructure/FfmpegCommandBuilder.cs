@@ -258,6 +258,55 @@ public static class FfmpegCommandBuilder
         return start;
     }
 
+    public static ProcessStartInfo BuildStandbySlateRender(FfmpegRouteOptions options, DeckLinkPort port,
+        OutputPreset preset, PortStandbyConfiguration configuration, string imagePath)
+    {
+        var start = BuildPortStandby(options with { UseWindowsDeckLinkSafeTerminate = false }, port,
+            preset with { IncludeAudio = false, Interlaced = false }, configuration with { ShowClock = false });
+        for (var i = 0; i < 3; i++) start.ArgumentList.RemoveAt(start.ArgumentList.Count - 1);
+        start.ArgumentList.Remove("-re");
+        start.ArgumentList[start.ArgumentList.IndexOf("-pix_fmt") + 1] = "rgb24";
+        Add(start, "-frames:v", "1", "-c:v", "png", "-threads:v", "1", "-f", "image2", "-update", "1", imagePath);
+        return start;
+    }
+
+    public static ProcessStartInfo BuildPreparedStandby(FfmpegRouteOptions options, DeckLinkPort port,
+        OutputPreset preset, PortStandbyConfiguration configuration, PreparedStandbySlate slate)
+    {
+        if (slate.Width != preset.Mode.Width || slate.Height != preset.Mode.Height) throw new InvalidOperationException("Prepared standby raster changed.");
+        ValidateToken(port.FfmpegName, nameof(port.FfmpegName));
+        ValidateToken(preset.Mode.PixelFormat, nameof(preset.Mode.PixelFormat));
+        var start = new ProcessStartInfo(options.ExecutablePath)
+        { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden };
+        var imageName = Path.GetFileName(slate.Path);
+        if (string.IsNullOrWhiteSpace(imageName) || imageName.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('.' or '-' or '_')))
+            throw new ArgumentException("Prepared image must use an opaque safe cache filename.");
+        start.WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(slate.Path))!;
+        var numerator = checked(preset.Mode.FrameRateNumerator * (preset.Interlaced ? 2 : 1));
+        var denominator = preset.Mode.FrameRateDenominator;
+        // Decode/convert the image once. Repeating the in-memory frame avoids
+        // decoding a large PNG at every field. -re paces the lavfi input; explicit
+        // PTS and fps preserve both timing and frame-rate metadata.
+        var input = $"movie=filename={imageName}:dec_threads=1,format=yuv422p,loop=loop=-1:size=1:start=0,setpts=N*{denominator}/({numerator}*TB),fps={numerator}/{denominator}";
+        Add(start, "-hide_banner", "-loglevel", options.LogLevel, "-progress", "pipe:1", "-nostats", "-filter_threads", "1",
+            "-re", "-f", "lavfi", "-i", input);
+        if (preset.IncludeAudio) Add(start, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
+        var margin = Math.Clamp(preset.Mode.Height / 36, 16, 48);
+        var clockSize = Math.Clamp(preset.Mode.Height / 9, 64, 144);
+        var dateSize = Math.Clamp(preset.Mode.Height / 24, 28, 64);
+        const string font = "fontfile='C\\:/Windows/Fonts/arial.ttf':";
+        var motion = configuration.ShowClock
+            ? $"drawtext={font}text='%{{localtime\\:%H\\\\\\:%M\\\\\\:%S}}':fontcolor=white:fontsize={clockSize}:box=1:boxcolor=black@0.72:boxborderw={margin / 2}:x=(w-tw)/2:y=h/2-th-{dateSize / 3}," +
+              $"drawtext={font}text='%{{localtime\\:%A %d %B %Y}}':fontcolor=white:fontsize={dateSize}:box=1:boxcolor=black@0.72:boxborderw={margin / 3}:x=(w-tw)/2:y=h/2+{dateSize / 2}"
+            : $"drawbox=x=iw-{margin * 2}:y=ih/2:w={margin}:h={margin}:color=white:t=fill:enable='lt(mod(t\\,2)\\,1)'";
+        Add(start, "-map", "0:v:0", "-vf", BuildGeneratedVideoFilter(preset) + "," + motion, "-pix_fmt", preset.Mode.PixelFormat);
+        if (preset.IncludeAudio) Add(start, "-map", "1:a:0", "-af", SilentAudioFilter, "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le");
+        else Add(start, "-an");
+        AddDeckLinkOutput(start, options, port.FfmpegName);
+        return start;
+    }
+
     private static void AddDeckLinkOutput(ProcessStartInfo start, FfmpegRouteOptions options, string ffmpegName)
     {
         if (options.UseWindowsDeckLinkSafeTerminate) Add(start, "-win_safe_terminate", "1");

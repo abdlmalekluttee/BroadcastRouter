@@ -38,8 +38,9 @@ public sealed class FfmpegProcessSupervisor(
     TimeSpan gracefulStopTimeout,
     SupervisionClock? clock = null, SupervisionTelemetry? telemetry = null,
     BenchOutputGuard? benchGuard = null,
-    PortReservationManager? reservations = null) : IRouteProcessSupervisor, IAsyncDisposable
+    PortReservationManager? reservations = null, StandbySlateCache? standbySlates = null) : IRouteProcessSupervisor, IAsyncDisposable
 {
+    private readonly StandbySlateCache? _standbySlates = standbySlates;
     private readonly SupervisionClock _clock = clock ?? SupervisionClock.System;
     private readonly PortReservationManager _outputs = reservations ?? new();
     private readonly object _lifetime = new();
@@ -48,6 +49,9 @@ public sealed class FfmpegProcessSupervisor(
     private int _closing;
     private int _activeLaunches;
     private TaskCompletionSource _launchesDrained = CompletedDrain();
+    private readonly CancellationTokenSource _preparationShutdown = new();
+    private int _activePreparations;
+    private TaskCompletionSource _preparationsDrained = CompletedDrain();
     private sealed record Configuration(FfmpegRouteOptions Options, TimeSpan StopTimeout, long Generation);
 
     public long ConfigurationGeneration => Volatile.Read(ref _configuration).Generation;
@@ -91,6 +95,7 @@ public sealed class FfmpegProcessSupervisor(
     {
         public readonly TaskCompletionSource Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ManagedProcess? Owner;
+        public CancellationTokenSource? PreparationCancellation;
         // 0 queued, 1 transferred to controller worker, -1 rejected before transfer.
         public int Transfer;
     }
@@ -135,26 +140,71 @@ public sealed class FfmpegProcessSupervisor(
             configuration: configuration, port: port);
     }
 
-    public Task StartPortStandbyAsync(SourceIdentity owner, DeckLinkPort port, OutputPreset preset,
+    public async Task<PreparedStandbySlate?> PrepareStandbyAsync(DeckLinkPort port, OutputPreset preset,
         PortStandbyConfiguration configuration, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfClosing();
+        benchGuard?.ValidateIdentity(port); // Refuse foreign targets before touching preparation inputs.
         var generation = Volatile.Read(ref _configuration);
-        return StartProcessAsync(owner, RouteProcessPurpose.PortStandby,
-            FfmpegCommandBuilder.BuildPortStandby(generation.Options, port, preset, configuration), cancellationToken, port.StableId,
-            configuration: generation, port: port);
+        if (_standbySlates is null) return null; // explicit fake/legacy harness construction
+        lock (_lifetime)
+        {
+            ThrowIfClosing();
+            if (_activePreparations++ == 0) _preparationsDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        try
+        {
+            using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _preparationShutdown.Token);
+            var slate = await _standbySlates.PrepareAsync(generation.Options, port, preset, configuration, lifetime.Token).ConfigureAwait(false);
+            lifetime.Token.ThrowIfCancellationRequested();
+            if (generation.Generation != ConfigurationGeneration) throw new OperationCanceledException("Standby media configuration changed during preparation.");
+            return slate with { ConfigurationGeneration = generation.Generation };
+        }
+        finally { lock (_lifetime) if (--_activePreparations == 0) _preparationsDrained.TrySetResult(); }
     }
 
+    public bool IsPreparedStandbyCurrent(PreparedStandbySlate? slate) => slate is null || slate.ConfigurationGeneration == ConfigurationGeneration;
+
+    public Task StartPortStandbyAsync(SourceIdentity owner, DeckLinkPort port, OutputPreset preset,
+        PortStandbyConfiguration configuration, CancellationToken cancellationToken, PreparedStandbySlate? prepared = null) =>
+        StartStandbyAsync(owner, RouteProcessPurpose.PortStandby, port, preset, configuration, cancellationToken, prepared);
+
     public Task StartRecoveryStandbyAsync(SourceIdentity source, DeckLinkPort port, OutputPreset preset,
-        PortStandbyConfiguration configuration, CancellationToken cancellationToken)
+        PortStandbyConfiguration configuration, CancellationToken cancellationToken, PreparedStandbySlate? prepared = null) =>
+        StartStandbyAsync(source, RouteProcessPurpose.Fallback, port, preset, configuration, cancellationToken, prepared);
+
+    private async Task StartStandbyAsync(SourceIdentity source, RouteProcessPurpose purpose, DeckLinkPort port, OutputPreset preset,
+        PortStandbyConfiguration configuration, CancellationToken cancellationToken, PreparedStandbySlate? prepared)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        ThrowIfClosing();
-        var generation = Volatile.Read(ref _configuration);
-        return StartProcessAsync(source, RouteProcessPurpose.Fallback,
-            FfmpegCommandBuilder.BuildPortStandby(generation.Options, port, preset, configuration), cancellationToken, port.StableId,
-            configuration: generation, port: port);
+        using var admission = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var pending = new PendingLaunch { PreparationCancellation = admission };
+        BeginLaunch();
+        var registered = false;
+        try
+        {
+            if (!_pendingStarts.TryAdd(source.Value, pending)) throw new InvalidOperationException("A start is already pending for this source.");
+            registered = true; // Visible to source stop before the first await.
+            prepared ??= await PrepareStandbyAsync(port, preset, configuration, admission.Token).ConfigureAwait(false);
+            lock (pending)
+            {
+                admission.Token.ThrowIfCancellationRequested();
+                pending.PreparationCancellation = null; // Subsequent stop observes the admitted output operation as before.
+            }
+            ThrowIfClosing();
+            var generation = Volatile.Read(ref _configuration);
+            if (!IsPreparedStandbyCurrent(prepared)) throw new OperationCanceledException("Prepared standby generation is stale.");
+            await StartProcessAsync(source, purpose, prepared is null
+                ? FfmpegCommandBuilder.BuildPortStandby(generation.Options, port, preset, configuration)
+                : FfmpegCommandBuilder.BuildPreparedStandby(generation.Options, port, preset, configuration, prepared),
+                cancellationToken, port.StableId, configuration: generation, port: port, admitted: pending).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (registered && Interlocked.CompareExchange(ref pending.Transfer, -1, 0) == 0) CompletePendingLaunch(source, pending);
+            EndLaunch();
+        }
     }
 
     public Task StopAsync(SourceIdentity source, CancellationToken cancellationToken) =>
@@ -170,6 +220,8 @@ public sealed class FfmpegProcessSupervisor(
         ManagedProcess? expected;
         if (_pendingStarts.TryGetValue(source.Value, out var pending))
         {
+            try { lock (pending) pending.PreparationCancellation?.Cancel(); }
+            catch (ObjectDisposedException) { } // Completed start already removed this exact admission.
             // Do not acknowledge a stop while its already-admitted launch can
             // still publish. Never wait for a source gate while holding another
             // output's gate, and never retarget this stop to a later session.
@@ -279,9 +331,9 @@ public sealed class FfmpegProcessSupervisor(
 
     public ValueTask DisposeAsync()
     {
+        CloseAdmission();
         lock (_lifetime)
         {
-            Interlocked.Exchange(ref _closing, 1);
             return new(_disposeTask ??= DisposeCoreAsync());
         }
     }
@@ -289,10 +341,14 @@ public sealed class FfmpegProcessSupervisor(
     public void CloseAdmission()
     {
         lock (_lifetime) Interlocked.Exchange(ref _closing, 1);
+        _preparationShutdown.Cancel();
     }
 
     private async Task DisposeCoreAsync()
     {
+        // A renderer owns its child until cancellation, reap and pipe drain finish.
+        // Do not report a clean disposal if that explicit helper boundary fails.
+        await _preparationsDrained.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         // Admission is already closed. Observe admitted native launches before
         // collecting children or disposing their containment handle.
         try { await _launchesDrained.Task.WaitAsync(ProcessReapTimeout).ConfigureAwait(false); }
@@ -349,14 +405,14 @@ public sealed class FfmpegProcessSupervisor(
 
     private async Task StartProcessAsync(SourceIdentity source, RouteProcessPurpose purpose, ProcessStartInfo start,
         CancellationToken cancellationToken, string? outputId = null, FfmpegMediaSession? media = null,
-        MediaProperties? selectedMedia = null, Configuration? configuration = null, DeckLinkPort? port = null)
+        MediaProperties? selectedMedia = null, Configuration? configuration = null, DeckLinkPort? port = null, PendingLaunch? admitted = null)
     {
-        PendingLaunch? pending = null;
+        PendingLaunch? pending = admitted;
         try
         {
             ThrowIfClosing();
-            pending = new();
-            if (!_pendingStarts.TryAdd(source.Value, pending))
+            pending ??= new();
+            if (admitted is null && !_pendingStarts.TryAdd(source.Value, pending))
             {
                 pending = null;
                 throw new InvalidOperationException("A start is already pending for this source.");
