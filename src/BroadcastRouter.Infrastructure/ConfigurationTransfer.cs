@@ -119,7 +119,8 @@ public static class ConfigurationTransfer
         {
             if (string.IsNullOrWhiteSpace(route.SourceId) || string.IsNullOrWhiteSpace(route.DesiredPortId)
                 || route.AssignmentMode is not (AssignmentMode.Manual or AssignmentMode.Preconfigured or AssignmentMode.Rule or AssignmentMode.Fixed)
-                || !settings.DeckLinkPortOverrides.Any(p => p.IsOutputPort && p.StableId == route.DesiredPortId)
+                || !settings.DeckLinkPortOverrides.Any(p => p.IsOutputPort
+                    && string.Equals(p.StableId, route.DesiredPortId, StringComparison.OrdinalIgnoreCase))
                 || !settings.Presets.Any(p => p.Id == route.PresetId))
                 throw new InvalidDataException("Saved route does not reference an output port and preset in this configuration.");
         }

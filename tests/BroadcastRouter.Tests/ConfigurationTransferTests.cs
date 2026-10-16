@@ -86,6 +86,34 @@ public sealed class ConfigurationTransferTests
         finally { await fresh.StopDiagnosticsAsync(); }
     }
 
+    [Theory]
+    [InlineData("out-a", "OUT-A")]
+    [InlineData("OUT-A", "out-a")]
+    public async Task SavedPortReferencesKeepCaseInsensitiveIdentityWithoutChangingIntent(string configuredId, string desiredId)
+    {
+        await using var fixture = await DiagnosticRetentionTests.Fixture.Create();
+        await fixture.Store.SaveSettingsAsync(new OperatorSettings
+        { DeckLinkPortOverrides = [new() { StableId = configuredId, IsOutputPort = true, StandbyPresetId = "1080p25" }] });
+        await fixture.Store.SaveRouteAsync(new RuntimeRoute("TEST/live/default/Feed", "Feed", desiredId, "Output", "1080p25",
+            RouteState.WaitingForStream, AssignmentMode.Manual, false, 1, 0, null, null, null, 0, 0, null,
+            fixture.Clock.UtcNow, null, null, DesiredPortId: desiredId));
+        var destination = Path.Combine(fixture.Root, "fresh.db");
+        await Import(await Export(fixture.Store.DatabasePath), destination);
+        var fresh = new SqliteDataStore(destination, readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
+        try
+        {
+            await fresh.InitializeAsync();
+            var settings = await fresh.LoadSettingsAsync();
+            Assert.Equal(configuredId, Assert.Single(settings.DeckLinkPortOverrides).StableId);
+            var intent = Assert.Single(await fresh.LoadRoutesAsync());
+            Assert.Equal(desiredId, intent.DesiredPortId);
+            Assert.Equal("TEST/live/default/Feed", intent.SourceId);
+            Assert.Equal(RouteState.WaitingForStream, intent.State);
+            Assert.Null(intent.PortId);
+        }
+        finally { await fresh.StopDiagnosticsAsync(); }
+    }
+
     private static MethodInfo Transfer(string method)
     {
         var type = typeof(SqliteDataStore).Assembly.GetType("BroadcastRouter.Infrastructure.ConfigurationTransfer");

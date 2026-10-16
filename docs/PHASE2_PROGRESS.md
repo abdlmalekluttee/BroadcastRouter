@@ -336,6 +336,18 @@ package checks are recorded with the PR; failed development attempts are retaine
 privately. Independent review's three important findings were fixed test-first.
 R18 and the production-storage latency soak remain OPEN. No production change.
 
+PR #95 rebased onto the merged isolation baseline `1a13c55`; the saved old tip is
+`a0c1f6a3871c49404bc70338c9d664e247be299b`. The solution and deployment-validation
+conflicts retain both StandbyCheck/P2-43 and ConfigurationTransfer/fresh-install
+requirements. Rebased baseline: 954/954 normal cases passed locally and on hosted
+CI. A fresh independent review identified case-sensitive saved-port validation in
+the import tool. Two real SQLite round-trip cases failed before the correction;
+the importer now matches the router's case-insensitive connector identity without
+changing saved IDs or the case-sensitive source identity contract. Final reviewed
+payload verification is recorded on the PR. Private configuration confirmation,
+production-storage qualification and hardware/deployment authorization remain
+separate gates; only the owner merges.
+
 ## P2-40 source/build preparation (separate Phase E software-only PR)
 
 Exact historical four-file FFmpeg patch and full build recipe are available in
