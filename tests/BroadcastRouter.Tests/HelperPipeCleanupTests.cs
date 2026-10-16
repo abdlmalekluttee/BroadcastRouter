@@ -10,6 +10,39 @@ namespace BroadcastRouter.Tests;
 public sealed class HelperPipeCleanupTests
 {
     [Fact]
+    public async Task FaultedOriginalReaderIsReportedAfterOwnedFilesAreDeleted()
+    {
+        var fixture = new Fixture();
+        var failure = new IOException("synthetic retained original reader failure");
+        fixture.TrackReader(Task.FromException(failure));
+        try
+        {
+            Assert.Same(failure, await Assert.ThrowsAsync<IOException>(() => fixture.DisposeAsync().AsTask()));
+            Assert.False(Directory.Exists(fixture.Root), "Completed faulted reader skipped owned-directory cleanup.");
+        }
+        finally
+        {
+            // RED cleanup is scoped to this fixture's freshly-created private directory.
+            if (Directory.Exists(fixture.Root)) Directory.Delete(fixture.Root, true);
+        }
+    }
+
+    [Fact]
+    public async Task FixtureDeletionWaitsForItsOriginalReaderBarrier()
+    {
+        var fixture = new Fixture();
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.TrackReader(released.Task);
+        var cleanup = fixture.DisposeAsync().AsTask();
+        try
+        {
+            Assert.False(cleanup.IsCompleted, "Fixture deletion ran before its owned reader was released.");
+            Assert.True(File.Exists(fixture.Executable));
+        }
+        finally { released.TrySetResult(); await cleanup; }
+        Assert.False(Directory.Exists(fixture.Root));
+    }
+    [Fact]
     public async Task PreviewReapDeadlineReleasesResourcesWithoutClaimingConfirmedExit()
     {
         var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -39,7 +72,7 @@ public sealed class HelperPipeCleanupTests
     [InlineData(true)]
     public async Task PendingOrFaultedPreviewReaderCannotHoldStopGateOrReportCleanStop(bool faulted)
     {
-        using var fixture = new Fixture();
+        await using var fixture = new Fixture();
         await File.WriteAllTextAsync(Path.Combine(fixture.Root, "live.json"), JsonSerializer.Serialize(new
             { events = Array.Empty<object>(), ignoreQuit = true }));
         await using var preview = new BrowserPreviewSupervisor();
@@ -48,6 +81,9 @@ public sealed class HelperPipeCleanupTests
             new("h264", null, 1920, 1080, 25, null, null, null, true)),
             new() { FfmpegPath = fixture.Executable });
         var session = typeof(BrowserPreviewSupervisor).GetField("_current", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(preview)!;
+        // The injected fault replaces a property, not the already-running real
+        // stderr pump. Retain and drain that original task before file deletion.
+        fixture.TrackReader((Task)session.GetType().GetProperty("ProducerErrors")!.GetValue(session)!);
         var reader = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         session.GetType().GetProperty("ProducerErrors")!.SetValue(session, reader.Task);
         using var exactOwner = Process.GetProcessById(preview.Snapshot.ProducerProcessId!.Value);
@@ -79,7 +115,7 @@ public sealed class HelperPipeCleanupTests
     [InlineData("preview", false)]
     public async Task EndedHelperDoesNotLeaveItsDescendantOrPipeBehind(string kind, bool parentExits)
     {
-        using var fixture = new Fixture();
+        await using var fixture = new Fixture();
         var script = JsonSerializer.Serialize(new { events = Array.Empty<object>(),
             spawnChildScript = fixture.ChildScript, continueFile = fixture.Release,
             exitAfterMilliseconds = 0, exitCode = 0 });
@@ -125,7 +161,7 @@ public sealed class HelperPipeCleanupTests
                 await File.WriteAllTextAsync(fixture.Release, "release");
                 await operation.WaitAsync(TimeSpan.FromSeconds(7));
             }
-            await Task.Delay(100);
+            await fixture.Child!.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(fixture.Child!.HasExited, "Owned descendant survived completed " + kind + " helper.");
         }
         finally
@@ -136,8 +172,12 @@ public sealed class HelperPipeCleanupTests
         }
     }
 
-    private sealed class Fixture : IDisposable
+    private sealed class Fixture : IAsyncDisposable
     {
+        private readonly List<Task> _readers = [];
+        public void TrackReader(Task task) => _readers.Add(task);
+        private Task? _cleanup;
+        public ValueTask DisposeAsync() => new(_cleanup ??= DeleteAsync());
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "router-pipe-cleanup-" + Guid.NewGuid().ToString("N"));
         public string Executable => Path.Combine(Root, "BroadcastRouter.FakeFfmpeg.exe");
         public string ChildScript => Path.Combine(Root, "descendant.json");
@@ -167,15 +207,28 @@ public sealed class HelperPipeCleanupTests
             Assert.True(Child.WaitForExit(5000));
             Child.Dispose(); Child = null;
         }
-        public void Dispose()
+        private async Task DeleteAsync()
         {
-            ReapChild();
             var until = Stopwatch.StartNew();
+            ReapChild();
+            var readers = Task.WhenAll(_readers);
+            Exception? readerFailure = null;
+            try { await readers.WaitAsync(TimeSpan.FromSeconds(5) - until.Elapsed); }
+            // Completed faulted/cancelled readers have released ownership. Still
+            // delete our files, then surface the original failure. A pending
+            // reader timeout is not ownership release and must propagate now.
+            catch (Exception error) when (readers.IsCompleted) { readerFailure = error; }
             while (true)
             {
-                try { Directory.Delete(Root, true); return; }
-                catch (IOException) when (until.Elapsed < TimeSpan.FromSeconds(5)) { Thread.Sleep(25); }
+                try { if (Directory.Exists(Root)) Directory.Delete(Root, true); break; }
+                // Windows image teardown / scanner sharing can briefly deny a
+                // private file even after exact-owner exit. Do not swallow a
+                // persistent failure or give cleanup a larger overall budget.
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException
+                    && until.Elapsed < TimeSpan.FromSeconds(5)) { await Task.Yield(); }
             }
+            if (readerFailure is not null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(readerFailure).Throw();
         }
     }
 }

@@ -60,6 +60,8 @@ using var descendant = script.SpawnChildScript is { } childScript
     }) : null;
 using var complete = new CancellationTokenSource();
 var mediaWriters = new Dictionary<string, StreamWriter>(StringComparer.Ordinal);
+var mediaWriteGate = new SemaphoreSlim(1, 1);
+Exception? commandFailure = null;
 if (script.CaptureArguments)
 {
     // Existence is the test reader's ready signal. Publish only after the write
@@ -71,8 +73,19 @@ if (script.CaptureArguments)
 var timer = Stopwatch.StartNew();
 var quit = Task.Run(async () =>
 {
+    try
+    {
     while (await Console.In.ReadLineAsync() is { } line)
     {
+        complete.Token.ThrowIfCancellationRequested();
+        if (script.MediaCommands && line.Split(' ') is ["media", var batchText, var videoText, var audioText]
+            && long.TryParse(batchText, out var batch) && batch >= 0)
+        {
+            if (videoText == "1") await WriteEventAsync(new(0, "-stats_enc_pre:v:0", $"brmedia|pre|v|{batch}|{batch}|1/25|{batch}"));
+            if (audioText == "1") await WriteEventAsync(new(0, "pcm", $"frame:{batch} pts:{batch*1024} pts_time:0\nlavfi.astats.Overall.Number_of_samples={(batch+1)*1024}.000000"));
+            await WriteEventAsync(new(0, "-stats_mux_pre:v:0", $"brmedia|mux|v|{batch}"));
+            await WriteEventAsync(new(0, "-stats_mux_pre:a:0", $"brmedia|mux|a|{batch}"));
+        }
         if (script.ProgressCommands && line.StartsWith("stderr ", StringComparison.Ordinal))
         {
             await Console.Error.WriteLineAsync(line[7..]);
@@ -101,44 +114,28 @@ var quit = Task.Run(async () =>
             return;
         }
     }
+    }
+    catch (OperationCanceledException) when (complete.IsCancellationRequested) { }
+    catch (Exception error)
+    {
+        commandFailure = error;
+        complete.Cancel(); // Wake the script's wait; do not lose the original pipe/endpoint error.
+    }
 });
 try
 {
+    if (script.MediaCommands)
+    {
+        await Console.Error.WriteLineAsync("Synthetic observation batch complete");
+        await Console.Error.FlushAsync();
+    }
     while (script.ContinueFile is { } continueFile && !File.Exists(continueFile))
         await Task.Delay(10, complete.Token);
     foreach (var item in script.Events.OrderBy(e => e.AtMilliseconds))
     {
         var wait = TimeSpan.FromMilliseconds(item.AtMilliseconds) - timer.Elapsed;
         if (wait > TimeSpan.Zero) await Task.Delay(wait, complete.Token);
-        TextWriter writer;
-        if (item.Channel.StartsWith("-stats_", StringComparison.Ordinal) || item.Channel == "pcm")
-        {
-            var index = Array.IndexOf(args, item.Channel == "pcm" ? "-af" : item.Channel);
-            if (index < 0) continue; // Missing instrumentation is observable by the parent, not a child crash.
-            if (!mediaWriters.TryGetValue(item.Channel, out var mediaWriter))
-            {
-                if (index + 1 >= args.Length) return 66;
-                var endpoint = args[index + 1];
-                if (item.Channel == "pcm")
-                {
-                    var match = Regex.Match(endpoint, "file='([^']+)'", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-                    if (!match.Success) continue;
-                    endpoint = match.Groups[1].Value.Replace("\\\\", "\\", StringComparison.Ordinal);
-                }
-                const string prefix = @"\\.\pipe\broadcast-router-media-";
-                if (!endpoint.StartsWith(prefix, StringComparison.Ordinal)
-                    || !Guid.TryParseExact(endpoint[prefix.Length..], "N", out _)) return 66;
-                var pipe = new NamedPipeClientStream(".", endpoint[9..], PipeDirection.Out, PipeOptions.Asynchronous);
-                try { await pipe.ConnectAsync(3000, complete.Token); }
-                catch { pipe.Dispose(); throw; }
-                mediaWriter = new StreamWriter(pipe);
-                mediaWriters.Add(item.Channel, mediaWriter);
-            }
-            writer = mediaWriter;
-        }
-        else writer = item.Channel == "stderr" ? Console.Error : Console.Out;
-        await writer.WriteLineAsync(item.Text);
-        await writer.FlushAsync();
+        await WriteEventAsync(item);
     }
     if (script.ExitAfterMilliseconds is { } deadline)
     {
@@ -150,12 +147,65 @@ try
     await Task.Delay(Timeout.InfiniteTimeSpan, complete.Token);
 }
 catch (OperationCanceledException) when (complete.IsCancellationRequested) { }
-finally { foreach (var writer in mediaWriters.Values) await writer.DisposeAsync(); }
+finally
+{
+    complete.Cancel();
+    // A pending stdin read need not finish to exit, but no command may race
+    // writer disposal. Cancellation prevents any subsequent command write.
+    await mediaWriteGate.WaitAsync();
+    try { foreach (var writer in mediaWriters.Values) await writer.DisposeAsync(); }
+    finally { mediaWriteGate.Release(); }
+    if (commandFailure is not null) await quit;
+}
+if (commandFailure is not null)
+{
+    await Console.Error.WriteLineAsync(commandFailure.ToString());
+    return 70;
+}
 return 0;
+
+async Task WriteEventAsync(Event item)
+{
+    await mediaWriteGate.WaitAsync(complete.Token);
+    try
+    {
+        complete.Token.ThrowIfCancellationRequested();
+        TextWriter writer;
+        if (item.Channel.StartsWith("-stats_", StringComparison.Ordinal) || item.Channel == "pcm")
+        {
+            var index = Array.IndexOf(args, item.Channel == "pcm" ? "-af" : item.Channel);
+            if (index < 0) return; // Missing instrumentation is observable by the parent, not a child crash.
+            if (!mediaWriters.TryGetValue(item.Channel, out var mediaWriter))
+            {
+                if (index + 1 >= args.Length) throw new InvalidDataException("Missing synthetic observation endpoint.");
+                var endpoint = args[index + 1];
+                if (item.Channel == "pcm")
+                {
+                    var match = Regex.Match(endpoint, "file='([^']+)'", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+                    if (!match.Success) return;
+                    endpoint = match.Groups[1].Value.Replace("\\\\", "\\", StringComparison.Ordinal);
+                }
+                const string prefix = @"\\.\pipe\broadcast-router-media-";
+                if (!endpoint.StartsWith(prefix, StringComparison.Ordinal)
+                    || !Guid.TryParseExact(endpoint[prefix.Length..], "N", out _)) throw new InvalidDataException("Invalid synthetic observation endpoint.");
+                var pipe = new NamedPipeClientStream(".", endpoint[9..], PipeDirection.Out, PipeOptions.Asynchronous);
+                try { await pipe.ConnectAsync(3000, complete.Token); }
+                catch { pipe.Dispose(); throw; }
+                mediaWriter = new StreamWriter(pipe);
+                mediaWriters.Add(item.Channel, mediaWriter);
+            }
+            writer = mediaWriter;
+        }
+        else writer = item.Channel == "stderr" ? Console.Error : Console.Out;
+        await writer.WriteLineAsync(item.Text.AsMemory(), complete.Token);
+        await writer.FlushAsync(complete.Token);
+    }
+    finally { mediaWriteGate.Release(); }
+}
 
 internal sealed record Script(Event[] Events, int? ExitAfterMilliseconds, int ExitCode, bool IgnoreQuit, bool Crash,
     int QuitDelayMilliseconds = 0, string[]? QuitStderr = null, bool ProgressCommands = false, string? ContinueFile = null,
-    bool CaptureArguments = false, string? StartMarker = null, string? SpawnChildScript = null);
+    bool CaptureArguments = false, string? StartMarker = null, string? SpawnChildScript = null, bool MediaCommands = false);
 internal sealed record Event(int AtMilliseconds, string Channel, string Text);
 internal static class Native
 {
