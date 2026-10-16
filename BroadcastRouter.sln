@@ -23,6 +23,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BroadcastRouter.OwnerHost",
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BroadcastRouter.StandbyCheck", "tools\BroadcastRouter.StandbyCheck\BroadcastRouter.StandbyCheck.csproj", "{B19DE029-4C3F-455C-87C2-AD46F8347112}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{A69AD496-1A69-4B6A-B050-746F1D4AE4A8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BroadcastRouter.ConfigurationTransfer", "tools\BroadcastRouter.ConfigurationTransfer\BroadcastRouter.ConfigurationTransfer.csproj", "{F33CD0B0-2962-4441-A8E1-E88E12A7BC75}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -64,6 +68,10 @@ Global
 		{E6D18B82-5C37-453D-8B25-0CE04D022883}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E6D18B82-5C37-453D-8B25-0CE04D022883}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E6D18B82-5C37-453D-8B25-0CE04D022883}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F33CD0B0-2962-4441-A8E1-E88E12A7BC75}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F33CD0B0-2962-4441-A8E1-E88E12A7BC75}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F33CD0B0-2962-4441-A8E1-E88E12A7BC75}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F33CD0B0-2962-4441-A8E1-E88E12A7BC75}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{306DAE5F-C12D-43DB-A4EC-ACB88D702250} = {E28492B5-E673-40BA-BB6D-258E6B23F3A3}
@@ -73,5 +81,6 @@ Global
 		{CD0F48FC-442F-41F7-B4C9-0E1792A29B30} = {B4ABCDEA-2731-427E-9E24-4B9F1AF06E99}
 		{7147FD14-9FE6-49D7-BD39-5342151810D9} = {B4ABCDEA-2731-427E-9E24-4B9F1AF06E99}
 		{E6D18B82-5C37-453D-8B25-0CE04D022883} = {B4ABCDEA-2731-427E-9E24-4B9F1AF06E99}
+		{F33CD0B0-2962-4441-A8E1-E88E12A7BC75} = {A69AD496-1A69-4B6A-B050-746F1D4AE4A8}
 	EndGlobalSection
 EndGlobal

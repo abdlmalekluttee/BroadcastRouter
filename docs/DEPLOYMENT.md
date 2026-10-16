@@ -8,6 +8,12 @@ the prior valid owner. Clean unused entries only during approved maintenance.
 The required prepared-slate FFmpeg filters/codecs must pass Media Tools validation
 before standby is enabled. See [P2-43](phase2/P2-43.md) for qualification boundaries.
 
+For the approved fresh-database deployment, complete the private configuration
+review and [configuration-only import](CONFIGURATION_TRANSFER.md) before activating
+the new service. Keep the original installation and backups for rollback; do not
+carry over its database or delete it. Re-enter Wowza passwords in the new account,
+recheck audio-disabled presets, and verify assets/connector identities explicitly.
+
 ## Recommended: dedicated broadcast Windows Service
 
 1. Install the matching Blackmagic Desktop Video release and verify each output in Desktop Video Setup/Media Express.
@@ -63,6 +69,13 @@ Keep loopback binding unless remote control is required. Before enabling LAN acc
 The app refuses startup when authentication is enabled without an administrator password or when a non-loopback bind has authentication disabled.
 
 ## Upgrade and rollback
+
+For the approved fresh-database transition, the configuration-only procedure at
+the top of this guide takes precedence: **do not copy the old `data` directory or
+database**. Transfer reviewed configuration, re-enter credentials, and separately
+validate the referenced assets. Keep the old installation and its backups intact.
+The database-preserving procedure below applies only to other, explicitly approved
+compatible upgrades, not this transition.
 
 Stop the scheduled task/service, copy the complete new release to a new versioned folder, copy the `data` directory, and start the new version. Keep the prior folder and a separately protected database backup made while the app is stopped. For a LAN deployment, also merge the prior `AllowedHosts` value into the new release's `appsettings.json`; public packages intentionally contain only localhost host-filter entries. Do not replace the remaining new-version defaults blindly. Verify health through the actual configured bind address because an exact NIC bind does not necessarily listen on loopback. SQLite settings retain a last-valid configuration row; sanitized diagnostics intentionally contain no database backup. Roll back by stopping the new executable and starting the prior folder with the matching protected database backup.
 
