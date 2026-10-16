@@ -36,6 +36,9 @@ public static class MediaToolValidator
         var encoders = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-encoders"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         reportProgress?.Invoke("FFmpeg muxer inspection");
         var muxers = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-muxers"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        reportProgress?.Invoke("Standby image decoder and demuxer inspection");
+        var decoders = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-decoders"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+        var demuxers = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-demuxers"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         reportProgress?.Invoke("RTSP timeout capability inspection");
         var rtspOptions = await ExternalCommandRunner.RunAsync(paths.FfmpegPath, ["-hide_banner", "-h", "demuxer=rtsp"], TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
         reportProgress?.Invoke("DeckLink termination capability inspection");
@@ -58,8 +61,9 @@ public static class MediaToolValidator
         var hasH264Encoder = ContainsTool(encoders.CombinedOutput, "libx264");
         var hasAacEncoder = ContainsTool(encoders.CombinedOutput, "aac");
         var hasMp4Muxer = ContainsTool(muxers.CombinedOutput, "mp4");
-        var standbyFilters = new[] { "color", "smptebars", "smptehdbars", "testsrc2", "overlay", "drawtext" };
-        var missingStandbyFilters = standbyFilters.Where(filter => !ContainsTool(filters.CombinedOutput, filter)).ToArray();
+        var missingStandbyFilters = MissingStandbyTools(filters.CombinedOutput, encoders.CombinedOutput, muxers.CombinedOutput)
+            .Concat(MissingStandbyInputTools(decoders.Started && decoders.ExitCode == 0 ? decoders.CombinedOutput : "",
+                demuxers.Started && demuxers.ExitCode == 0 ? demuxers.CombinedOutput : "")).ToArray();
         var driver = environment.Findings.Any(x => x.StartsWith("PASS  Blackmagic Desktop Video", StringComparison.Ordinal));
 
         findings.Add(ffmpeg.ExecutableFound ? $"PASS: {ffmpeg.VersionLine}" : "FAIL: FFmpeg did not start.");
@@ -98,4 +102,14 @@ public static class MediaToolValidator
     private static bool ContainsTool(string report, string token) =>
         report.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
             .Any(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries).Any(part => part.Equals(token, StringComparison.OrdinalIgnoreCase)));
+
+    internal static string[] MissingStandbyTools(string filters, string encoders, string muxers) =>
+        new[] { "color", "smptebars", "smptehdbars", "testsrc2", "overlay", "drawtext", "movie", "loop", "setpts", "drawbox", "format", "fps", "anullsrc", "aresample", "asetpts", "volume" }
+            .Where(filter => !ContainsTool(filters, filter))
+            .Concat(ContainsTool(encoders, "png") ? [] : new[] { "png encoder" })
+            .Concat(ContainsTool(muxers, "image2") ? [] : new[] { "image2 muxer" }).ToArray();
+
+    internal static string[] MissingStandbyInputTools(string decoders, string demuxers) =>
+        (ContainsTool(decoders, "png") ? Array.Empty<string>() : ["png decoder"])
+            .Concat(ContainsTool(demuxers, "png_pipe") ? [] : new[] { "png_pipe demuxer" }).ToArray();
 }

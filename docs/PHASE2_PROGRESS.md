@@ -323,3 +323,19 @@ No app behavior change, SDK redistribution, production install or hardware test.
 Binary reproducibility and native R09 qualification remain OPEN; complete original
 package-archive provenance is unavailable. See docs/phase2/P2-40.md. R18 remains
 OPEN. Phase D integration and hardware gates are not closed by this preparation.
+
+# P2-43 post-maintenance software preparation (16 October)
+
+Separate branch from the accepted main baseline; no deployment. Prepared static
+slate retains live clock/date or a blinking liveness square, preset cadence and
+silence. Content invalidation, preparation-before-stop, bounded retry, tracked
+helper shutdown, nonblocking settings/reconciliation, and input decode capability
+have focused regressions. Fresh independent review found five Important issues;
+all entered one test-first fix pass (74 focused cases and 929/929 normal green).
+Strict KnownDefect contract passes with two R18 assertions still OPEN; build and
+Python policy gates pass. Final local null-sink qualification: 60 barriers,
+390 starts/390 clean exits/0 forced, clock max530.225ms at5 and527.253ms at8;
+original graph also passes, so native shutdown cause is NOT REPRODUCED.
+Package/hosted readiness remains pending; see [P2-43](phase2/P2-43.md) for exact evidence boundaries and retained
+measurement mistakes. R18 KnownDefects, native teardown cause, physical media/
+silence and production-storage soak remain open. Only the owner merges.

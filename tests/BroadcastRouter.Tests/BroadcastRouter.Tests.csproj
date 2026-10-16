@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../../tools/BroadcastRouter.StandbyCheck/QualificationContract.cs" Link="StandbyCheck/QualificationContract.cs" />
     <ProjectReference Include="..\BroadcastRouter.FakeFfmpeg\BroadcastRouter.FakeFfmpeg.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\BroadcastRouter.OwnerHost\BroadcastRouter.OwnerHost.csproj" ReferenceOutputAssembly="false" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="8.0.0" />

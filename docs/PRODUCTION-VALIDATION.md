@@ -6,6 +6,17 @@ The live preview check can be repeated with `BroadcastRouter.Verify --database <
 
 Before broadcast use, verify:
 
+- Prepared-slate standby (P2-43): qualify the selected FFmpeg's `movie`, `loop`,
+  `setpts`, `fps`, `format`, `drawbox`, PNG encode/decode, image2 muxing and
+  `png_pipe` demuxing support in
+  addition to the composition filters. At each actual output mode, verify the
+  raster, field order/cadence, live clock/date or blinking liveness indicator,
+  changed logo/labels and digital silence. Stop five and eight owners together:
+  all complete in under one second with zero forced stops. Local null/capture
+  results do not substitute for physical SDI/audio or service-account proof.
+  A failed render or full cache must retain the prior valid output and show an
+  alarm; a later healthy render may replace it only after current intent checks.
+
 - On an isolated Wowza route, toggle **Hold while Wowza live**, confirm immediate audited persistence without a PID change, reload the page and restart the test host to confirm persistence. Inject media failure while publisher live: the owned PID must remain and a `RecoveryHold` warning must appear. Disable the option and confirm recovery resumes. With hold enabled, stop the publisher (two confirmed missing observations), restore it, and terminate only the exact owned test PID; require automatic standby/recovery and no effect on other outputs. API unavailability alone must not clear hold. Check manual restart and emergency stop still take effect. A held output can remain frozen/silent; physically monitor it.
 
 - FFmpeg/FFprobe versions, DeckLink compilation, RTSP demuxer timeout support, route filters, `drawtext`/`overlay`/`smptebars`/`smptehdbars`/`testsrc2` standby filters, `uyvy422`, rawvideo, and every enumerated output pass in Media Tools.

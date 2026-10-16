@@ -56,6 +56,10 @@ public sealed class RouterCoordinator(
     private readonly Dictionary<string, PortStandbyStatus> _standbys = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, StandbyRetryBudget> _standbyBudgets = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _standbyConfigurationSignatures = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _standbyPreparationErrors = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PendingStandbySlate> _standbyPreparations = new(StringComparer.OrdinalIgnoreCase);
+    private sealed record PendingStandbySlate(string Signature, long Generation,
+        CancellationTokenSource Cancellation, Task<PreparedStandbySlate?> Task);
     private readonly Dictionary<string, string> _processDiagnosticSignatures = new(StringComparer.Ordinal);
     private readonly Dictionary<string, FfmpegInputFreezeDetector> _inputFreezeDetectors = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SourceMediaModeState> _sourceMediaModes = new(StringComparer.Ordinal);
@@ -2245,7 +2249,6 @@ public sealed class RouterCoordinator(
                 && route.State is RouteState.Starting or RouteState.Running or RouteState.Reconnecting or RouteState.Fallback);
             if (activeRoute is not null)
             {
-                await StopPortStandbyAsync(port.StableId, cancellationToken);
                 if (!settings.SimulationMode && activeRoute.State is RouteState.Reconnecting or RouteState.Fallback)
                 {
                     var routeGate = _routeGates.GetOrAdd(activeRoute.SourceId, static _ => new SemaphoreSlim(1, 1));
@@ -2260,6 +2263,7 @@ public sealed class RouterCoordinator(
                     finally { routeGate.Release(); }
                     continue;
                 }
+                await StopPortStandbyAsync(port.StableId, cancellationToken);
                 SetStandbyStatus(port.StableId, PortStandbyState.Live, null, "Live route owns output", null);
                 continue;
             }
@@ -2306,6 +2310,51 @@ public sealed class RouterCoordinator(
                 // Stopping outside the gate allowed a replacement to start while the old
                 // FFmpeg child was still releasing DeckLink audio/video resources.
                 var process = _supervisor?.Snapshot().FirstOrDefault(value => value.Source == owner);
+                var budget = _standbyBudgets.GetOrAdd(port.StableId, static _ => new());
+                if (!budget.CanAttempt(_clock.Now))
+                {
+                    if (process?.Running == true) await KeepStandbyOwnerAsync(port.StableId, process, budget, cancellationToken);
+                    else ShowStandbyFailure(port.StableId, budget);
+                    continue;
+                }
+                EnsureSupervisor(settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
+                var standbyConfiguration = new PortStandbyConfiguration(configuration.StandbyPattern,
+                    EmptyToNull(configuration.StandbyLogoPath), configuration.StandbyLabel, configuration.StandbyShowClock);
+                PreparedStandbySlate? prepared;
+                try
+                {
+                    if (!TryPreparedStandby(port, preset.ToDomain(), standbyConfiguration, desiredSignature, out prepared))
+                    {
+                        if (process?.Running == true) await KeepStandbyOwnerAsync(port.StableId, process, budget, cancellationToken);
+                        SetStandbyStatus(port.StableId, PortStandbyState.Starting, process?.ProcessId,
+                            "Preparing standby screen; previous output retained", null);
+                        continue;
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    lock (_gate) _standbyPreparationErrors[port.StableId] = LogRedactor.Redact(ex.Message);
+                    await RecordStandbyFailureAsync(port.StableId, budget, null, ex.Message, cancellationToken);
+                    if (process?.Running == true) SetStandbyStatus(port.StableId, PortStandbyState.Failed, process.ProcessId,
+                        "Standby update failed; previous output retained", ex.Message);
+                    continue;
+                }
+                // Rendering may wait on a child. Recheck current intent before any
+                // stop; do not publish a slate prepared for an obsolete setting.
+                lock (_gate)
+                {
+                    var currentConfiguration = _settings.DeckLinkPortOverrides.FirstOrDefault(p => p.StableId == port.StableId);
+                    var currentPreset = _settings.Presets.FirstOrDefault(p => p.Id == configuration.StandbyPresetId);
+                    if (_emergencyStopped || _settings.SimulationMode || !_validation.CanStartHardwareRoutes || !_validation.PortStandbySupported
+                        || !_ports.TryGetValue(port.StableId, out var currentPort)
+                        || !currentPort.IsOutputPort || currentConfiguration?.StandbyEnabled != true || currentPreset is null
+                        || StandbyConfigurationSignature(currentPort, currentPreset, currentConfiguration) != desiredSignature
+                        || !_supervisor!.IsPreparedStandbyCurrent(prepared)
+                        || _routes.Values.Any(r => r.PortId == port.StableId && r.State is RouteState.Starting or RouteState.Running or RouteState.Reconnecting or RouteState.Fallback)) continue;
+                    _standbyPreparationErrors.Remove(port.StableId);
+                }
+                if (prepared is not null) desiredSignature += "|" + prepared.Key;
                 if (process?.Running == true)
                 {
                     string? appliedSignature;
@@ -2318,7 +2367,6 @@ public sealed class RouterCoordinator(
                         process = null; // Intentional replacement is not an early failure.
                     }
                 }
-                var budget = _standbyBudgets.GetOrAdd(port.StableId, static _ => new());
                 if (await KeepStandbyOwnerAsync(port.StableId, process, budget, cancellationToken)) continue;
                 if (!budget.CanAttempt(_clock.Now)) { ShowStandbyFailure(port.StableId, budget); continue; }
                 EnsureSupervisor(settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
@@ -2328,10 +2376,8 @@ public sealed class RouterCoordinator(
                     null, ["Wait", "Keep previous owner"], "StartPortStandby");
                 try
                 {
-                    await _supervisor!.StartPortStandbyAsync(owner, port, preset.ToDomain(),
-                        new PortStandbyConfiguration(configuration.StandbyPattern,
-                            EmptyToNull(configuration.StandbyLogoPath), configuration.StandbyLabel, configuration.StandbyShowClock),
-                        cancellationToken);
+                    await _supervisor!.StartPortStandbyAsync(owner, port, preset.ToDomain(), standbyConfiguration,
+                        cancellationToken, prepared);
                     var started = _supervisor.Snapshot().FirstOrDefault(value => value.Source == owner && value.Running);
                     lock (_gate) _standbyConfigurationSignatures[port.StableId] = desiredSignature;
                     SetStandbyStatus(port.StableId, PortStandbyState.Starting, started?.ProcessId,
@@ -2350,6 +2396,41 @@ public sealed class RouterCoordinator(
     }
 
     // Called only under the port gate for both idle slates and route fallback.
+    private bool TryPreparedStandby(DeckLinkPort port, OutputPreset preset, PortStandbyConfiguration configuration,
+        string signature, out PreparedStandbySlate? prepared)
+    {
+        prepared = null;
+        var supervisor = _supervisor!;
+        lock (_gate)
+        {
+            if (_standbyPreparations.TryGetValue(port.StableId, out var old)
+                && (old.Signature != signature || old.Generation != supervisor.ConfigurationGeneration || old.Cancellation.IsCancellationRequested))
+            {
+                old.Cancellation.Cancel();
+                if (!old.Task.IsCompleted) return false; // One bounded helper per port, including obsolete cleanup.
+                _ = old.Task.Exception;
+                old.Cancellation.Dispose();
+                _standbyPreparations.Remove(port.StableId);
+            }
+            if (!_standbyPreparations.TryGetValue(port.StableId, out var pending))
+            {
+                var cancellation = new CancellationTokenSource();
+                var task = supervisor.PrepareStandbyAsync(port, preset, configuration, cancellation.Token);
+                pending = new(signature, supervisor.ConfigurationGeneration, cancellation, task);
+                _standbyPreparations.Add(port.StableId, pending);
+                // Canceled/disabled ports may never consume this result again.
+                _ = task.ContinueWith(t => { _ = t.Exception; }, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+            if (!pending.Task.IsCompleted) return false;
+            _standbyPreparations.Remove(port.StableId);
+            pending.Cancellation.Dispose();
+            prepared = pending.Task.GetAwaiter().GetResult();
+            return true;
+        }
+    }
+
+    // Called only under the port gate for both idle slates and route fallback.
     private async Task<bool> KeepStandbyOwnerAsync(string portId, RouteProcessSnapshot? process,
         StandbyRetryBudget budget, CancellationToken cancellationToken)
     {
@@ -2358,8 +2439,12 @@ public sealed class RouterCoordinator(
         {
             if (process.Progress?.Frame > 0)
             {
-                budget.ObserveProgress(process.SessionId, process.Progress.Frame, process.Progress.OutputTime,
-                    process.Progress.LastProgressAt, _clock.Now);
+                // Advancing retained output does not prove a broken replacement
+                // can be prepared. Only successful preparation clears this fence.
+                lock (_gate)
+                    if (!_standbyPreparationErrors.ContainsKey(portId))
+                        budget.ObserveProgress(process.SessionId, process.Progress.Frame, process.Progress.OutputTime,
+                            process.Progress.LastProgressAt, _clock.Now);
                 SetStandbyStatus(portId, budget.CircuitOpen ? PortStandbyState.Failed : PortStandbyState.Running, process.ProcessId,
                     budget.CircuitOpen ? "Standby generating; circuit recovery qualifying" : "Standby generating frames",
                     budget.LastError);
@@ -2424,6 +2509,17 @@ public sealed class RouterCoordinator(
         {
             _standbys.Remove(portId);
             _standbyConfigurationSignatures.Remove(portId);
+            _standbyPreparationErrors.Remove(portId);
+            if (_standbyPreparations.TryGetValue(portId, out var pending))
+            {
+                pending.Cancellation.Cancel();
+                if (pending.Task.IsCompleted)
+                {
+                    _ = pending.Task.Exception;
+                    pending.Cancellation.Dispose();
+                    _standbyPreparations.Remove(portId);
+                }
+            }
         }
     }
 
@@ -2442,7 +2538,12 @@ public sealed class RouterCoordinator(
     private void SetStandbyStatus(string portId, PortStandbyState state, int? processId, string summary, string? error)
     {
         lock (_gate)
+        {
+            if (processId is not null && state is PortStandbyState.Running or PortStandbyState.Starting
+                && _standbyPreparationErrors.TryGetValue(portId, out var preparationError))
+            { state = PortStandbyState.Failed; summary = "Standby update failed; previous output retained"; error = preparationError; }
             _standbys[portId] = new(portId, state, processId, summary, error, _clock.Now);
+        }
     }
 
     private static SourceIdentity StandbyIdentity(string portId)
@@ -2945,11 +3046,69 @@ public sealed class RouterCoordinator(
             var existing = OwnedSnapshot(route.SourceId);
             if (existing is { Running: true, Purpose: RouteProcessPurpose.Live }) return;
             var budget = _standbyBudgets.GetOrAdd(route.PortId, static _ => new());
-            if (existing?.Purpose == RouteProcessPurpose.Fallback
+            if (portConfiguration?.StandbyEnabled != true && existing?.Purpose == RouteProcessPurpose.Fallback
                 && await KeepStandbyOwnerAsync(route.PortId, existing, budget, cancellationToken)) return;
-            if (!budget.CanAttempt(_clock.Now)) { ShowStandbyFailure(route.PortId, budget); return; }
-            await StopPortStandbyAsync(route.PortId, cancellationToken);
+            if (!budget.CanAttempt(_clock.Now))
+            {
+                if (existing?.Running == true) await KeepStandbyOwnerAsync(route.PortId, existing, budget, cancellationToken);
+                else ShowStandbyFailure(route.PortId, budget);
+                return;
+            }
             EnsureSupervisor(_settings.MediaTools.FfmpegPath, _validation.WindowsDeckLinkSafeTerminateSupported);
+            PreparedStandbySlate? prepared = null;
+            var desiredSignature = portConfiguration is null ? null : StandbyConfigurationSignature(port, preset, portConfiguration);
+            if (portConfiguration?.StandbyEnabled == true)
+            {
+                try
+                {
+                    if (!TryPreparedStandby(port, preset.ToDomain(),
+                        new(portConfiguration.StandbyPattern, EmptyToNull(portConfiguration.StandbyLogoPath),
+                            portConfiguration.StandbyLabel, portConfiguration.StandbyShowClock), desiredSignature!, out prepared))
+                    {
+                        if (existing?.Running == true) await KeepStandbyOwnerAsync(route.PortId, existing, budget, cancellationToken);
+                        SetStandbyStatus(route.PortId, PortStandbyState.Starting, existing?.ProcessId,
+                            "Preparing standby screen; previous output retained", null);
+                        return;
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    lock (_gate) _standbyPreparationErrors[route.PortId] = LogRedactor.Redact(ex.Message);
+                    await RecordStandbyFailureAsync(route.PortId, budget, null, ex.Message, cancellationToken);
+                    SetStandbyStatus(route.PortId, PortStandbyState.Failed, existing?.ProcessId, "Standby preparation failed; previous owner retained", ex.Message);
+                    return;
+                }
+                lock (_gate)
+                {
+                    var currentPortConfiguration = _settings.DeckLinkPortOverrides.FirstOrDefault(p => p.StableId == route.PortId);
+                    var currentPreset = _settings.Presets.FirstOrDefault(p => p.Id == route.PresetId);
+                    if (_emergencyStopped || _settings.SimulationMode || !_validation.CanStartHardwareRoutes || !_validation.PortStandbySupported
+                        || !_ports.TryGetValue(route.PortId, out var currentPort)
+                        || !currentPort.IsOutputPort || !_routes.TryGetValue(route.SourceId, out var currentRoute) || currentRoute != expectedRoute
+                        || currentPortConfiguration?.StandbyEnabled != true || currentPreset is null
+                        || StandbyConfigurationSignature(currentPort, currentPreset, currentPortConfiguration) != desiredSignature
+                        || !_supervisor!.IsPreparedStandbyCurrent(prepared)) return;
+                    _standbyPreparationErrors.Remove(route.PortId);
+                }
+                if (prepared is not null) desiredSignature += "|" + prepared.Key;
+                if (existing is { Running: true, Purpose: RouteProcessPurpose.Fallback })
+                {
+                    string? applied;
+                    lock (_gate) _standbyConfigurationSignatures.TryGetValue(route.PortId, out applied);
+                    if (applied != desiredSignature)
+                    {
+                        await StopOwnedForDecisionAsync(existing.Source, route.PortId, "StandbyConfigurationChanged",
+                            "Prepared recovery slate differs from applied configuration", false, cancellationToken);
+                        ClearStandbyState(route.PortId);
+                        existing = null;
+                    }
+                }
+                if (existing?.Purpose == RouteProcessPurpose.Fallback
+                    && await KeepStandbyOwnerAsync(route.PortId, existing, budget, cancellationToken)) return;
+                if (!budget.CanAttempt(_clock.Now)) { ShowStandbyFailure(route.PortId, budget); return; }
+            }
+            await StopPortStandbyAsync(route.PortId, cancellationToken);
             using var fallbackDecision = telemetry?.BeginDecision(route.SourceId, route.PortId, OwnedSnapshot(route.SourceId),
                 route.FailureCategory ?? "FallbackRequested", "Reserved output; configured fallback or recovery standby",
                 null, ["Keep live owner", "Leave output idle"], "StartFallback", route.State.ToString());
@@ -2960,7 +3119,8 @@ public sealed class RouterCoordinator(
                     await _supervisor!.StartRecoveryStandbyAsync(SourceIdentityFromValue(route.SourceId), port, preset.ToDomain(),
                         new PortStandbyConfiguration(portConfiguration.StandbyPattern,
                             EmptyToNull(portConfiguration.StandbyLogoPath), portConfiguration.StandbyLabel,
-                            portConfiguration.StandbyShowClock), cancellationToken);
+                            portConfiguration.StandbyShowClock), cancellationToken, prepared);
+                    lock (_gate) _standbyConfigurationSignatures[route.PortId] = desiredSignature!;
                 }
                 else
                 {
@@ -3339,7 +3499,8 @@ public sealed class RouterCoordinator(
             if (_supervisor is null)
             {
                 _supervisor = new(options, stopTimeout, _clock, telemetry,
-                    benchGuard: benchGuard, reservations: _reservations);
+                    benchGuard: benchGuard, reservations: _reservations,
+                    standbySlates: new StandbySlateCache(Path.Combine(Path.GetDirectoryName(store.DatabasePath)!, "standby-slates")));
                 _supervisor.LifecycleChanged += OnProcessLifecycleChanged;
             }
             else

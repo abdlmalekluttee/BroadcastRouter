@@ -9,6 +9,168 @@ namespace BroadcastRouter.Tests;
 public sealed class StandbyLifecycleTests
 {
     [Fact]
+    public async Task SlowSlateRenderingDoesNotBlockSettingsOrOtherPortReconciliation()
+    {
+        await using var lab = await Create(false, exits: false);
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        var original = lab.Supervisor.Snapshot().Single(p => p.Running);
+        var ports = lab.Get<Dictionary<string, DeckLinkPort>>("_ports");
+        ports["SECOND-OUTPUT"] = ports["TEST-OUTPUT"] with { StableId = "SECOND-OUTPUT", FfmpegName = "Second synthetic output" };
+        lab.Settings.DeckLinkPortOverrides.Add(new() { StableId = "SECOND-OUTPUT", IsOutputPort = true,
+            StandbyEnabled = true, StandbyPresetId = lab.Settings.DeckLinkPortOverrides[0].StandbyPresetId });
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        typeof(FfmpegProcessSupervisor).GetField("_standbySlates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .SetValue(lab.Supervisor, new StandbySlateCache(Path.Combine(lab.Root, "slates"), async (_, token) =>
+            { entered.TrySetResult(); await release.Task.WaitAsync(token); throw new IOException("Synthetic delayed render"); }));
+        var save = lab.Coordinator.SaveSettingsAsync(lab.Coordinator.GetSettings());
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var first = await save.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(first.Settings.ConfigurationRevision, lab.Coordinator.SettingsRevision);
+            await lab.Coordinator.SaveSettingsAsync(lab.Coordinator.GetSettings()).WaitAsync(TimeSpan.FromSeconds(2));
+            await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Contains(lab.Supervisor.Snapshot(), p => p.SessionId == original.SessionId && p.Running);
+            var statuses = lab.Get<Dictionary<string, PortStandbyStatus>>("_standbys");
+            Assert.Contains("SECOND-OUTPUT", statuses.Keys); // First renderer cannot starve this port's status.
+            Assert.Contains("prepar", statuses["SECOND-OUTPUT"].Summary, StringComparison.OrdinalIgnoreCase);
+        }
+        finally { release.TrySetResult(); await save; }
+    }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RetainedHealthyOwnerCannotForgiveFailedReplacement(bool qualifiedBeforeFailure)
+    {
+        await using var lab = await Create(false, exits: false);
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        var running = typeof(FfmpegProcessSupervisor).GetField("_running", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(lab.Supervisor)!;
+        var managed = ((System.Collections.IEnumerable)running.GetType().GetProperty("Values")!.GetValue(running)!).Cast<object>().Single();
+        var frames = 0;
+        void Advance(int seconds = 1)
+        {
+            lab.Time.Advance(TimeSpan.FromSeconds(seconds)); frames += seconds * 25;
+            managed.GetType().GetProperty("Progress")!.SetValue(managed,
+                new FfmpegProgressSnapshot(frames, 25, TimeSpan.FromSeconds(frames / 25.0), 0, 0, 1, lab.Clock.Now, false));
+        }
+        for (var i = 0; i < (qualifiedBeforeFailure ? 62 : 1); i++)
+        { Advance(); await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None); }
+        var budget = lab.Get<System.Collections.Concurrent.ConcurrentDictionary<string, StandbyRetryBudget>>("_standbyBudgets")["TEST-OUTPUT"];
+        var attempts = 0;
+        typeof(FfmpegProcessSupervisor).GetField("_standbySlates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .SetValue(lab.Supervisor, new StandbySlateCache(Path.Combine(lab.Root, "slates"), (_, _) =>
+            { attempts++; throw new IOException("Replacement remains broken"); }));
+        lab.Settings.DeckLinkPortOverrides.Single().StandbyLabel = "Broken replacement";
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        await AwaitPreparation(lab);
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        var due = budget.NextAttempt;
+        // Old output advances immediately, before this replacement's retry deadline.
+        managed.GetType().GetProperty("Progress")!.SetValue(managed,
+            new FfmpegProgressSnapshot(++frames, 25, TimeSpan.FromSeconds(frames / 25.0), 0, 0, 1, lab.Clock.Now, false));
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        Assert.Equal(due, budget.NextAttempt);
+        Assert.Equal(1, attempts);
+        for (var attempt = 1; attempt < 3; attempt++)
+        {
+            Advance(4); await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+            await AwaitPreparation(lab);
+            await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        }
+        Assert.True(budget.CircuitOpen);
+        due = budget.NextAttempt;
+        for (var i = 0; i < 62; i++)
+        { Advance(); await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None); }
+        Assert.True(budget.CircuitOpen);
+        Assert.Equal(due, budget.NextAttempt);
+        Assert.Equal(3, attempts);
+    }
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RecoveryStandbyPreparesChangedSlateBeforeReplacingItsOwner(bool renderFails)
+    {
+        await using var lab = await Create(true, exits: false);
+        await lab.Invoke("StartFallbackAsync", lab.Route, CancellationToken.None);
+        var original = lab.Supervisor.Snapshot().Single(p => p.Running);
+        var preset = lab.Settings.Presets.Single(p => p.Id == lab.Route.PresetId);
+        preset.Width = 2; preset.Height = 2;
+        var attempts = 0;
+        typeof(FfmpegProcessSupervisor).GetField("_standbySlates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .SetValue(lab.Supervisor, new StandbySlateCache(Path.Combine(lab.Root, "slates"), async (start, token) =>
+            {
+                attempts++;
+                Assert.Contains(lab.Supervisor.Snapshot(), p => p.SessionId == original.SessionId && p.Running);
+                if (renderFails) throw new IOException("Synthetic render failure");
+                await File.WriteAllBytesAsync(start.ArgumentList[^1], Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAE0lEQVR4nGP8//8/AwMDCwMYAAAkFAMDuxa40wAAAABJRU5ErkJggg=="), token);
+            }));
+        lab.Settings.DeckLinkPortOverrides.Single().StandbyLabel = "Changed recovery label";
+        await lab.Invoke("StartFallbackAsync", lab.Route, CancellationToken.None);
+        await AwaitPreparation(lab);
+        await lab.Invoke("StartFallbackAsync", lab.Route, CancellationToken.None);
+        Assert.Equal(1, attempts);
+        if (renderFails) Assert.Contains(lab.Supervisor.Snapshot(), p => p.SessionId == original.SessionId && p.Running);
+        else Assert.DoesNotContain(lab.Supervisor.Snapshot(), p => p.SessionId == original.SessionId && p.Running);
+        for (var i = 0; i < 3; i++) await lab.Invoke("StartFallbackAsync", lab.Route, CancellationToken.None);
+        Assert.Equal(1, attempts);
+        Assert.Equal(renderFails ? 1 : 2, lab.Events.Count(e => e.State == RouteProcessLifecycleState.Started));
+    }
+    [Fact]
+    public async Task FailedSlatePreparationKeepsExactPreviousStandbyOwner()
+    {
+        await using var lab = await Create(false, exits: false);
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        var original = lab.Supervisor.Snapshot().Single(p => p.Running);
+        var field = typeof(FfmpegProcessSupervisor).GetField("_standbySlates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(field);
+        var attempts = 0;
+        field.SetValue(lab.Supervisor, new StandbySlateCache(Path.Combine(lab.Root, "slates"),
+            (_, _) => { attempts++; throw new IOException("Synthetic slate preparation failure"); }));
+        lab.Settings.DeckLinkPortOverrides.Single(p => p.StableId == "TEST-OUTPUT").StandbyLabel = "New label";
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        await AwaitPreparation(lab);
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        Assert.Contains(lab.Supervisor.Snapshot(), p => p.SessionId == original.SessionId && p.Running);
+        Assert.Single(lab.Events, e => e.State == RouteProcessLifecycleState.Started);
+        Assert.Contains("retained", lab.Get<Dictionary<string, PortStandbyStatus>>("_standbys")["TEST-OUTPUT"].Summary);
+        for (var i = 0; i < 5; i++) await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        Assert.Equal(1, attempts); // Existing healthy output must not create a render retry storm.
+        var retainedStatus = lab.Get<Dictionary<string, PortStandbyStatus>>("_standbys")["TEST-OUTPUT"];
+        Assert.Equal(PortStandbyState.Failed, retainedStatus.State);
+        Assert.Contains("retained", retainedStatus.Summary);
+    }
+
+    [Theory]
+    [InlineData("label")]
+    [InlineData("validation")]
+    public async Task ChangesDuringPreparationCannotStopPreviousOwner(string change)
+    {
+        await using var lab = await Create(false, exits: false);
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        var original = lab.Supervisor.Snapshot().Single(p => p.Running);
+        var preset = lab.Settings.Presets.Single(p => p.Id == lab.Settings.DeckLinkPortOverrides.Single().StandbyPresetId);
+        preset.Width = 2; preset.Height = 2;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var field = typeof(FfmpegProcessSupervisor).GetField("_standbySlates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        field.SetValue(lab.Supervisor, new StandbySlateCache(Path.Combine(lab.Root, "slates"), async (start, token) =>
+        {
+            entered.TrySetResult(); await release.Task.WaitAsync(token);
+            await File.WriteAllBytesAsync(start.ArgumentList[^1], Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAE0lEQVR4nGP8//8/AwMDCwMYAAAkFAMDuxa40wAAAABJRU5ErkJggg=="), token);
+        }));
+        var pending = lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Contains(lab.Supervisor.Snapshot(), p => p.SessionId == original.SessionId && p.Running);
+        if (change == "label") lab.Settings.DeckLinkPortOverrides.Single().StandbyLabel = "Newer label";
+        else lab.Set("_validation", new MediaToolValidation(ToolValidationState.Invalid, "fake", "fake", false, false, 0, [], lab.Clock.Now));
+        release.SetResult(); await pending.WaitAsync(TimeSpan.FromSeconds(3));
+        await AwaitPreparation(lab);
+        await lab.Invoke("ReconcilePortStandbysAsync", CancellationToken.None);
+        Assert.Contains(lab.Supervisor.Snapshot(), p => p.SessionId == original.SessionId && p.Running);
+    }
+
+    [Fact]
     public async Task RepeatedCoordinatorObservationsQualifyOneStableMinute()
     {
         await using var lab = await Create(true, exits: false);
@@ -175,6 +337,17 @@ public sealed class StandbyLifecycleTests
         Assert.Equal(starts, lab.Events.Count(e => e.State == RouteProcessLifecycleState.Started));
         Assert.Single(await lab.Store.ReadLogsAsync("StandbyCircuitOpen"));
         Assert.True(lab.Get<Dictionary<string, DeckLinkPort>>("_ports")["TEST-OUTPUT"].IsOutputPort);
+    }
+
+    private static async Task AwaitPreparation(OfflineFallbackTests.RecoveryLab lab)
+    {
+        var values = lab.Get<System.Collections.IDictionary>("_standbyPreparations").Values.Cast<object>().ToArray();
+        foreach (var value in values)
+        {
+            var task = (Task)value.GetType().GetProperty("Task")!.GetValue(value)!;
+            try { await task.WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch (IOException) { } // The next coordinator observation must record this actual render failure.
+        }
     }
 
     internal static async Task<OfflineFallbackTests.RecoveryLab> Create(bool fallback, bool exits = true)
