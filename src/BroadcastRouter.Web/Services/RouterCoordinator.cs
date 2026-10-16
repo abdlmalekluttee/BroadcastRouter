@@ -519,6 +519,8 @@ public sealed class RouterCoordinator(
         }
     }
 
+    internal event Action? FastInputIterationCompleted;
+
     private async Task RunFastInputSupervisionAsync(CancellationToken cancellationToken)
     {
         using var timer = _clock.CreatePeriodicTimer(FastInputSupervisionPeriod);
@@ -589,6 +591,7 @@ public sealed class RouterCoordinator(
                 var delay = SupervisionLoopPacing.DelayAfterOverrun(
                     FastInputSupervisionPeriod, _clock.GetElapsedTime(iterationStarted));
                 if (delay > TimeSpan.Zero) await _clock.DelayAsync(delay, cancellationToken);
+                FastInputIterationCompleted?.Invoke();
             }
         }
     }

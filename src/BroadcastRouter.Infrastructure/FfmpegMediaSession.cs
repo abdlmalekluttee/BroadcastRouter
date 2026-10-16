@@ -14,6 +14,9 @@ internal sealed class FfmpegMediaSession : IAsyncDisposable
     private readonly List<IAsyncDisposable> _channels = [];
     private bool _attached;
     private Task? _dispose;
+    // Internal observation boundary for deterministic integration fixtures. Fired
+    // after ingestion, never as a substitute for media evidence or health policy.
+    internal event Action<MediaSignalKind, long>? Observed;
 
     internal FfmpegMediaSession(MediaProperties? media, bool includeAudio, SupervisionClock clock)
     {
@@ -48,7 +51,7 @@ internal sealed class FfmpegMediaSession : IAsyncDisposable
                     }
                     var channel = new FfmpegMediaChannel(kind, observation =>
                     {
-                        if (observation is { } sample) _evidence.Observe(kind, sample.Counter, _clock.Now);
+                        if (observation is { } sample) Observe(kind, sample.Counter);
                         else _evidence.Invalidate(kind, _clock.Now);
                     });
                     _channels.Add(channel);
@@ -86,6 +89,12 @@ internal sealed class FfmpegMediaSession : IAsyncDisposable
     }
     internal void ObserveHeartbeat() => _evidence.ObserveHeartbeat(_clock.Now);
 
+    private void Observe(MediaSignalKind kind, long counter)
+    {
+        _evidence.Observe(kind, counter, _clock.Now);
+        Observed?.Invoke(kind, counter);
+    }
+
     private void AttachAudioSamples(ProcessStartInfo start)
     {
         var filterIndex = start.ArgumentList.IndexOf("-af");
@@ -93,7 +102,7 @@ internal sealed class FfmpegMediaSession : IAsyncDisposable
             throw new ArgumentException("A mapped source audio filter is required for PCM observation.", nameof(start));
         var channel = new FfmpegAudioSampleChannel(observation =>
         {
-            if (observation is { } sample) _evidence.Observe(MediaSignalKind.InputAudio, sample.Samples, _clock.Now);
+            if (observation is { } sample) Observe(MediaSignalKind.InputAudio, sample.Samples);
             else _evidence.Invalidate(MediaSignalKind.InputAudio, _clock.Now);
         });
         _channels.Add(channel);

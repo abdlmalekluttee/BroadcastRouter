@@ -103,6 +103,7 @@ public sealed class FfmpegProcessSupervisor(
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _ownerGates = new(StringComparer.Ordinal);
 
     public event Action<RouteProcessLifecycleEvent>? LifecycleChanged;
+    internal event Action? ObservationChanged;
 
     public Task StartAsync(RouteRecord route, DiscoveredSource source, DeckLinkPort port, OutputPreset preset, CancellationToken cancellationToken) =>
         StartAsync(route, source, port, preset, cancellationToken, Volatile.Read(ref _configuration).Options.UseIndependentMediaStats);
@@ -610,6 +611,7 @@ public sealed class FfmpegProcessSupervisor(
                 {
                     managed.Progress = snapshot;
                     managed.Media?.ObserveHeartbeat();
+                    ObservationChanged?.Invoke();
                 }
             }
         }
@@ -636,6 +638,7 @@ public sealed class FfmpegProcessSupervisor(
                 else if (managed.MediaStarvationDetector.Observe(safe, observedAt, managed.StartedAt,
                              MediaStarvationStartupGrace, out var starvationCategory, out var starvationDetail, media))
                     managed.InputFailure = new(starvationCategory, starvationDetail, observedAt);
+                ObservationChanged?.Invoke();
             }
         }
         catch (OperationCanceledException) when (managed.PumpCancellation.IsCancellationRequested) { }

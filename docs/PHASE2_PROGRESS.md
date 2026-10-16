@@ -339,3 +339,24 @@ original graph also passes, so native shutdown cause is NOT REPRODUCED.
 Package/hosted readiness remains pending; see [P2-43](phase2/P2-43.md) for exact evidence boundaries and retained
 measurement mistakes. R18 KnownDefects, native teardown cause, physical media/
 silence and production-storage soak remain open. Only the owner merges.
+
+## Coordinator integration-test isolation (16 October)
+
+Base: accepted main `fa235e7`; test-tooling versions unchanged. The whole
+CoordinatorIndependentMediaTests class now acknowledges real pipe ingestion
+before virtual-time advancement and observes current control iterations/exits.
+Private executable ownership is asserted. Original-reader cleanup is retained,
+bounded and error-reporting. See [test-isolation evidence](phase2/TEST-ISOLATION.md).
+Fresh independent review: no Critical, three Important corrected test-first
+(command failure propagation, faulted-reader cleanup, private stress deadline).
+Focused suite 54/54. Full normal, strict KnownDefect, final twenty CPU-contention
+repetitions and hosted checks remain prerequisites to readiness.
+
+Historical attribution corrected in P2-43: only 310 of 92,342 forced stops were
+explicitly identified port-standby owners. Most relate to route/fallback cycling;
+unknown route-purpose records do not prove a specific live/standby graph.
+The separate maintenance logo-stop result is not the historical aggregate.
+
+R18 has two OPEN KnownDefects. Hardware/physical/silence/reboot and production
+storage soak remain open. No deployment or production changes. Diagnostic PR95
+and test-tooling reintroduction wait for the owner's isolation merge.

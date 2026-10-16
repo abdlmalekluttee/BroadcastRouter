@@ -107,6 +107,7 @@ public sealed class SupervisorMediaEvidenceTests
 
     internal sealed class MediaChildFixture : IAsyncDisposable
     {
+        private readonly string? _initialStderr;
         internal string Root { get; } = Path.Combine(Path.GetTempPath(), "router-recovery-media-" + Guid.NewGuid().ToString("N"));
         internal string Executable => Path.Combine(Root, "BroadcastRouter.FakeFfmpeg.exe");
         internal DiscoveredSource Source { get; } = new(new("TEST", "fixture", "_default_", "synthetic-media"), "Synthetic",
@@ -116,6 +117,7 @@ public sealed class SupervisorMediaEvidenceTests
             SourceIdentity? identity = null, int? stopPcmAfterBatch = null,
             SourceMediaExpectation? expectation = null, int? stopInputVideoAfterBatch = null)
         {
+            _initialStderr = stderr;
             if (identity is not null) Source = Source with { Identity = identity };
             if (expectation is { } declared) Source = Source with { Media = Source.Media! with
                 { Expectation = declared, HasUsableVideo = declared != SourceMediaExpectation.AudioOnly,
@@ -146,6 +148,13 @@ public sealed class SupervisorMediaEvidenceTests
             new(Source.Identity, "TEST-OUTPUT", "test-mode", RouteState.Starting, AssignmentMode.Manual, false), Source,
             new("TEST-OUTPUT", "TEST-DEVICE", "Synthetic", 0, 0, null, []),
             new("test-mode", "Test mode", new(1920,1080,25,1,"uyvy422"), false, 0), CancellationToken.None);
+        internal void EnableCommandedMedia()
+        {
+            var events = _initialStderr is null ? Array.Empty<object>() :
+                new object[] { new { atMilliseconds = 0, channel = "stderr", text = _initialStderr } };
+            File.WriteAllText(Path.Combine(Root, "live.json"), JsonSerializer.Serialize(new
+                { events, captureArguments = true, progressCommands = true, mediaCommands = true }));
+        }
         public ValueTask DisposeAsync() => new(FixtureDirectory.DeleteAsync(Root));
     }
 }

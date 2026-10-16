@@ -57,9 +57,10 @@ public sealed class CoordinatorIndependentMediaTests
         for (var i = 0; i <= 2; i++)
         {
             if (i > 0) lab.Time.Advance(TimeSpan.FromMilliseconds(500));
-            await FaultHarnessTests.Eventually(() => lab.Owner.IndependentMedia!.Signals.All(s => s.LastAdvancedAt == lab.Clock.Now));
+            await lab.MediaBatch();
         }
-        await FaultHarnessTests.Eventually(() => lab.Owner.RecentErrors.Any(e => e.Contains("Synthetic observation batch complete")));
+        // Every commanded batch has been consumed; no delayed PCM can refresh
+        // an intentionally stale owner after this virtual-time step.
         lab.Time.Advance(TimeSpan.FromSeconds(25));
         lab.Routes[fixture.Source.Identity.Value] = lab.Route with { HoldOutputWhilePublisherLive = true };
         lab.Settings.WowzaServers.Add(new() { ServerId = "TEST", Enabled = true });
@@ -78,17 +79,11 @@ public sealed class CoordinatorIndependentMediaTests
         await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture(stopPcmAfterBatch: 30);
         await using var lab = await Lab.Create(fixture, true, captureTelemetry: true);
         await lab.Qualify();
-        await FaultHarnessTests.Eventually(() => lab.Owner.RecentErrors.Any(e => e.Contains("Synthetic audio observation batch complete")));
-        // Stderr and PCM use independent readers. The child's stderr marker
-        // proves it sent the final sample, not that the PCM reader consumed it.
-        // Finish that real-pipe boundary before stepping the fake clock.
-        await lab.WaitForInputAudioSamples(30 * 1024);
         lab.Time.Advance(TimeSpan.FromSeconds(25));
         for (var i = 0; i <= 4; i++)
         {
             if (i > 0) lab.Time.Advance(TimeSpan.FromMilliseconds(500));
-            await FaultHarnessTests.Eventually(() => lab.Owner.IndependentMedia!.Signals
-                .Where(s => s.Kind != MediaSignalKind.InputAudio).All(s => s.LastAdvancedAt == lab.Clock.Now));
+            await lab.MediaBatch(includeInputAudio: false);
         }
         await lab.Progress(1000);
         var signals = lab.Owner.IndependentMedia!.Signals;
@@ -205,7 +200,7 @@ public sealed class CoordinatorIndependentMediaTests
     {
         await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture(stderr:"[in#0/rtsp] CSeq 96 expected, 0 received.");
         await using var lab = await Lab.Create(fixture,false, captureTelemetry: true);
-        await FaultHarnessTests.Eventually(()=>lab.Owner.InputFailure is not null);
+        await lab.Observed(() => lab.Owner.InputFailure is not null);
         Assert.Null(lab.Owner.IndependentMedia);
         if (fastLoop) await lab.FastInputTurn(); else await lab.Monitor();
         Assert.True(lab.Owner.Running,"A stderr warning stopped an owner without independent media evidence.");
@@ -226,7 +221,6 @@ public sealed class CoordinatorIndependentMediaTests
         await using var fixture = new SupervisorMediaEvidenceTests.MediaChildFixture();
         await using var lab = await Lab.Create(fixture,true, captureTelemetry: true);
         await lab.Qualify();
-        await FaultHarnessTests.Eventually(()=>lab.Owner.RecentErrors.Any(e=>e.Contains("Synthetic observation batch complete")));
         lab.Time.Advance(TimeSpan.FromSeconds(25));
         lab.Routes[fixture.Source.Identity.Value] = lab.Route with { HoldOutputWhilePublisherLive=true };
         lab.Settings.WowzaServers.Add(new() { ServerId="TEST",Enabled=true });
@@ -250,6 +244,8 @@ public sealed class CoordinatorIndependentMediaTests
     {
         private const BindingFlags Flags = BindingFlags.Instance|BindingFlags.NonPublic;
         private readonly SupervisorMediaEvidenceTests.MediaChildFixture _fixture;
+        private long _batch;
+        private readonly TaskCompletionSource _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal ManualTimeProvider Time { get; } = new();
         internal SupervisionClock Clock { get; }
         internal RouterCoordinator Coordinator { get; }
@@ -267,6 +263,11 @@ public sealed class CoordinatorIndependentMediaTests
             Store=new(Path.Combine(fixture.Root,"test.db"), readDiagnosticVolumeSpace: TelemetryTestVolume.Read);
             if (captureTelemetry) Telemetry = new(Path.Combine(fixture.Root,"logs"),Clock, readVolumeSpace: TelemetryTestVolume.Read);
             Supervisor=new(new(fixture.Executable,UseIndependentMediaStats:instrumented),TimeSpan.FromSeconds(1),Clock,Telemetry);
+            Supervisor.LifecycleChanged += value =>
+            {
+                if (value.Source == fixture.Source.Identity && value.State == RouteProcessLifecycleState.Exited)
+                    _exited.TrySetResult();
+            };
             Coordinator=new(Store,null!,null!,NullLogger<RouterCoordinator>.Instance,Clock,Telemetry);
             typeof(RouterCoordinator).GetField("_supervisor",Flags)!.SetValue(Coordinator,Supervisor);
             Get<Dictionary<string,DiscoveredSource>>("_sources")[fixture.Source.Identity.Value]=fixture.Source;
@@ -277,7 +278,14 @@ public sealed class CoordinatorIndependentMediaTests
         internal static async Task<Lab> Create(SupervisorMediaEvidenceTests.MediaChildFixture fixture,bool instrumented, bool captureTelemetry = false)
         {
             var lab=new Lab(fixture,instrumented,captureTelemetry);
-            try { await lab.Store.InitializeAsync(); await fixture.Start(lab.Supervisor); return lab; }
+            try
+            {
+                fixture.EnableCommandedMedia();
+                await lab.Store.InitializeAsync();
+                await fixture.Start(lab.Supervisor);
+                await lab.Observed(() => lab.Owner.RecentErrors.Any(e => e.Contains("Synthetic observation batch complete")));
+                return lab;
+            }
             catch { await lab.DisposeAsync(); throw; }
         }
         internal async Task Qualify(bool includeInputVideo = true)
@@ -285,35 +293,67 @@ public sealed class CoordinatorIndependentMediaTests
             for (var i=0;i<=4;i++)
             {
                 if(i>0)Time.Advance(TimeSpan.FromMilliseconds(500));
-                await FaultHarnessTests.Eventually(()=>Owner.IndependentMedia!.Signals
-                    .Where(s => includeInputVideo || s.Kind != MediaSignalKind.InputVideo).All(s=>s.LastAdvancedAt==Clock.Now));
+                await MediaBatch(includeInputVideo);
             }
         }
-        internal Task Monitor()=>(Task)typeof(RouterCoordinator).GetMethod("MonitorProcessesAsync",Flags)!.Invoke(Coordinator,[CancellationToken.None])!;
-        internal Task WaitForInputAudioSamples(long expected) => FaultHarnessTests.Eventually(() =>
+        internal async Task Monitor()
         {
-            var owners = typeof(FfmpegProcessSupervisor).GetField("_running", Flags)!.GetValue(Supervisor)!;
-            var managed = owners.GetType().GetProperty("Item")!.GetValue(owners, [_fixture.Source.Identity.Value])!;
-            var media = managed.GetType().GetProperty("Media")!.GetValue(managed)!;
-            var tracker = media.GetType().GetField("_evidence", Flags)!.GetValue(media)!;
-            lock (tracker.GetType().GetField("_gate", Flags)!.GetValue(tracker)!)
+            await Invoke("MonitorProcessesAsync", CancellationToken.None);
+            if (Route.FailureCategory == "MediaAdvancementLost")
+                await _exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        private object Managed
+        {
+            get
             {
-                var signals = (System.Collections.IDictionary)tracker.GetType().GetField("_signals", Flags)!.GetValue(tracker)!;
-                var audio = signals[MediaSignalKind.InputAudio]!;
-                return (long?)audio.GetType().GetField("HighWater")!.GetValue(audio) == expected;
+                var owners = typeof(FfmpegProcessSupervisor).GetField("_running", Flags)!.GetValue(Supervisor)!;
+                return owners.GetType().GetProperty("Item")!.GetValue(owners, [_fixture.Source.Identity.Value])!;
             }
-        });
-        internal async Task Progress(long frame, long? duplicates = null)
-        {
-            var owners = typeof(FfmpegProcessSupervisor).GetField("_running", Flags)!.GetValue(Supervisor)!;
-            var managed = owners.GetType().GetProperty("Item")!.GetValue(owners, [_fixture.Source.Identity.Value])!;
-            var process = (OwnedChildProcess)managed.GetType().GetProperty("Process")!.GetValue(managed)!;
-            await process.StandardInput.WriteLineAsync(duplicates is { } count
-                ? $"progress-duplicates {frame} {frame * 40000} {count}"
-                : $"progress {frame} {frame * 40000}");
-            await process.StandardInput.FlushAsync();
-            await FaultHarnessTests.Eventually(() => Owner.Progress?.Frame == frame);
         }
+        internal async Task MediaBatch(bool includeInputVideo = true, bool includeInputAudio = true)
+        {
+            var batch = _batch++;
+            var media = (FfmpegMediaSession)Managed.GetType().GetProperty("Media")!.GetValue(Managed)!;
+            var remaining = Owner.IndependentMedia!.Signals.Select(s => s.Kind).Where(k =>
+                (includeInputVideo || k != MediaSignalKind.InputVideo)
+                && (includeInputAudio || k != MediaSignalKind.InputAudio)).ToHashSet();
+            var complete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            void Observed(MediaSignalKind kind, long counter)
+            {
+                if (counter != (kind == MediaSignalKind.InputAudio ? (batch + 1) * 1024 : batch)) return;
+                lock (remaining) if (remaining.Remove(kind) && remaining.Count == 0) complete.TrySetResult();
+            }
+            media.Observed += Observed;
+            try
+            {
+                await Command($"media {batch} {(includeInputVideo ? 1 : 0)} {(includeInputAudio ? 1 : 0)}");
+                await complete.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally { media.Observed -= Observed; }
+        }
+        private async Task Command(string command)
+        {
+            var process = (OwnedChildProcess)Managed.GetType().GetProperty("Process")!.GetValue(Managed)!;
+            await process.StandardInput.WriteLineAsync(command);
+            await process.StandardInput.FlushAsync();
+        }
+        internal async Task Observed(Func<bool> condition, Func<Task>? action = null)
+        {
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            void Check() { if (condition()) completion.TrySetResult(); }
+            Supervisor.ObservationChanged += Check;
+            try
+            {
+                if (action is not null) await action();
+                Check();
+                await completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally { Supervisor.ObservationChanged -= Check; }
+        }
+        internal Task Progress(long frame, long? duplicates = null) =>
+            Observed(() => Owner.Progress?.Frame == frame, () => Command(duplicates is { } count
+                ? $"progress-duplicates {frame} {frame * 40000} {count}"
+                : $"progress {frame} {frame * 40000}"));
         internal Task Invoke(string method, params object[] arguments) =>
             (Task)typeof(RouterCoordinator).GetMethod(method, Flags)!.Invoke(Coordinator, arguments)!;
         internal JsonElement[] Decisions() => Directory.GetFiles(Path.Combine(_fixture.Root,"logs"),"*.decisions.*.jsonl")
@@ -322,26 +362,28 @@ public sealed class CoordinatorIndependentMediaTests
         internal async Task FastInputTurn(long? expectedDuplicateFrame = null)
         {
             using var stop = new CancellationTokenSource();
+            var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            void Finished() => completed.TrySetResult();
+            Coordinator.FastInputIterationCompleted += Finished;
             var task = (Task)typeof(RouterCoordinator).GetMethod("RunFastInputSupervisionAsync",Flags)!.Invoke(Coordinator,[stop.Token])!;
             try
             {
                 Time.Advance(TimeSpan.FromMilliseconds(100));
-                // Waiting on the same per-route gate proves the first iteration
-                // reached and finished its owned-session decision (not a sleep).
-                var gates = Get<System.Collections.Concurrent.ConcurrentDictionary<string,SemaphoreSlim>>("_routeGates");
-                await FaultHarnessTests.Eventually(()=>gates.ContainsKey(_fixture.Source.Identity.Value));
+                await completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 if (expectedDuplicateFrame is { } expected)
-                    await FaultHarnessTests.Eventually(() =>
-                    {
-                        lock (Get<object>("_gate"))
-                            return Get<Dictionary<string, FfmpegInputFreezeDetector>>("_inputFreezeDetectors")
-                                .TryGetValue(_fixture.Source.Identity.Value, out var detector)
-                                && (long)typeof(FfmpegInputFreezeDetector).GetField("_frame", Flags)!.GetValue(detector)! == expected;
-                    });
-                await gates[_fixture.Source.Identity.Value].WaitAsync().WaitAsync(TimeSpan.FromSeconds(5));
-                gates[_fixture.Source.Identity.Value].Release();
+                {
+                    var detector = Get<Dictionary<string, FfmpegInputFreezeDetector>>("_inputFreezeDetectors")[_fixture.Source.Identity.Value];
+                    Assert.Equal(expected, (long)typeof(FfmpegInputFreezeDetector).GetField("_frame", Flags)!.GetValue(detector)!);
+                }
+                if (Route.FailureCategory == "MediaAdvancementLost")
+                    await _exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
             }
-            finally { stop.Cancel(); try { await task.WaitAsync(TimeSpan.FromSeconds(5)); } catch(OperationCanceledException) when(stop.IsCancellationRequested) { } }
+            finally
+            {
+                Coordinator.FastInputIterationCompleted -= Finished;
+                stop.Cancel();
+                try { await task.WaitAsync(TimeSpan.FromSeconds(5)); } catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
+            }
         }
         internal T Get<T>(string name)=>(T)typeof(RouterCoordinator).GetField(name,Flags)!.GetValue(Coordinator)!;
         public async ValueTask DisposeAsync()

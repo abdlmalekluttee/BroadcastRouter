@@ -34,7 +34,6 @@ public sealed class MonotonicSupervisionQualificationTests
         await lab.Qualify();
         if (sparse)
         {
-            await FaultHarnessTests.Eventually(() => lab.Owner.RecentErrors.Any(e => e.Contains("Synthetic input video batch complete")));
             lab.Time.Advance(TimeSpan.FromSeconds(5));
             await lab.Qualify(includeInputVideo: false);
         }
@@ -67,7 +66,6 @@ public sealed class MonotonicSupervisionQualificationTests
         await using var lab = await CoordinatorIndependentMediaTests.Lab.Create(fixture, true);
         lab.Time.Advance(TimeSpan.FromSeconds(25));
         await lab.Qualify();
-        await FaultHarnessTests.Eventually(() => lab.Owner.RecentErrors.Any(e => e.Contains("Synthetic observation batch complete")));
         await lab.Progress(1000);
         lab.Routes[fixture.Source.Identity.Value] = lab.Route with { State = RouteState.Running };
         var owner = lab.Owner.SessionId;
