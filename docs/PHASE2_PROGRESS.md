@@ -312,8 +312,6 @@ monitor, rollback and exact-window clearance. Do not bypass the guard with older
 direct-launch test tools. The private gate report carries detailed metrics,
 all failed experiments, acceptance-matrix open rows, rulings and deferred minors.
 
-## P2-40 source/build preparation (separate Phase E software-only PR)
-
 ## Post-maintenance diagnostic recovery / fresh configuration preparation
 
 The approved deployment path is a fresh database plus privately reviewed
@@ -326,11 +324,19 @@ of later optional inserts, yielding the essential writer gate between batches.
 Synthetic 102,001-row and 2,000,000-row tests, actual child-crash boundaries and
 essential-table preservation are covered. Disk reserve and sticky loss remain.
 See [configuration transfer](CONFIGURATION_TRANSFER.md) for operator review and
-fresh-only import. Full qualification is pending until this PR's recorded checks
-complete; local focused passes are not hardware or production-storage evidence.
+fresh-only import. Local normal suite: 889/889, no failures/skips. Strict
+KnownDefect contract: both exact R18 assertions observed (still OPEN). Release
+solution build: zero warnings/errors. Provenance 12/12, CI policy 17/17 and recipe
+15/15 passed. Final local two-million-row catch-up: 27.744 s; 1,901 contending
+essential writes, maximum 147.609 ms; subsequent flush 9.059 ms. The 102,001-row
+case took 59.573 ms, with essential maximum 32.620 ms and subsequent flush
+13.289 ms. The approved 300 s / 2 s / 5 s targets are unchanged. These are local
+synthetic results, not hardware or production-storage evidence. Hosted CI and
+package checks are recorded with the PR; failed development attempts are retained
+privately. Independent review's three important findings were fixed test-first.
 R18 and the production-storage latency soak remain OPEN. No production change.
 
-### Historical P2-40 preparation results
+## P2-40 source/build preparation (separate Phase E software-only PR)
 
 Exact historical four-file FFmpeg patch and full build recipe are available in
 tools/ffmpeg-build/. Pinned archive plus patch recreated 10,111 historical source
