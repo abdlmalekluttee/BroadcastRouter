@@ -349,8 +349,10 @@ Private executable ownership is asserted. Original-reader cleanup is retained,
 bounded and error-reporting. See [test-isolation evidence](phase2/TEST-ISOLATION.md).
 Fresh independent review: no Critical, three Important corrected test-first
 (command failure propagation, faulted-reader cleanup, private stress deadline).
-Focused suite 54/54. Full normal, strict KnownDefect, final twenty CPU-contention
-repetitions and hosted checks remain prerequisites to readiness.
+Focused suite 54/54. Local and first-attempt hosted normal suite 934/934;
+strict KnownDefect contract, build/provenance/privacy and CodeQL pass. Final
+twenty CPU-contention repetitions are still running at this checkpoint; the
+terminal receipt and readiness decision belong to PR #97, not an assumed pass.
 
 Historical attribution corrected in P2-43: only 310 of 92,342 forced stops were
 explicitly identified port-standby owners. Most relate to route/fallback cycling;

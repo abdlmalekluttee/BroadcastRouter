@@ -61,9 +61,21 @@ hang exercise. Its ten-minute per-invocation cap now preserves partial separate
 stdout/stderr, a timeout receipt and exact owned-tree reaping. Four preliminary
 20/20 runs were retained but do not count towards final-payload qualification;
 the fifth was interrupted for review corrections and is incomplete, not a pass.
-CPU-stress repetitions, full normal suite, strict KnownDefect and hosted checks
-are required before this change is ready; this section is updated from receipts,
-not inferred from the source diff. No production or hardware qualification.
+Software checkpoint on implementation `06bfb65`: local normal 934/934, no
+failures/skips (11m35s unsharded); build zero warnings/errors; provenance 12,
+CI policy 17, recipe 15. Strict KnownDefect contract passed with the two expected
+R18 assertion failures still OPEN.
+
+Hosted CI run 38905818859 passed first attempt on the same implementation:
+811 core + 100 media + 22 standby + 1 telemetry = 934 unique normal cases,
+no failures/skips. Shard durations 4m45s / 4m53s / 3m19s / 9m04s, all below
+ten minutes. Build/privacy, two identical clean-publish manifests and CodeQL
+passed. Recorded runner: windows-2022 image 20261012.333.1.
+
+At this software checkpoint the final twenty sequential CPU-contention
+repetitions are still running against frozen compiled files. PR #97 records the
+terminal qualification receipt and readiness decision; do not infer completion
+from this checkpoint. No production or hardware qualification.
 
 R18 remains OPEN; native shutdown, physical output/audio, reboot recovery and
 production-storage latency remain separate gates.
