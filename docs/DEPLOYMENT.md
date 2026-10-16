@@ -8,6 +8,12 @@ the prior valid owner. Clean unused entries only during approved maintenance.
 The required prepared-slate FFmpeg filters/codecs must pass Media Tools validation
 before standby is enabled. See [P2-43](phase2/P2-43.md) for qualification boundaries.
 
+For the approved fresh-database deployment, complete the private configuration
+review and [configuration-only import](CONFIGURATION_TRANSFER.md) before activating
+the new service. Keep the original installation and backups for rollback; do not
+carry over its database or delete it. Re-enter Wowza passwords in the new account,
+recheck audio-disabled presets, and verify assets/connector identities explicitly.
+
 ## Recommended: dedicated broadcast Windows Service
 
 1. Install the matching Blackmagic Desktop Video release and verify each output in Desktop Video Setup/Media Express.

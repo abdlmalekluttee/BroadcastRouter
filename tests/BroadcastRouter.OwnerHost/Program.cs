@@ -4,6 +4,26 @@ using BroadcastRouter.Infrastructure;
 
 // Dedicated crash-test host; never opens network or hardware. The only executables
 // supplied by its caller are copied synthetic media tools under a unique temp root.
+if (args is ["trim-crash", var database, var boundary])
+{
+    var reserveChecks = 0;
+    var pauseAt = boundary == "before-commit" ? 3 : 4;
+    var store = new SqliteDataStore(database, readDiagnosticVolumeSpace: _ =>
+    {
+        if (Interlocked.Increment(ref reserveChecks) == pauseAt)
+        {
+            Console.WriteLine("commit-boundary");
+            Console.Out.Flush();
+            Console.ReadLine(); // Parent terminates this exact process at the barrier.
+        }
+        return new TelemetryVolumeSpace(100_000_000_000, 80_000_000_000);
+    });
+    await store.InitializeAsync();
+    store.EnqueueDiagnostic("Information", "Synthetic", "pending-at-crash");
+    try { await store.FlushDiagnosticsAsync(); }
+    catch (IOException) { Console.WriteLine("flush-failed"); return 2; }
+    return 0;
+}
 if (args is not ["helpers", var root]) return 64;
 string Tool(string name) => Path.Combine(root, name, "BroadcastRouter.FakeFfmpeg.exe");
 var source = new DiscoveredSource(new("TEST", "fixture", "default", "synthetic"), "Synthetic",

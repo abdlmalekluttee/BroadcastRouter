@@ -179,39 +179,56 @@ public sealed partial class SqliteDataStore
 
     private async Task WriteDiagnosticBatchAsync(IReadOnlyList<DiagnosticLogRecord> records, CancellationToken cancellationToken)
     {
-        EnsureDiagnosticReserve();
-        // The single bounded worker may wait without holding the writer gate.
-        // A slow essential commit is backpressure, not evidence loss. Shutdown
-        // cancels this wait after the existing five-second drain deadline.
-        await _writeGate.WaitAsync(cancellationToken);
-        try
+        while (true)
         {
             EnsureDiagnosticReserve();
-            await using var connection = await OpenDiagnosticConnectionAsync(cancellationToken);
-            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
-            var retention = await PruneDiagnosticBatchAsync(connection, transaction, records.Count, cancellationToken);
-            if (retention.Remaining + records.Count > DiagnosticRowLimit)
-                throw new IOException("Diagnostic capacity exceeded; bounded maintenance must catch up before optional writes.");
-            foreach (var record in records)
+            // The single bounded worker may wait without holding the writer gate.
+            // A slow essential commit is backpressure, not evidence loss. Shutdown
+            // cancels this wait after the existing five-second drain deadline.
+            await _writeGate.WaitAsync(cancellationToken);
+            try
             {
-                await using var command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandTimeout = 1;
-                command.CommandText = "INSERT INTO logs(timestamp_utc,level,category,message,source_id,correlation_id) VALUES($now,$level,$category,$message,$source,$correlation)";
-                command.Parameters.AddWithValue("$now", record.LastUtc.ToString("O"));
-                command.Parameters.AddWithValue("$level", record.Level);
-                command.Parameters.AddWithValue("$category", record.Category);
-                var message = record.Occurrences == 1 ? record.Message :
-                    $"{record.Message} [Coalesced {record.Occurrences} events; first {record.FirstUtc:O}, last {record.LastUtc:O}; latest message shown.]";
-                command.Parameters.AddWithValue("$message", message);
-                command.Parameters.AddWithValue("$source", (object?)record.SourceId ?? DBNull.Value);
-                command.Parameters.AddWithValue("$correlation", (object?)record.CorrelationId ?? DBNull.Value);
-                await command.ExecuteNonQueryAsync(cancellationToken);
+                EnsureDiagnosticReserve();
+                await using var connection = await OpenDiagnosticConnectionAsync(cancellationToken);
+                await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+                var retention = await PruneDiagnosticBatchAsync(connection, transaction, records.Count, cancellationToken);
+                if (retention.Remaining + records.Count > DiagnosticRowLimit)
+                {
+                    if (retention.Removed == 0)
+                        throw new IOException("Diagnostic capacity maintenance made no progress.");
+                    // Catch-up must survive independently of a later insert failure.
+                    // Release admission after every bounded durable batch so essential
+                    // writers are not held behind the complete backlog.
+                    EnsureDiagnosticReserve();
+                    await transaction.CommitAsync(cancellationToken);
+                    Interlocked.Exchange(ref _diagnosticRetentionEvictions, retention.Evictions);
+                }
+                else
+                {
+                    foreach (var record in records)
+                    {
+                        await using var command = connection.CreateCommand();
+                        command.Transaction = transaction;
+                        command.CommandTimeout = 1;
+                        command.CommandText = "INSERT INTO logs(timestamp_utc,level,category,message,source_id,correlation_id) VALUES($now,$level,$category,$message,$source,$correlation)";
+                        command.Parameters.AddWithValue("$now", record.LastUtc.ToString("O"));
+                        command.Parameters.AddWithValue("$level", record.Level);
+                        command.Parameters.AddWithValue("$category", record.Category);
+                        var message = record.Occurrences == 1 ? record.Message :
+                            $"{record.Message} [Coalesced {record.Occurrences} events; first {record.FirstUtc:O}, last {record.LastUtc:O}; latest message shown.]";
+                        command.Parameters.AddWithValue("$message", message);
+                        command.Parameters.AddWithValue("$source", (object?)record.SourceId ?? DBNull.Value);
+                        command.Parameters.AddWithValue("$correlation", (object?)record.CorrelationId ?? DBNull.Value);
+                        await command.ExecuteNonQueryAsync(cancellationToken);
+                    }
+                    EnsureDiagnosticReserve();
+                    await transaction.CommitAsync(cancellationToken);
+                    Interlocked.Exchange(ref _diagnosticRetentionEvictions, retention.Evictions);
+                    return;
+                }
             }
-            EnsureDiagnosticReserve();
-            await transaction.CommitAsync(cancellationToken);
-            Interlocked.Exchange(ref _diagnosticRetentionEvictions, retention.Evictions);
+            finally { _writeGate.Release(); }
+            await Task.Yield();
         }
-        finally { _writeGate.Release(); }
     }
 }

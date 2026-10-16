@@ -1,5 +1,15 @@
 # Migration from batch files
 
+## Fresh-database installation
+
+For the approved fresh-install deployment, use the [configuration-only transfer](CONFIGURATION_TRANSFER.md).
+Retain the old installation and verified backups for rollback. Do not migrate the
+old database, diagnostic rows, logs or route history. Review the private exported
+configuration before deployment and re-enter Wowza passwords in the new install.
+
+The historical batch-file guidance below remains reference material, not an
+instruction to copy the old database into that fresh installation.
+
 Version 1.5.29 adds an optional route JSON field, `HoldOutputWhilePublisherLive`, defaulting to false when absent. No schema migration is required. Existing routing and watchdog behavior is unchanged until an administrator enables it per Wowza stream. Back up the working installation before deployment; reverting to older software removes the hold behavior even if the newer JSON field is present.
 
 1. Inventory every existing batch route: RTSP URL, DeckLink name/connector, raster/rate/scan, pixel format, audio, transport, buffer and fallback expectation.

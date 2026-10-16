@@ -314,6 +314,24 @@ all failed experiments, acceptance-matrix open rows, rulings and deferred minors
 
 ## P2-40 source/build preparation (separate Phase E software-only PR)
 
+## Post-maintenance diagnostic recovery / fresh configuration preparation
+
+The approved deployment path is a fresh database plus privately reviewed
+configuration-only transfer. No legacy diagnostic/history migration, real database
+copy, sanitizer or release attestation is part of this path. Retain the original
+installation and backups; deployment remains separately authorized.
+
+Runtime retention now commits bounded 1,000-row catch-up transactions independently
+of later optional inserts, yielding the essential writer gate between batches.
+Synthetic 102,001-row and 2,000,000-row tests, actual child-crash boundaries and
+essential-table preservation are covered. Disk reserve and sticky loss remain.
+See [configuration transfer](CONFIGURATION_TRANSFER.md) for operator review and
+fresh-only import. Full qualification is pending until this PR's recorded checks
+complete; local focused passes are not hardware or production-storage evidence.
+R18 and the production-storage latency soak remain OPEN. No production change.
+
+### Historical P2-40 preparation results
+
 Exact historical four-file FFmpeg patch and full build recipe are available in
 tools/ffmpeg-build/. Pinned archive plus patch recreated 10,111 historical source
 files byte-for-byte; 15 offline preparation tests green after 9 initial precise RED
