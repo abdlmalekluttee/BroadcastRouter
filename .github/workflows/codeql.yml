@@ -27,4 +27,4 @@ jobs:
           build-mode: manual
       - run: dotnet restore .\BroadcastRouter.sln
       - run: dotnet build .\BroadcastRouter.sln --configuration Release --no-restore
-      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
